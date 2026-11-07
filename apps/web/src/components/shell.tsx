@@ -25,7 +25,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { LuxAlgoMark } from "@/components/luxalgo-mark";
+import { SumiMark } from "@/components/sumi-mark";
 import { PrivacyToggle } from "./privacy";
 import { ThemeToggle } from "./theme";
 import { PageTransition } from "./page-transition";
@@ -182,7 +182,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       <div>
         Open source ·{" "}
         <a
-          href="https://github.com/LuxAlgo/trade-journal"
+          href="https://github.com/xolah88457/trade-journal"
           className="underline underline-offset-2 hover:text-foreground"
           target="_blank"
           rel="noreferrer"
@@ -190,7 +190,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
           GitHub
         </a>
       </div>
-      <div>Not investment advice.</div>
+      <div>Local first. Not investment advice.</div>
     </div>
   );
   return (
@@ -214,9 +214,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
               aria-describedby={undefined}
             >
               <div className="flex h-14 shrink-0 items-center gap-2.5 border-b px-4">
-                <LuxAlgoMark className="h-[18px] w-5" />
+                <SumiMark className="h-[18px] w-5 text-brand" />
                 <DialogPrimitive.Title className="text-sm font-semibold">
-                  Trade Journal
+                  Sumi
                 </DialogPrimitive.Title>
                 <DialogPrimitive.Close asChild>
                   <Button
@@ -241,8 +241,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
           href="/"
           className="mr-auto flex min-w-0 items-center gap-2 text-sm font-semibold tracking-tight"
         >
-          <LuxAlgoMark className="hidden h-4 w-[18px] shrink-0 min-[380px]:block" />
-          <span className="truncate">Trade Journal</span>
+          <SumiMark className="hidden h-4 w-[18px] shrink-0 text-brand min-[380px]:block" />
+          <span className="truncate">Sumi</span>
         </Link>
         <PrivacyToggle compact />
         <ThemeToggle iconOnly />
@@ -254,9 +254,9 @@ export function Shell({ children }: { children: React.ReactNode }) {
       >
         <div className="journal-sidebar-header relative flex h-14 shrink-0 items-center border-b">
           <Link href="/" className="journal-sidebar-home flex h-full min-w-0 items-center gap-2.5">
-            <LuxAlgoMark className="h-[18px] w-5 shrink-0" />
+            <SumiMark className="h-[22px] w-[22px] shrink-0 text-brand" />
             <span className="journal-sidebar-brand-label text-sm font-semibold tracking-tight">
-              Trade Journal
+              Sumi
             </span>
           </Link>
           <Button

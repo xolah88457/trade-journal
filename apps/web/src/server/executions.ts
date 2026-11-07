@@ -15,6 +15,8 @@ export interface InsertResult {
   skipped: number;
   /** A few plain-language reasons for skipped rows, capped so payloads stay small. */
   skippedReasons: string[];
+  /** Trade keys created or updated by this batch of executions. */
+  tradeKeys?: string[];
 }
 
 export type ExecutionSource = "sync" | "import" | "manual";
@@ -58,7 +60,11 @@ export const executionProblem = (row: unknown, source: ExecutionSource): string 
       Number.isSafeInteger(meta.order) &&
       meta.order >= 0 &&
       (meta.reportedGrossPnl === undefined || Number.isFinite(meta.reportedGrossPnl)) &&
-      (meta.preserveFee === undefined || typeof meta.preserveFee === "boolean"));
+      (meta.preserveFee === undefined || typeof meta.preserveFee === "boolean")) ||
+    (source === "manual" &&
+      Number.isSafeInteger(meta.order) &&
+      meta.order >= 0 &&
+      (meta.id === undefined || (typeof meta.id === "string" && meta.id.length <= 2000)));
   if (!metaOk) return `${label}: invalid imported execution metadata.`;
   const positionProblem = positionFillProblem(r as ImportedExecution);
   if (positionProblem) return positionProblem;
@@ -104,19 +110,38 @@ export const partitionExecutions = (
   return { usable, skipped, skippedReasons };
 };
 
-/** Insert fills, rebuild trades, and attach optional manual notes in one transaction. */
+export interface InsertExecutionOptions {
+  preserveFees?: boolean;
+  stopLoss?: number | null;
+  profitTarget?: number | null;
+  manualTrade?: boolean;
+}
+
+/** Insert fills, rebuild trades, and attach optional manual notes and plans in one transaction. */
 export const insertExecutions = (
   accountId: string,
   rows: ImportedExecution[],
   source: ExecutionSource,
   manualNotes?: string,
-  options: { preserveFees?: boolean } = {},
+  options: InsertExecutionOptions = {},
 ): InsertResult => {
   requireValue(
     manualNotes === undefined ||
       (source === "manual" && typeof manualNotes === "string" && manualNotes.length <= 100000),
     "Manual trade notes must be at most 100,000 characters.",
   );
+  if (options.stopLoss !== undefined && options.stopLoss !== null) {
+    requireValue(
+      Number.isFinite(options.stopLoss) && options.stopLoss > 0,
+      "Planned stop loss must be a positive number.",
+    );
+  }
+  if (options.profitTarget !== undefined && options.profitTarget !== null) {
+    requireValue(
+      Number.isFinite(options.profitTarget) && options.profitTarget > 0,
+      "Planned take profit must be a positive number.",
+    );
+  }
   requireValue(
     db.select({ id: accounts.id }).from(accounts).where(eq(accounts.id, accountId)).get(),
     "Account not found.",
@@ -131,6 +156,7 @@ export const insertExecutions = (
   const createdAt = nowIso();
   const defaults = getJournalDefaults();
   const note = manualNotes?.trim() ? manualNotes : undefined;
+  let matchedTradeKeys: string[] = [];
 
   db.transaction((tx) => {
     const positionErrors = positionImportErrors(accountId, usable);
@@ -158,27 +184,47 @@ export const insertExecutions = (
         );
       }
     }
-    const noteExecutionIds = new Set<string>();
-    for (const row of usable) {
+    const batchExecutionIds = new Set<string>();
+    const newlyInsertedBatchIds = new Set<string>();
+    for (let i = 0; i < usable.length; i++) {
+      const row = usable[i]!;
       const id = newId();
-      const contentHash = executionHash(row);
+      const rowWithMeta: ImportedExecution =
+        options.manualTrade && source === "manual"
+          ? {
+              ...row,
+              importMetadata: {
+                id: `manual:${row.executedAt}:${i}`,
+                order: i,
+              },
+            }
+          : row;
+      const contentHash = executionHash(rowWithMeta);
       const result = tx
         .insert(executions)
         .values({
           id,
           accountId,
-          symbol: row.symbol,
-          side: row.side,
-          quantity: row.quantity,
-          price: row.price,
+          symbol: rowWithMeta.symbol,
+          side: rowWithMeta.side,
+          quantity: rowWithMeta.quantity,
+          price: rowWithMeta.price,
           fee:
-            row.importMetadata?.preserveFee || options.preserveFees
-              ? row.fee
-              : defaultFee(row.fee, row.quantity, accountId, row.symbol, defaults),
-          executedAt: row.executedAt,
-          assetClass: row.assetClass ?? null,
+            rowWithMeta.importMetadata?.preserveFee || options.preserveFees
+              ? rowWithMeta.fee
+              : defaultFee(
+                  rowWithMeta.fee,
+                  rowWithMeta.quantity,
+                  accountId,
+                  rowWithMeta.symbol,
+                  defaults,
+                ),
+          executedAt: rowWithMeta.executedAt,
+          assetClass: rowWithMeta.assetClass ?? null,
           source,
-          importMetadataJson: row.importMetadata ? JSON.stringify(row.importMetadata) : null,
+          importMetadataJson: rowWithMeta.importMetadata
+            ? JSON.stringify(rowWithMeta.importMetadata)
+            : null,
           contentHash,
           createdAt,
         })
@@ -186,35 +232,114 @@ export const insertExecutions = (
         .run();
       if (result.changes > 0) {
         inserted++;
-        if (note) noteExecutionIds.add(id);
+        batchExecutionIds.add(id);
+        newlyInsertedBatchIds.add(id);
       } else {
         duplicates++;
-        if (note) {
-          const existing = tx
-            .select({ id: executions.id })
-            .from(executions)
-            .where(
-              and(eq(executions.accountId, accountId), eq(executions.contentHash, contentHash)),
-            )
-            .get();
-          if (existing) noteExecutionIds.add(existing.id);
-        }
+        const existing = tx
+          .select({ id: executions.id })
+          .from(executions)
+          .where(and(eq(executions.accountId, accountId), eq(executions.contentHash, contentHash)))
+          .get();
+        if (existing) batchExecutionIds.add(existing.id);
       }
     }
+    if (options.manualTrade && inserted === 0) {
+      requireValue(false, "Manual trade already exists in journal; nothing was saved.");
+    }
     if (inserted > 0) rebuildAccount(accountId);
+
+    // Identify trades touched by this batch of executions
+    const affectedTrades = tx
+      .select({
+        key: trades.key,
+        notes: trades.notes,
+        direction: trades.direction,
+        avgEntry: trades.avgEntry,
+        executionIdsJson: trades.executionIdsJson,
+        stopLoss: trades.stopLoss,
+        profitTarget: trades.profitTarget,
+      })
+      .from(trades)
+      .where(eq(trades.accountId, accountId))
+      .all()
+      .filter((trade) => {
+        try {
+          const ids = JSON.parse(trade.executionIdsJson) as string[];
+          return ids.some((id) => batchExecutionIds.has(id));
+        } catch {
+          return false;
+        }
+      });
+
+    matchedTradeKeys = affectedTrades.map((t) => t.key);
+
+    if (options.manualTrade) {
+      requireValue(
+        affectedTrades.length === 1,
+        "A new manual trade must create or affect exactly one trade.",
+      );
+      const touchedTrade = affectedTrades[0]!;
+      let touchedIds: string[] = [];
+      try {
+        touchedIds = JSON.parse(touchedTrade.executionIdsJson) as string[];
+      } catch {
+        touchedIds = [];
+      }
+      const allNewlyInserted =
+        touchedIds.length === newlyInsertedBatchIds.size &&
+        touchedIds.every((id) => newlyInsertedBatchIds.has(id));
+      requireValue(
+        allNewlyInserted,
+        "New manual trade cannot merge with an existing open position.",
+      );
+    }
+
+    const hasSl = options.stopLoss !== undefined;
+    const hasTp = options.profitTarget !== undefined;
+
+    if (hasSl || hasTp) {
+      for (const trade of affectedTrades) {
+        const sl = hasSl ? options.stopLoss : trade.stopLoss;
+        const tp = hasTp ? options.profitTarget : trade.profitTarget;
+
+        if (sl != null && Number.isFinite(sl)) {
+          if (trade.direction === "long") {
+            requireValue(
+              sl < trade.avgEntry,
+              `Stop loss (${sl}) must be below entry price (${trade.avgEntry}) for a long trade.`,
+            );
+          } else {
+            requireValue(
+              sl > trade.avgEntry,
+              `Stop loss (${sl}) must be above entry price (${trade.avgEntry}) for a short trade.`,
+            );
+          }
+        }
+
+        if (tp != null && Number.isFinite(tp)) {
+          if (trade.direction === "long") {
+            requireValue(
+              tp > trade.avgEntry,
+              `Take profit (${tp}) must be above entry price (${trade.avgEntry}) for a long trade.`,
+            );
+          } else {
+            requireValue(
+              tp < trade.avgEntry,
+              `Take profit (${tp}) must be below entry price (${trade.avgEntry}) for a short trade.`,
+            );
+          }
+        }
+
+        const planPatch: Partial<typeof trades.$inferInsert> = {};
+        if (hasSl) planPatch.stopLoss = options.stopLoss;
+        if (hasTp) planPatch.profitTarget = options.profitTarget;
+        tx.update(trades).set(planPatch).where(eq(trades.key, trade.key)).run();
+      }
+    }
+
     if (note) {
-      const affected = tx
-        .select({
-          key: trades.key,
-          notes: trades.notes,
-          executionIdsJson: trades.executionIdsJson,
-        })
-        .from(trades)
-        .where(eq(trades.accountId, accountId))
-        .all();
-      for (const trade of affected) {
-        const ids = JSON.parse(trade.executionIdsJson) as string[];
-        if (!ids.some((id) => noteExecutionIds.has(id))) continue;
+      for (const trade of affectedTrades) {
         // Keep prior annotations when these fills extend or close an existing position.
         // Retrying the same submission must not append the note a second time.
         if (trade.notes === note || trade.notes?.endsWith(`\n\n${note}`)) continue;
@@ -228,7 +353,7 @@ export const insertExecutions = (
     }
   });
 
-  return { inserted, duplicates, skipped, skippedReasons };
+  return { inserted, duplicates, skipped, skippedReasons, tradeKeys: matchedTradeKeys };
 };
 
 export const deleteExecutionsForTrades = (accountId: string, executionIds: string[]): void => {

@@ -8,7 +8,6 @@ import { EquityArea } from "@/components/charts/equity-area";
 import { FilterBar, useFilters } from "@/components/filter-bar";
 import { Pnl } from "@/components/pnl";
 import { MonetaryValue } from "@/components/privacy";
-import { VoiceNote } from "@/components/voice-note";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -180,18 +179,8 @@ function JournalDay({ date }: { date: string }) {
         </div>
 
         <Card className="h-fit">
-          <CardHeader className="flex-row flex-wrap items-center justify-between gap-2">
+          <CardHeader>
             <CardTitle>Day note</CardTitle>
-            <div className="flex items-center gap-2">
-              <VoiceNote
-                onPrepare={() => noteEditor.current?.focus()}
-                onText={(text) =>
-                  scheduleSave(
-                    noteValue ? `${noteValue}${noteValue.endsWith(" ") ? "" : " "}${text}` : text,
-                  )
-                }
-              />
-            </div>
           </CardHeader>
           <CardContent>
             <p className="mb-3 text-xs text-muted-foreground">

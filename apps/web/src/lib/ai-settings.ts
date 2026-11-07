@@ -20,6 +20,8 @@ export const AI_KEY_VARIABLES: Partial<Record<AiProvider, string>> = {
   openai: "OPENAI_API_KEY",
 };
 
+export const AI_INSTRUCTIONS_MAX_LENGTH = 2000;
+
 export interface AiConnection {
   configured: boolean;
   source: "environment" | "saved" | null;
@@ -33,6 +35,7 @@ export interface AiSettingsPayload {
   aiConfigured: boolean;
   aiModel: string;
   aiConnections: Record<AiProvider, AiConnection>;
+  aiInstructions: string;
 }
 
 export const isAiProvider = (value: unknown): value is AiProvider =>

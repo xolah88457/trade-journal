@@ -1,8 +1,9 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   AI_DEFAULT_MODELS,
+  AI_INSTRUCTIONS_MAX_LENGTH,
   AI_KEY_VARIABLES,
   AI_PROVIDER_NAMES,
   AI_PROVIDERS,
@@ -15,6 +16,8 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { Input } from "./ui/input";
 import { Label } from "./ui/label";
 import { OptionSelect } from "./ui/option-select";
+import { Textarea } from "./ui/textarea";
+import { VoiceNote } from "./voice-note";
 
 export function AiSettings() {
   const { data, error, loading, refresh } = useApi<AiSettingsPayload>("/api/settings");
@@ -22,6 +25,8 @@ export function AiSettings() {
   const [model, setModel] = useState(AI_DEFAULT_MODELS.anthropic);
   const [apiKey, setApiKey] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [instructions, setInstructions] = useState("");
+  const instructionsRef = useRef<HTMLTextAreaElement>(null);
   const [busy, setBusy] = useState(false);
   const [failure, setFailure] = useState("");
   const [saved, setSaved] = useState("");
@@ -31,6 +36,7 @@ export function AiSettings() {
     setProvider(data.aiProvider);
     setModel(data.aiModel);
     setBaseUrl(data.aiConnections.compatible.baseUrl ?? "");
+    setInstructions(data.aiInstructions ?? "");
   }, [data]);
 
   const connection = data?.aiConnections[provider];
@@ -62,6 +68,7 @@ export function AiSettings() {
           : {
               aiProvider: provider,
               aiModel: model.trim(),
+              aiInstructions: instructions.trim(),
               ...(compatible ? { compatibleBaseUrl: baseUrl.trim() } : {}),
               ...(apiKey.trim() ? { [`${provider}Key`]: apiKey.trim() } : {}),
             },
@@ -189,6 +196,52 @@ export function AiSettings() {
           />
           <p className="text-xs text-muted-foreground">{keyHint}</p>
         </div>
+        <div className="space-y-1.5 pt-2 border-t">
+          <div className="flex items-center justify-between">
+            <Label htmlFor="ai-instructions">Personal trading instructions (optional)</Label>
+            <div className="flex items-center gap-2">
+              <VoiceNote
+                targetRef={instructionsRef}
+                onText={(text) => {
+                  if (text.length > AI_INSTRUCTIONS_MAX_LENGTH) {
+                    if (instructionsRef.current) {
+                      instructionsRef.current.value = instructions;
+                    }
+                    setFailure(
+                      `Would exceed ${AI_INSTRUCTIONS_MAX_LENGTH}; existing instructions unchanged.`,
+                    );
+                  } else {
+                    setInstructions(text);
+                    setFailure("");
+                  }
+                  setSaved("");
+                }}
+              />
+              <span
+                className={`text-xs tabular-nums ${instructions.length > AI_INSTRUCTIONS_MAX_LENGTH ? "text-destructive" : "text-muted-foreground"}`}
+              >
+                {instructions.length}/{AI_INSTRUCTIONS_MAX_LENGTH}
+              </span>
+            </div>
+          </div>
+          <Textarea
+            ref={instructionsRef}
+            id="ai-instructions"
+            value={instructions}
+            disabled={disabled}
+            maxLength={AI_INSTRUCTIONS_MAX_LENGTH}
+            rows={4}
+            placeholder="e.g. Focus on disciplined risk management. I primarily trade liquidity sweeps on 5m charts. Flag when I move stops early or revenge trade after losses."
+            onChange={(event) => {
+              setInstructions(event.target.value);
+              setSaved("");
+            }}
+          />
+          <p className="text-xs text-muted-foreground">
+            Custom rules and guidance included in recaps, trade critiques, and “ask your journal”.
+            Grounding in your recorded data always takes precedence over instructions.
+          </p>
+        </div>
         {(error || failure) && (
           <p role="alert" className="text-xs text-destructive">
             {failure || error}
@@ -204,6 +257,7 @@ export function AiSettings() {
             disabled={
               disabled ||
               !model.trim() ||
+              instructions.length > AI_INSTRUCTIONS_MAX_LENGTH ||
               (compatible ? !baseUrl.trim() : !apiKey.trim() && !connection?.configured)
             }
             onClick={() => save()}

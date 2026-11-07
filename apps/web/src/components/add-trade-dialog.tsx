@@ -13,7 +13,7 @@ import {
   DialogTrigger,
 } from "./ui/dialog";
 
-export function AddTradeDialog({ onSaved }: { onSaved: () => void }) {
+export function AddTradeDialog({ onSaved }: { onSaved?: (tradeKey?: string) => void }) {
   const [open, setOpen] = useState(false);
 
   return (
@@ -28,14 +28,14 @@ export function AddTradeDialog({ onSaved }: { onSaved: () => void }) {
         <DialogHeader>
           <DialogTitle>Add trade</DialogTitle>
           <DialogDescription>
-            Choose an account and enter your buys and sells. Save an entry alone for an open
-            position, or include the exit to record a closed trade.
+            Choose an account and record an entry. Set planned SL/TP price levels, and save as Open
+            or select which target was hit.
           </DialogDescription>
         </DialogHeader>
         <ManualTradeEntry
-          onSaved={() => {
+          onSaved={(tradeKey) => {
             setOpen(false);
-            onSaved();
+            if (onSaved) onSaved(tradeKey);
           }}
         />
       </DialogContent>

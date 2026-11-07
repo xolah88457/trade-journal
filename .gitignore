@@ -2,6 +2,7 @@
 node_modules/
 
 # builds
+.desktop-cache/
 dist/
 .next/
 .cache/

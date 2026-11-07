@@ -1,6 +1,6 @@
 "use client";
 
-import { Suspense, useState } from "react";
+import { Suspense, useRef, useState } from "react";
 import { Plus, Trash2 } from "lucide-react";
 import { AdherenceReport } from "@/components/adherence-report";
 import { FilterBar } from "@/components/filter-bar";
@@ -9,6 +9,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { VoiceNote } from "@/components/voice-note";
 import { postJson, useApi } from "@/lib/use-api";
 
 interface Playbook {
@@ -33,6 +34,7 @@ function Playbooks() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [rules, setRules] = useState("");
+  const rulesRef = useRef<HTMLTextAreaElement>(null);
 
   const create = async () => {
     await postJson("/api/playbooks", {
@@ -131,14 +133,21 @@ function Playbooks() {
               onChange={(event) => setDescription(event.target.value)}
               placeholder="One-line description"
             />
-            <Textarea
-              value={rules}
-              onChange={(event) => setRules(event.target.value)}
-              placeholder={
-                "One rule per line:\nOnly A+ setups\nRisk max 1R\nNo entries after 11:30"
-              }
-              className="min-h-32"
-            />
+            <div className="space-y-1">
+              <div className="flex items-center justify-between">
+                <label className="text-xs text-muted-foreground">Rules (one per line)</label>
+                <VoiceNote targetRef={rulesRef} onText={(val) => setRules(val)} />
+              </div>
+              <Textarea
+                ref={rulesRef}
+                value={rules}
+                onChange={(event) => setRules(event.target.value)}
+                placeholder={
+                  "One rule per line:\nOnly A+ setups\nRisk max 1R\nNo entries after 11:30"
+                }
+                className="min-h-32"
+              />
+            </div>
             <Button onClick={create} disabled={!name}>
               Create
             </Button>

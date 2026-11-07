@@ -23,9 +23,19 @@ export function readAiRequest(value: unknown, field: "question" | "date") {
   requireValue(value && typeof value === "object" && !Array.isArray(value), "Invalid AI request");
   const body = value as Record<string, unknown>;
   requireValue(
-    Object.keys(body).every((key) => [field, "filters", "timeZone"].includes(key)),
+    Object.keys(body).every((key) =>
+      [field, "filters", "timeZone", "preview", "snapshotFingerprint"].includes(key),
+    ),
     "Unknown AI request field",
   );
+  if (body.preview !== undefined)
+    requireValue(typeof body.preview === "boolean", "preview must be a boolean");
+  if (body.snapshotFingerprint !== undefined)
+    requireValue(
+      typeof body.snapshotFingerprint === "string" &&
+        /^[a-f0-9]{16}$/i.test(body.snapshotFingerprint),
+      "snapshotFingerprint must be a 16-character hex string",
+    );
   requireValue(
     body.filters && typeof body.filters === "object" && !Array.isArray(body.filters),
     "filters is required (use {} for all trades)",
@@ -121,6 +131,9 @@ export function readAiRequest(value: unknown, field: "question" | "date") {
     accounts: selectedAccounts,
     question: typeof body.question === "string" ? body.question.trim() : "",
     date: date as string | undefined,
+    preview: Boolean(body.preview),
+    snapshotFingerprint:
+      typeof body.snapshotFingerprint === "string" ? body.snapshotFingerprint : undefined,
     scope: { label: label(true), timeZone },
     context: `Journal scope: ${label(false)}. Only the filtered data below is available. Do not infer results for excluded accounts or dates.`,
   };

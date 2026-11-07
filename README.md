@@ -1,3 +1,17 @@
+# Sumi — local macOS trading journal
+
+This checkout is an independent desktop adaptation of LuxAlgo's Trade Journal with a Kami-inspired theme. **[Desktop build, launch, and data instructions →](desktop/README.md)**
+
+```sh
+pnpm install --frozen-lockfile
+pnpm desktop:build
+pnpm desktop:open
+```
+
+The application is created at `dist/Sumi.app`. It bundles its own backend and Node runtime; you do not need to run `pnpm dev` or open a browser to use it. The original upstream documentation follows below for feature reference. Sumi is not affiliated with or endorsed by LuxAlgo or Tw93.
+
+---
+
 <div align="center">
 
 <img src=".github/assets/banner.svg" alt="Trade Journal: the open-source trade journal" width="100%" />

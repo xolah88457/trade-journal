@@ -18,7 +18,6 @@
     "@luxalgo/broker-sdk": "0.6.0",
     "@luxalgo/journal-core": "workspace:*",
     "@luxalgo/journal-importers": "workspace:*",
-    "@luxalgo/vela": "^0.6.8",
     "@pdf-lib/fontkit": "^1.1.1",
     "@radix-ui/react-checkbox": "^1.3.11",
     "@radix-ui/react-dialog": "^1.1.23",
@@ -45,7 +44,8 @@
     "react-markdown": "^10.1.0",
     "recharts": "^3.10.1",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "transcribe-cpp": "0.4.0"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.3.3",

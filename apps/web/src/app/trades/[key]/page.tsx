@@ -1,18 +1,15 @@
 "use client";
-import { AiNotice } from "@/components/ai-notice";
 import { Checkbox } from "@/components/ui/checkbox";
 
-import { use, useEffect, useMemo, useRef, useState } from "react";
-import { Sparkles } from "lucide-react";
+import { use, useRef, useState } from "react";
 import { netReturnOnEntry } from "@luxalgo/journal-core";
 import { FilterBar } from "@/components/filter-bar";
 import { Pnl } from "@/components/pnl";
 import { MonetaryValue, MonetaryField } from "@/components/privacy";
-import { TradeMarketData } from "@/components/trade-market-data";
+import { Attachments } from "@/components/attachments";
 import { TradeNavigation } from "@/components/trade-navigation";
 import { TradeRating } from "@/components/trade-rating";
 import { EquityArea } from "@/components/charts/equity-area";
-import { VoiceNote } from "@/components/voice-note";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -33,8 +30,9 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { TradeOutcomeControls } from "@/components/trade-outcome-controls";
+import { TradeCritiqueSection } from "@/components/ai-critique";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
-import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { RuleChecklist } from "@/components/rule-checklist";
 import { useAutosave } from "@/lib/use-autosave";
@@ -42,6 +40,7 @@ import { postJson, useApi } from "@/lib/use-api";
 import { fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
 import { tradeKeyFromSegment } from "@/lib/trade-links";
 import { formatTimestamp } from "@/lib/timezone";
+import { hitTradeTarget } from "@/lib/trade-targets";
 
 interface TradeDetail {
   riskAmount: number | null;
@@ -58,6 +57,7 @@ interface TradeDetail {
   openedAt: string;
   closedAt: string | null;
   quantity: number;
+  openQuantity: number;
   avgEntry: number;
   avgExit: number | null;
   grossPnl: number;
@@ -96,9 +96,11 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
     executions: ExecutionRow[];
     timeZone: string;
   }>(`/api/trades/${encodeURIComponent(tradeKey)}`);
-  const [aiBusy, setAiBusy] = useState(false);
-  const [critique, setCritique] = useState<string | null>(null);
-  const [aiError, setAiError] = useState<string | null>(null);
+  const { data: accountsData } = useApi<{
+    accounts: { id: string; name: string; kind: string }[];
+  }>("/api/accounts");
+  const isManualAccount =
+    accountsData?.accounts.find((a) => a.id === data?.trade.accountId)?.kind === "manual";
 
   if (!data) {
     return (
@@ -145,21 +147,6 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
       }));
   })();
 
-  const askCritique = async () => {
-    setAiBusy(true);
-    setAiError(null);
-    try {
-      const result = await postJson<{ critique: string }>("/api/ai/critique", { key: tradeKey });
-      setCritique(result.critique);
-    } catch (error) {
-      setAiError(error instanceof Error ? error.message : "AI critique failed");
-    } finally {
-      setAiBusy(false);
-    }
-  };
-
-  const riskAmount = trade.riskAmount;
-
   return (
     <div>
       <FilterBar title={`${trade.symbol} · ${trade.direction.toUpperCase()}`} />
@@ -202,7 +189,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
             </CardContent>
           </Card>
 
-          <TradeMarketData trade={trade} executions={executions} />
+          <Attachments type="trade" id={trade.key} variant="trade-gallery" />
 
           {runningPnl.length > 1 && (
             <Card>
@@ -215,6 +202,8 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
               </CardContent>
             </Card>
           )}
+
+          {isManualAccount && <TradeOutcomeControls trade={trade} onClosed={refresh} />}
 
           <Card>
             <CardHeader>
@@ -263,29 +252,7 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
         <div className="min-w-0 space-y-3">
           <AnnotationsCard key={trade.key} trade={trade} onPatch={patch} />
           <RuleChecklist tradeKey={trade.key} playbookId={trade.playbookId} />
-          <Card>
-            <CardHeader className="flex-row items-center justify-between">
-              <CardTitle>AI review</CardTitle>
-              <Button variant="outline" size="sm" onClick={askCritique} disabled={aiBusy}>
-                <Sparkles />
-                {aiBusy ? "Thinking…" : "Critique this trade"}
-              </Button>
-            </CardHeader>
-            {aiError && (
-              <CardContent>
-                <AiNotice
-                  error={aiError}
-                  onRetry={() => void askCritique()}
-                  onDismiss={() => setAiError(null)}
-                />
-              </CardContent>
-            )}
-            {critique && (
-              <CardContent>
-                <p className="whitespace-pre-wrap text-sm leading-relaxed">{critique}</p>
-              </CardContent>
-            )}
-          </Card>
+          <TradeCritiqueSection tradeKey={trade.key} />
         </div>
       </div>
     </div>
@@ -326,6 +293,14 @@ function AnnotationsCard({
   );
   const [stopLoss, setStopLoss] = useState(trade.stopLoss?.toString() ?? "");
   const [profitTarget, setProfitTarget] = useState(trade.profitTarget?.toString() ?? "");
+
+  // Determine hit state for visual indication:
+  // If trade is closed with an exit and had both plans, grey out the unhit target
+  const hitTarget = hitTradeTarget(trade.status, trade.avgExit, trade.stopLoss, trade.profitTarget);
+  const isSlHit = hitTarget === "stop_loss";
+  const isTpHit = hitTarget === "profit_target";
+  const slGreyed = isTpHit;
+  const tpGreyed = isSlHit;
   const { data: playbookData } = useApi<{ playbooks: { id: string; name: string }[] }>(
     "/api/playbooks",
   );
@@ -359,8 +334,10 @@ function AnnotationsCard({
         </div>
 
         <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="text-xs text-muted-foreground">Stop loss</label>
+          <div className={slGreyed ? "opacity-50 transition-opacity" : "transition-opacity"}>
+            <label className="text-xs text-muted-foreground">
+              Stop loss {isSlHit ? "(Hit)" : ""}
+            </label>
             <MonetaryField>
               <Input
                 value={stopLoss}
@@ -375,8 +352,10 @@ function AnnotationsCard({
               />
             </MonetaryField>
           </div>
-          <div>
-            <label className="text-xs text-muted-foreground">Profit target</label>
+          <div className={tpGreyed ? "opacity-50 transition-opacity" : "transition-opacity"}>
+            <label className="text-xs text-muted-foreground">
+              Profit target {isTpHit ? "(Hit)" : ""}
+            </label>
             <MonetaryField>
               <Input
                 value={profitTarget}
@@ -439,14 +418,6 @@ function AnnotationsCard({
         <div>
           <div className="mb-1 flex items-center justify-between">
             <label className="text-xs text-muted-foreground">Notes</label>
-            <VoiceNote
-              onPrepare={() => noteEditor.current?.focus()}
-              onText={(text) => {
-                const next = notes ? `${notes} ${text}` : text;
-                setNotes(next);
-                debounced({ notes: next });
-              }}
-            />
           </div>
           <RichEditor
             editorRef={noteEditor}
@@ -478,7 +449,6 @@ function AnnotationsCard({
               ],
             }}
           />
-          <Attachments type="trade" id={trade.key} />
         </div>
       </CardContent>
     </Card>

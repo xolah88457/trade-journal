@@ -125,6 +125,14 @@ export const aiProviderConfigured = (provider: AiProvider): boolean =>
     ? Boolean(getCompatibleBaseUrl() && getAiModel(provider))
     : getAiKey(provider) !== null;
 
+export const getAiInstructions = (): string => getSetting("aiInstructions") ?? "";
+
+export const setAiInstructions = (instructions: string | null): void => {
+  const trimmed = instructions?.trim() ?? "";
+  if (!trimmed) deleteSetting("aiInstructions");
+  else setSetting("aiInstructions", trimmed);
+};
+
 export const getAiSettings = (): AiSettingsPayload => {
   const aiProvider = getAiProvider();
   const connection = (provider: AiProvider): AiConnection => ({
@@ -147,5 +155,6 @@ export const getAiSettings = (): AiSettingsPayload => {
     aiConfigured: aiConnections[aiProvider].configured,
     aiModel: aiConnections[aiProvider].model,
     aiConnections,
+    aiInstructions: getAiInstructions(),
   };
 };

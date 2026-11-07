@@ -4,6 +4,7 @@ packages:
 allowBuilds:
   esbuild: true
   better-sqlite3: true
+  koffi: true
 ignoredOptionalDependencies:
   - sharp
 minimumReleaseAgeExclude:

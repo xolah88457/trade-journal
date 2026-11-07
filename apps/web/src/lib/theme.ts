@@ -1,8 +1,7 @@
 export type Theme = "dark" | "light";
 export const THEME_KEY = "journal-theme-v1";
 export const themePreference = (value: string | null): Theme =>
-  value === "light" ? "light" : "dark";
+  value === "dark" ? "dark" : "light";
 
-// Runs in <head>, before the page paints. A saved light theme must not flash dark
-// while React hydrates. No OS preference override: dark is the product default.
-export const THEME_INIT_SCRIPT = `(()=>{let theme="dark";try{theme=localStorage.getItem(${JSON.stringify(THEME_KEY)})==="light"?"light":"dark"}catch{}document.documentElement.classList.toggle("dark",theme==="dark")})();`;
+// Apply saved preferences before paint; new journals start on Kami's parchment.
+export const THEME_INIT_SCRIPT = `(()=>{let theme="light";try{theme=localStorage.getItem(${JSON.stringify(THEME_KEY)})==="dark"?"dark":"light"}catch{}document.documentElement.classList.toggle("dark",theme==="dark")})();`;

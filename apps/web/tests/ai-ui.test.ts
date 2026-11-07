@@ -48,6 +48,7 @@ vi.mock("@/components/voice-note", () => ({ VoiceNote: () => null }));
 vi.mock("@/components/attachments", () => ({ Attachments: () => null }));
 vi.mock("@/components/review-export", () => ({ ReviewExport: () => null }));
 const { AskJournal } = await import("../src/components/ask-journal");
+const { TradeCritiqueSection } = await import("../src/components/ai-critique");
 const { default: JournalDayPage } = await import("../src/app/journal/[date]/page");
 
 let container: HTMLDivElement;
@@ -78,7 +79,7 @@ const renderAsk = () =>
   act(async () => root.render(createElement(TooltipProvider, null, createElement(AskJournal))));
 const click = (text: string) =>
   act(async () => {
-    const button = Array.from(container.querySelectorAll("button")).find((b) =>
+    const button = Array.from(document.querySelectorAll("button")).find((b) =>
       b.textContent?.includes(text),
     );
     expect(button, text).toBeTruthy();
@@ -89,6 +90,25 @@ const reply = (answer: string) => ({
   answer,
   scope: { label: "Account A · UTC", timeZone: "UTC" },
 });
+const previewReply = {
+  preview: {
+    snapshotFingerprint: "0123456789abcdef",
+    system: "You are the reflection layer...",
+    customInstructions: "",
+    effectiveSystemPrompt: "You are the reflection layer...",
+    taskPrompt: "Task prompt",
+    journalContext: "Journal context",
+    fullPrompt: "Full prompt",
+    provider: "anthropic" as const,
+    providerName: "Anthropic",
+    model: "claude-opus-5",
+    isLocal: false,
+    endpointUrl: null,
+    networkPrivacy: "Remote cloud: Requests are sent directly to Anthropic.",
+    scopeLabel: "Account A · UTC",
+  },
+  scope: { label: "Account A · UTC", timeZone: "UTC" },
+};
 
 it("sends the full current filter snapshot and displays the server-confirmed scope", async () => {
   state.filters = {
@@ -98,13 +118,25 @@ it("sends the full current filter snapshot and displays the server-confirmed sco
     symbol: "AAPL",
     reviewed: "yes",
   };
-  state.post.mockResolvedValue(reply("Scoped answer"));
+  state.post.mockResolvedValueOnce(previewReply).mockResolvedValueOnce(reply("Scoped answer"));
   await renderAsk();
   await click(suggestion);
   expect(state.post).toHaveBeenCalledWith("/api/ai/ask", {
     question: suggestion,
     filters: state.filters,
     timeZone: "UTC",
+    preview: true,
+  });
+  expect(document.body.textContent).toContain("Provider: Anthropic");
+  expect(document.body.textContent).toContain(
+    "Remote cloud: Requests are sent directly to Anthropic.",
+  );
+  await click("Send to Anthropic");
+  expect(state.post).toHaveBeenCalledWith("/api/ai/ask", {
+    question: suggestion,
+    filters: state.filters,
+    timeZone: "UTC",
+    snapshotFingerprint: "0123456789abcdef",
   });
   expect(container.textContent).toContain("Scoped answer");
   expect(container.textContent).toContain("Account A · UTC");
@@ -113,12 +145,26 @@ it("sends the full current filter snapshot and displays the server-confirmed sco
   expect(container.textContent).not.toContain("Scoped answer");
 });
 
+it("cancels preview confirm dialog without sending request", async () => {
+  state.post.mockResolvedValueOnce(previewReply);
+  await renderAsk();
+  await click(suggestion);
+  expect(state.post).toHaveBeenCalledTimes(1);
+  expect(document.body.textContent).toContain("Ask Journal Preview");
+  await click("Cancel");
+  expect(document.body.textContent).not.toContain("Ask Journal Preview");
+  expect(state.post).toHaveBeenCalledTimes(1);
+});
+
 it.each(["accounts", "symbol", "timezone"])(
   "discards late answers after changing %s, including returning to A",
   async (change) => {
     const old = deferred(),
       current = deferred();
-    state.post.mockReturnValueOnce(old.promise).mockReturnValueOnce(current.promise);
+    state.post
+      .mockReturnValueOnce(old.promise)
+      .mockResolvedValueOnce(previewReply)
+      .mockReturnValueOnce(current.promise);
     await renderAsk();
     await click(suggestion);
     if (change === "accounts") state.filters = { accounts: "b" };
@@ -129,8 +175,9 @@ it.each(["accounts", "symbol", "timezone"])(
     state.timeZone = "UTC";
     await renderAsk();
     await click(suggestion);
-    await act(async () => old.resolve(reply("OLD RESULT")));
+    await act(async () => old.resolve(previewReply));
     expect(container.textContent).not.toContain("OLD RESULT");
+    await click("Send to Anthropic");
     expect(container.textContent).toContain("Thinking");
     await act(async () => current.resolve(reply("CURRENT RESULT")));
     expect(container.textContent).toContain("CURRENT RESULT");
@@ -142,6 +189,7 @@ it("ignores old errors and allows retry after a current failure", async () => {
   state.post
     .mockReturnValueOnce(old.promise)
     .mockRejectedValueOnce(new Error("Temporary failure"))
+    .mockResolvedValueOnce(previewReply)
     .mockResolvedValueOnce(reply("Retry answer"));
   await renderAsk();
   await click(suggestion);
@@ -152,6 +200,7 @@ it("ignores old errors and allows retry after a current failure", async () => {
   await click(suggestion);
   expect(container.textContent).toContain("Couldn’t complete the AI request");
   await click("Try again");
+  await click("Send to Anthropic");
   expect(container.textContent).toContain("Retry answer");
 });
 
@@ -176,13 +225,21 @@ const recapReply = {
 
 it("appends a labeled recap to edits made while generation is pending", async () => {
   const pending = deferred();
-  state.post.mockReturnValue(pending.promise);
+  state.post.mockResolvedValueOnce(previewReply).mockReturnValueOnce(pending.promise);
   await renderDay();
   await click("AI recap");
   expect(state.post).toHaveBeenCalledWith("/api/ai/recap", {
     date: "2026-09-15",
     filters: { accounts: "a" },
     timeZone: "UTC",
+    preview: true,
+  });
+  await click("Send to Anthropic");
+  expect(state.post).toHaveBeenCalledWith("/api/ai/recap", {
+    date: "2026-09-15",
+    filters: { accounts: "a" },
+    timeZone: "UTC",
+    snapshotFingerprint: "0123456789abcdef",
   });
   await act(async () => {
     const editor = container.querySelector("textarea")!;
@@ -201,9 +258,10 @@ it.each(["account", "date", "unmount"])(
   "does not append a delayed recap after %s changes",
   async (change) => {
     const pending = deferred();
-    state.post.mockReturnValue(pending.promise);
+    state.post.mockResolvedValueOnce(previewReply).mockReturnValueOnce(pending.promise);
     await renderDay();
     await click("AI recap");
+    await click("Send to Anthropic");
     if (change === "account") {
       state.filters = { accounts: "b" };
       await renderDay();
@@ -216,3 +274,44 @@ it.each(["account", "date", "unmount"])(
     expect(container.textContent).not.toContain("Generated recap");
   },
 );
+
+it("displays drift error and Refresh preview button inside TradeCritiqueSection modal on failure", async () => {
+  const driftMessage =
+    "Journal context, personal instructions, or AI settings changed since preview was generated. Please review the updated preview before sending.";
+
+  state.post
+    .mockResolvedValueOnce(previewReply)
+    .mockRejectedValueOnce(new Error(driftMessage))
+    .mockResolvedValueOnce(previewReply);
+
+  await act(async () =>
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(TradeCritiqueSection, { tradeKey: "trade_test_key" }),
+      ),
+    ),
+  );
+
+  await click("Critique this trade");
+  expect(state.post).toHaveBeenCalledWith("/api/ai/critique", {
+    key: "trade_test_key",
+    preview: true,
+  });
+  expect(document.body.textContent).toContain("Trade Critique Preview");
+
+  await click("Send to Anthropic");
+  expect(state.post).toHaveBeenCalledWith("/api/ai/critique", {
+    key: "trade_test_key",
+    snapshotFingerprint: previewReply.preview.snapshotFingerprint,
+  });
+
+  expect(document.body.textContent).toContain("Trade Critique Preview");
+  expect(document.body.textContent).toContain(driftMessage);
+  expect(document.body.textContent).toContain("Refresh preview snapshot");
+
+  await click("Refresh preview snapshot");
+  expect(state.post).toHaveBeenCalledTimes(3);
+  expect(document.body.textContent).toContain("Trade Critique Preview");
+});

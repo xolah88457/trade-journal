@@ -1,5 +1,5 @@
 "use client";
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { Button } from "./ui/button";
 import { Input } from "./ui/input";
 import { OptionSelect } from "./ui/option-select";
@@ -7,6 +7,7 @@ import { DatePicker } from "./ui/date-picker";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "./ui/dialog";
 import { Field, fieldClass } from "./filter-fields";
 import { Attachments } from "./attachments";
+import { VoiceNote } from "./voice-note";
 import { useApi, postJson } from "@/lib/use-api";
 import { decodeImportFile } from "@/lib/decode-import";
 import {
@@ -176,6 +177,7 @@ function AccountForm({
         }
       : blankAccount(data.today, modal.parent),
   );
+  const notesRef = useRef<HTMLTextAreaElement>(null);
   const { data: journal } = useApi<{ accounts: { id: string; name: string }[] }>(
     "/api/accounts?summary=1",
   );
@@ -322,13 +324,18 @@ function AccountForm({
           Clear reminder
         </Button>
       </details>
-      <Field label="Notes / rules / breach reason">
+      <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between">
+          <span>Notes / rules / breach reason</span>
+          <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+        </div>
         <textarea
-          className={`${fieldClass} h-24 py-2`}
+          ref={notesRef}
+          className={`${fieldClass} h-24 py-2 text-foreground`}
           value={values.notes}
           onChange={(e) => set({ ...values, notes: e.target.value })}
         />
-      </Field>
+      </div>
       {old && input("reason", "Reason for change", true)}
     </Form>
   );
@@ -361,6 +368,7 @@ function EntryForm({
     notes: old?.notes ?? "",
     reason: "",
   });
+  const notesRef = useRef<HTMLTextAreaElement>(null);
   const kind = old?.kind ?? modal.type,
     payout = kind === "payout",
     refund = kind === "refund";
@@ -485,13 +493,18 @@ function EntryForm({
         )}
         {input("reference", "Invoice / payment reference")}
       </div>
-      <Field label="Notes">
+      <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between">
+          <span>Notes</span>
+          <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+        </div>
         <textarea
-          className={`${fieldClass} h-20 py-2`}
+          ref={notesRef}
+          className={`${fieldClass} h-20 py-2 text-foreground`}
           value={values.notes}
           onChange={(e) => set({ ...values, notes: e.target.value })}
         />
-      </Field>
+      </div>
       {refund && (
         <p className="text-xs text-muted-foreground">
           Linked expense: {values.parentId}. Refunds reduce costs and are shown separately from
@@ -517,6 +530,7 @@ function ReceiptForm({
     reference: "",
     notes: "",
   });
+  const notesRef = useRef<HTMLTextAreaElement>(null);
   const { busy, error, save } = useSave(close, refresh);
   return (
     <Form
@@ -563,13 +577,18 @@ function ReceiptForm({
           />
         </Field>
       </div>
-      <Field label="Notes">
+      <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
+        <div className="flex items-center justify-between">
+          <span>Notes</span>
+          <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+        </div>
         <textarea
-          className={`${fieldClass} h-20 py-2`}
+          ref={notesRef}
+          className={`${fieldClass} h-20 py-2 text-foreground`}
           value={values.notes}
           onChange={(e) => set({ ...values, notes: e.target.value })}
         />
-      </Field>
+      </div>
       <p className="text-xs text-muted-foreground">
         Keep the request open for partial payments. Once the final payment arrives, edit the payout
         status to Completed; a difference from the expected amount remains visible.

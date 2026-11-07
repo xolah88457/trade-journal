@@ -126,7 +126,10 @@ const finalizeCycle = (
 
 const compareNumbers = (a: number, b: number): number => (a < b ? -1 : a > b ? 1 : 0);
 
-/** Fills without an import order sort after every ordered fill at the same instant. */
+/** Fills without an import order sort after every ordered fill at the same instant.
+ * For manual batches where order is explicitly provided (e.g. entry=0, exit=1),
+ * deterministic importMetadata.order preserves entry-before-exit ordering at the same timestamp.
+ */
 const importOrderOf = (execution: Execution): number =>
   execution.importMetadata?.order ?? Number.POSITIVE_INFINITY;
 

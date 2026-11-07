@@ -4,7 +4,6 @@ import { OptionSelect } from "@/components/ui/option-select";
 import { Suspense, useRef, useState } from "react";
 import { ArrowLeft, FolderPlus, Plus, Search, Trash2 } from "lucide-react";
 import { FilterBar } from "@/components/filter-bar";
-import { VoiceNote } from "@/components/voice-note";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -385,14 +384,6 @@ function NoteEditor({ note, onChanged }: { note: NoteRow; onChanged: () => void 
           >
             {mode === "preview" ? "Edit" : "Preview"}
           </Button>
-          <VoiceNote
-            onPrepare={() => editor.current?.focus()}
-            onText={(text) => {
-              const next = content ? `${content} ${text}` : text;
-              setContent(next);
-              save(title, next);
-            }}
-          />
           <Button
             variant="ghost"
             size="sm"

@@ -4,45 +4,44 @@
 @custom-variant dark (&:is(.dark *));
 
 /*
- * Dark-first trading terminal. P&L green/red follows the trader convention and
+ * Kami-inspired paper and ink. P&L green/red follows the trader convention and
  * is NEVER load-bearing: every value is signed text, bars anchor to zero,
  * win/loss ships as text chips, markers differ by shape — color only reinforces.
  */
 :root {
   color-scheme: light;
-  --background: #f9f9f7;
-  --foreground: #0b0b0b;
-  --card: #fcfcfb;
-  --card-foreground: #0b0b0b;
-  --popover: #fcfcfb;
-  --popover-foreground: #0b0b0b;
-  --primary: #16161a;
-  --primary-foreground: #fafafa;
-  --secondary: #f0efec;
-  --secondary-foreground: #16161a;
-  --muted: #f0efec;
-  --muted-foreground: #52514e;
-  --accent: #f0efec;
-  --accent-foreground: #16161a;
+  --background: #f5f4ed;
+  --foreground: #141413;
+  --card: #faf9f5;
+  --card-foreground: #141413;
+  --popover: #faf9f5;
+  --popover-foreground: #141413;
+  --primary: #1b365d;
+  --primary-foreground: #faf9f5;
+  --secondary: #e8e6dc;
+  --secondary-foreground: #3d3d3a;
+  --muted: #eeece3;
+  --muted-foreground: #6b6a64;
+  --accent: #e8e6dc;
+  --accent-foreground: #1b365d;
   --destructive: #d03b3b;
   --destructive-foreground: #fafafa;
-  --border: #e1e0d9;
-  --input: #e1e0d9;
-  --ring: #0b7cbd;
-  --radius: 0.5rem;
+  --border: #dedbcf;
+  --input: #dedbcf;
+  --ring: #2d5a8a;
+  --radius: 0.75rem;
 
-  /* Brand accent (LuxAlgo blue): never the sole carrier of information. */
-  --brand: #0b7cbd;
+  /* Kami's navy accent, never the sole carrier of information. */
+  --brand: #1b365d;
 
-  /* viz tokens (validated: see docs/design.md) */
-  --viz-surface: #fcfcfb;
-  --ink-muted: #686760;
-  --gridline: #e1e0d9;
-  --baseline: #c3c2b7;
+  --viz-surface: #faf9f5;
+  --ink-muted: #6b6a64;
+  --gridline: #e8e6dc;
+  --baseline: #c6c2b5;
   --profit: #006300;
   --profit-fill: #0ca30c;
-  --loss: #d03b3b;
-  --neutral-mid: #f0efec;
+  --loss: #c33535;
+  --neutral-mid: #e8e6dc;
   --series-1: #2a78d6;
   --series-2: #eb6834;
   --series-3: #1baf7a;
@@ -55,35 +54,35 @@
 
 .dark {
   color-scheme: dark;
-  --background: #08080a;
-  --foreground: #f4f4f4;
-  --card: #101013;
-  --card-foreground: #f4f4f4;
-  --popover: #131317;
-  --popover-foreground: #f4f4f4;
-  --primary: #ececec;
-  --primary-foreground: #131316;
-  --secondary: #1b1b20;
-  --secondary-foreground: #f4f4f4;
-  --muted: #17171b;
-  --muted-foreground: #9c9ca6;
-  --accent: #1b1b20;
-  --accent-foreground: #f4f4f4;
+  --background: #141413;
+  --foreground: #f5f4ed;
+  --card: #20201e;
+  --card-foreground: #f5f4ed;
+  --popover: #272725;
+  --popover-foreground: #f5f4ed;
+  --primary: #b0c9e5;
+  --primary-foreground: #141413;
+  --secondary: #30302e;
+  --secondary-foreground: #f5f4ed;
+  --muted: #272725;
+  --muted-foreground: #b0aea4;
+  --accent: #30302e;
+  --accent-foreground: #d1e1f2;
   --destructive: #d03b3b;
   --destructive-foreground: #fafafa;
-  --border: #222228;
-  --input: #26262c;
-  --ring: #1197e2;
+  --border: #3d3d3a;
+  --input: #4b4b46;
+  --ring: #91b8df;
 
-  --brand: #1197e2;
+  --brand: #91b8df;
 
-  --viz-surface: #101013;
-  --ink-muted: #8b8b95;
-  --gridline: #1e1e24;
-  --baseline: #30303a;
+  --viz-surface: #20201e;
+  --ink-muted: #aaa89e;
+  --gridline: #30302e;
+  --baseline: #504e49;
   --profit: #0ca30c;
   --profit-fill: #0ca30c;
-  --loss: #d03b3b;
+  --loss: #ee7777;
   --neutral-mid: #383835;
   --series-1: #3987e5;
   --series-2: #d95926;
@@ -122,7 +121,8 @@
   --radius-md: calc(var(--radius) - 2px);
   --radius-lg: var(--radius);
   --radius-xl: calc(var(--radius) + 4px);
-  --font-sans: var(--font-sans, system-ui, -apple-system, "Segoe UI", sans-serif);
+  --font-sans: Charter, "Bitstream Charter", Georgia, Palatino, serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
 @layer base {
@@ -137,16 +137,40 @@
   }
 }
 
-/* Numbers that must align vertically (tables, axis ticks). */
+/* Keep financial figures crisp while the journal uses Kami's editorial type. */
 .tnum {
+  font-family: var(--font-mono);
   font-variant-numeric: tabular-nums;
+  letter-spacing: -0.035em;
 }
 
-/* Hairline top sheen that lifts cards off a near-black canvas. */
 .card-sheen {
-  box-shadow:
-    inset 0 1px 0 rgb(255 255 255 / 0.04),
-    0 1px 2px rgb(0 0 0 / 0.25);
+  box-shadow: 0 2px 8px rgb(20 20 19 / 0.035);
+}
+.dark .card-sheen {
+  box-shadow: inset 0 1px 0 rgb(245 244 237 / 0.035);
+}
+.journal-sidebar-brand-label {
+  font-family: Charter, Georgia, serif;
+  font-size: 1.2rem;
+  font-weight: 500;
+  letter-spacing: -0.04em;
+}
+.journal-sidebar-nav-link[aria-current="page"] {
+  box-shadow: inset 2px 0 0 var(--brand);
+}
+h1,
+h2,
+h3 {
+  text-wrap: balance;
+}
+button,
+input,
+select,
+textarea,
+[role="tab"],
+[role="menuitem"] {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 
 /* The shell keeps navigation and privacy within reach at every window size. */

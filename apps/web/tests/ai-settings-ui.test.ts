@@ -2,6 +2,7 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { act, createElement } from "react";
 import { createRoot, type Root } from "react-dom/client";
+import { TooltipProvider } from "../src/components/ui/tooltip";
 import type { AiConnection, AiProvider, AiSettingsPayload } from "../src/lib/ai-settings";
 const state = vi.hoisted(() => ({
   post: vi.fn(),
@@ -25,6 +26,7 @@ const connection = (model: string, extra: Partial<AiConnection> = {}): AiConnect
 const settings = (
   aiProvider: AiProvider,
   connections: Partial<Record<AiProvider, AiConnection>> = {},
+  aiInstructions = "",
 ): AiSettingsPayload => {
   const aiConnections = {
     anthropic: connection("claude-opus-5"),
@@ -37,6 +39,7 @@ const settings = (
     aiConfigured: aiConnections[aiProvider].configured,
     aiModel: aiConnections[aiProvider].model,
     aiConnections,
+    aiInstructions,
   };
 };
 beforeEach(() => {
@@ -53,13 +56,20 @@ afterEach(async () => {
 });
 const render = (data: AiSettingsPayload) => {
   state.data = data;
-  return act(async () => root.render(createElement(AiSettings)));
+  return act(async () =>
+    root.render(createElement(TooltipProvider, null, createElement(AiSettings))),
+  );
 };
-const field = (id: string) => container.querySelector<HTMLInputElement>(`#${id}`);
+const field = (id: string) =>
+  container.querySelector<HTMLInputElement | HTMLTextAreaElement>(`#${id}`);
 const type = (id: string, value: string) =>
   act(async () => {
     const input = field(id)!;
-    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, value);
+    const proto =
+      input instanceof HTMLTextAreaElement
+        ? HTMLTextAreaElement.prototype
+        : HTMLInputElement.prototype;
+    Object.getOwnPropertyDescriptor(proto, "value")!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
 const saveButton = () =>
@@ -82,6 +92,7 @@ it("saves an OpenAI-compatible server with a model and no key", async () => {
       aiProvider: "compatible",
       aiModel: "llama3.1:8b",
       compatibleBaseUrl: "http://localhost:11434/v1",
+      aiInstructions: "",
     },
     "PATCH",
   );
@@ -113,5 +124,33 @@ it("keeps hosted providers free of a server URL", async () => {
   );
   expect(field("ai-base-url")).toBeNull();
   await act(async () => saveButton().click());
-  expect(state.post.mock.calls[0]![1]).toEqual({ aiProvider: "openai", aiModel: "gpt-4.1-mini" });
+  expect(state.post.mock.calls[0]![1]).toEqual({
+    aiProvider: "openai",
+    aiModel: "gpt-4.1-mini",
+    aiInstructions: "",
+  });
+});
+
+it("loads, edits and saves personal trading instructions", async () => {
+  await render(
+    settings(
+      "openai",
+      { openai: connection("gpt-4.1-mini", { configured: true, source: "saved" }) },
+      "Risk max 1% per setup",
+    ),
+  );
+  expect(field("ai-instructions")!.value).toBe("Risk max 1% per setup");
+  expect(container.textContent).toContain("21/2000");
+  await type("ai-instructions", "Focus on patience and discipline");
+  expect(container.textContent).toContain("32/2000");
+  await act(async () => saveButton().click());
+  expect(state.post).toHaveBeenCalledWith(
+    "/api/settings",
+    {
+      aiProvider: "openai",
+      aiModel: "gpt-4.1-mini",
+      aiInstructions: "Focus on patience and discipline",
+    },
+    "PATCH",
+  );
 });

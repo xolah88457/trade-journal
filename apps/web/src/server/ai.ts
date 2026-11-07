@@ -8,8 +8,10 @@ import {
   getAiModel,
   getAiProvider,
   getCompatibleBaseUrl,
+  getAiInstructions,
 } from "./settings";
 import { AI_PROVIDER_NAMES, type AiProvider } from "@/lib/ai-settings";
+import { BASE_AI_SYSTEM, buildAiSystemPrompt } from "./ai-prompt";
 
 /**
  * BYO-key AI. Self-hosted means YOUR key on YOUR box: the key is read from the
@@ -17,13 +19,6 @@ import { AI_PROVIDER_NAMES, type AiProvider } from "@/lib/ai-settings";
  * Requests go straight from this server to the selected provider.
  */
 export const aiConfigured = (): boolean => aiProviderConfigured(getAiProvider());
-
-const SYSTEM = `You are the reflection layer of a trader's journal.
-You see only the trader's own recorded data — trades, stats, and notes. Ground every
-statement in those numbers; never invent trades, prices, or market context you weren't given.
-Be direct and specific like a good trading coach: name the behavior, cite the numbers,
-say what to keep and what to fix. No platitudes, no disclaimers about trading being risky —
-the trader knows. Keep it tight.`;
 
 const languageModel = (provider: AiProvider, apiKey: string | null, model: string) => {
   if (provider === "compatible")
@@ -39,7 +34,11 @@ const languageModel = (provider: AiProvider, apiKey: string | null, model: strin
     : createAnthropic({ apiKey: apiKey! })(model);
 };
 
-export const runAi = async (prompt: string, maxOutputTokens = 1200): Promise<string> => {
+export const runAi = async (
+  prompt: string,
+  maxOutputTokens = 1200,
+  systemPrompt?: string,
+): Promise<string> => {
   const provider = getAiProvider();
   if (!aiProviderConfigured(provider)) {
     throw new Error(
@@ -48,11 +47,12 @@ export const runAi = async (prompt: string, maxOutputTokens = 1200): Promise<str
         : `AI is not configured — add your ${AI_PROVIDER_NAMES[provider]} API key in Settings.`,
     );
   }
+  const system = systemPrompt ?? buildAiSystemPrompt(getAiInstructions());
   try {
     const result = await generateText({
       model: languageModel(provider, getAiKey(provider), getAiModel(provider)),
       ...(provider === "openai" ? { providerOptions: { openai: { store: false } } } : {}),
-      system: SYSTEM,
+      system,
       prompt,
       maxOutputTokens,
     });

@@ -10,12 +10,20 @@ import {
   aiModelSetting,
   getAiProvider,
   getAiSettings,
+  getAiInstructions,
+  setAiInstructions,
   normalizeAiBaseUrl,
   setAiKey,
   setCompatibleBaseUrl,
   setSetting,
 } from "@/server/settings";
-import { AI_PROVIDERS, AI_PROVIDER_NAMES, isAiProvider, type AiProvider } from "@/lib/ai-settings";
+import {
+  AI_PROVIDERS,
+  AI_PROVIDER_NAMES,
+  AI_INSTRUCTIONS_MAX_LENGTH,
+  isAiProvider,
+  type AiProvider,
+} from "@/lib/ai-settings";
 import { isTimeZone } from "@/lib/timezone";
 import { parseCurrencyConversion, type CurrencyConversion } from "@/lib/currencies";
 
@@ -41,6 +49,7 @@ interface SettingsBody {
   compatibleBaseUrl?: string;
   aiProvider?: AiProvider;
   aiModel?: string;
+  aiInstructions?: string | null;
   currencyConversion?: CurrencyConversion;
 }
 
@@ -94,6 +103,13 @@ export const PATCH = handler(async (request: Request) => {
         /^[a-zA-Z0-9][a-zA-Z0-9._:/-]{0,199}$/.test(body.aiModel.trim()),
       "Enter a valid model ID.",
     );
+  if (body.aiInstructions !== undefined)
+    requireValue(
+      body.aiInstructions === null ||
+        (typeof body.aiInstructions === "string" &&
+          body.aiInstructions.trim().length <= AI_INSTRUCTIONS_MAX_LENGTH),
+      `Personal trading instructions must be at most ${AI_INSTRUCTIONS_MAX_LENGTH} characters.`,
+    );
   for (const id of AI_PROVIDERS) {
     const key = body[`${id}Key`];
     if (key === undefined) continue;
@@ -131,14 +147,13 @@ export const PATCH = handler(async (request: Request) => {
     if (body.timeZone !== undefined || body.importTimeZone !== undefined)
       setSetting("importTimeZone", body.importTimeZone ?? getImportTimeZone());
     if (body.timeZone !== undefined) setSetting("timeZone", body.timeZone);
-  });
-  if (body.multipliers !== undefined)
-    db.transaction(() => {
+
+    if (body.multipliers !== undefined) {
       setSetting("multipliers", JSON.stringify(body.multipliers));
       for (const account of db.select({ id: accounts.id }).from(accounts).all())
         rebuildAccount(account.id);
-    });
-  db.transaction(() => {
+    }
+
     for (const id of AI_PROVIDERS) {
       const key = body[`${id}Key`];
       if (key !== undefined) setAiKey(id, key);
@@ -147,6 +162,7 @@ export const PATCH = handler(async (request: Request) => {
       setCompatibleBaseUrl(compatibleBaseUrl, body.compatibleKey !== undefined);
     if (body.aiProvider !== undefined) setSetting("aiProvider", body.aiProvider);
     if (body.aiModel !== undefined) setSetting(aiModelSetting(provider), body.aiModel.trim());
+    if (body.aiInstructions !== undefined) setAiInstructions(body.aiInstructions);
   });
   return ok({ saved: true });
 });

@@ -15,6 +15,8 @@ import { fieldClass } from "@/components/filter-fields";
 import { postJson, useApi } from "@/lib/use-api";
 import { formatInlineSelection, remarkRepairSpacedEmphasis } from "@/lib/note-formatting";
 import { tradeLinkLabel, tradeMarkdownLink, type LinkableTrade } from "@/lib/trade-links";
+import { VoiceNote } from "@/components/voice-note";
+import { insertDictatedText } from "@/lib/dictation";
 export function Markdown({ children }: { children: string }) {
   return (
     <div className="journal-markdown">
@@ -144,6 +146,37 @@ export function RichEditor({
             {preview ? "Edit" : "Preview"}
           </Button>
         )}
+        <VoiceNote
+          onPrepare={() => {
+            if (preview) {
+              setPreview(false);
+              requestAnimationFrame(() => {
+                ref.current?.focus();
+                ref.current?.setSelectionRange(value.length, value.length);
+              });
+            }
+          }}
+          onText={(text) => {
+            const currentValue = ref.current?.value ?? value;
+            const start = ref.current?.selectionStart ?? currentValue.length;
+            const end = ref.current?.selectionEnd ?? currentValue.length;
+            const res = insertDictatedText({
+              currentText: currentValue,
+              selectionStart: start,
+              selectionEnd: end,
+              dictatedText: text,
+            });
+            onChange(res.value);
+            requestAnimationFrame(() => {
+              ref.current?.focus();
+              try {
+                ref.current?.setSelectionRange(res.selectionStart, res.selectionEnd);
+              } catch {
+                // Teardown: non-text or detached elements ignore setSelectionRange
+              }
+            });
+          }}
+        />
         {!preview && (
           <>
             <Button

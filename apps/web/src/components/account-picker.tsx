@@ -1,6 +1,6 @@
 "use client";
 
-import { useId, useState } from "react";
+import { useEffect, useId, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import {
@@ -39,10 +39,19 @@ export function AccountPicker({
   const [saving, setSaving] = useState(false);
   const [created, setCreated] = useState<AccountRow[]>([]);
   const fieldId = useId();
-  const accounts = [
+  const allAccounts = [
     ...(data?.accounts ?? []),
     ...created.filter((item) => !data?.accounts.some((row) => row.id === item.id)),
   ].filter((account) => !account.archivedAt);
+  const accounts = kind === "manual" ? allAccounts.filter((a) => a.kind === "manual") : allAccounts;
+
+  useEffect(() => {
+    if (!value && accounts.length > 0) {
+      // Prioritize an account matching kind, or the first account available
+      const preferred = accounts.find((a) => a.kind === kind) ?? accounts[0];
+      if (preferred) onChange(preferred.id);
+    }
+  }, [value, accounts, kind, onChange]);
   return (
     <div className="flex min-w-0 flex-wrap items-end gap-2">
       <div className="min-w-0 flex-[1_1_180px]">
@@ -74,6 +83,11 @@ export function AccountPicker({
       {accountError && (
         <p role="alert" className="w-full text-sm text-destructive">
           {accountError}
+        </p>
+      )}
+      {kind === "manual" && accounts.length === 0 && !creating && (
+        <p role="alert" className="w-full text-sm text-muted-foreground">
+          No manual accounts found. Create one with "New account" to record trades.
         </p>
       )}
       {creating && (

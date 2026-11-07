@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { LuxAlgoMark } from "@/components/luxalgo-mark";
+import { SumiMark } from "@/components/sumi-mark";
 import { postJson } from "@/lib/use-api";
 
 export default function LoginPage() {
@@ -30,8 +30,8 @@ export default function LoginPage() {
         <CardContent className="pt-6">
           <form onSubmit={submit} className="space-y-3">
             <div className="text-center">
-              <LuxAlgoMark className="mx-auto mb-2 h-6 w-7" />
-              <h1 className="text-sm font-semibold">Trade Journal</h1>
+              <SumiMark className="mx-auto mb-2 h-6 w-7 text-brand" />
+              <h1 className="text-sm font-semibold">Sumi</h1>
             </div>
             <Input
               type="password"

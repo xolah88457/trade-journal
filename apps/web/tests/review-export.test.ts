@@ -23,6 +23,7 @@ it("exports a paginated PDF with embedded Unicode text using the production buil
   const doc = await PDFDocument.load(bytes);
   expect(doc.getPageCount()).toBeGreaterThan(1);
   expect(doc.getTitle()).toBe("Trade review · café");
+  expect(doc.getCreator()).toBe("Sumi");
   if (process.env.JOURNAL_EXPORT_TEST_PATH)
     writeFileSync(process.env.JOURNAL_EXPORT_TEST_PATH, bytes);
 });

@@ -3,10 +3,10 @@ import { runInNewContext } from "node:vm";
 import { THEME_INIT_SCRIPT, THEME_KEY, themePreference } from "../src/lib/theme";
 
 describe("journal appearance", () => {
-  it("defaults to dark and accepts only explicit light or dark choices", () => {
-    expect(themePreference(null)).toBe("dark");
-    expect(themePreference("system")).toBe("dark");
-    expect(themePreference("invalid")).toBe("dark");
+  it("defaults to parchment and preserves explicit dark choices", () => {
+    expect(themePreference(null)).toBe("light");
+    expect(themePreference("system")).toBe("light");
+    expect(themePreference("invalid")).toBe("light");
     expect(themePreference("dark")).toBe("dark");
     expect(themePreference("light")).toBe("light");
   });
@@ -25,8 +25,8 @@ describe("journal appearance", () => {
     });
     expect(calls).toEqual([["dark", themePreference(saved) === "dark"]]);
   });
-  it("still renders dark when browser storage is blocked", () => {
-    let dark = false;
+  it("still renders parchment when browser storage is blocked", () => {
+    let dark = true;
     runInNewContext(THEME_INIT_SCRIPT, {
       localStorage: {
         getItem: () => {
@@ -43,6 +43,6 @@ describe("journal appearance", () => {
         },
       },
     });
-    expect(dark).toBe(true);
+    expect(dark).toBe(false);
   });
 });

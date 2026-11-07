@@ -5,7 +5,7 @@ import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { Blob as NodeBlob } from "node:buffer";
 import { PDFDocument } from "pdf-lib";
-import { unzipSync } from "fflate";
+import { unzipSync, unzlibSync } from "fflate";
 import { prepareDailyReport, type DailyReportPage } from "../src/lib/daily-report-render";
 import {
   PAGE_WIDTH,
@@ -15,6 +15,53 @@ import {
   formatPrecision,
 } from "../src/lib/daily-report-layout";
 import type { DailyReport, ReportAttachment } from "../src/lib/daily-report-types";
+
+// Extract text from parsed PDF document pages by decoding glyph IDs against embedded ToUnicode CMaps
+function extractPdfPageTexts(doc: PDFDocument): string[] {
+  const cmap = new Map<string, string>();
+  for (const [, obj] of (doc.context as any).enumerateIndirectObjects()) {
+    if (obj && typeof obj.getContents === "function") {
+      try {
+        const text = new TextDecoder().decode(unzlibSync(obj.getContents()));
+        const matches = text.matchAll(/<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g);
+        for (const m of matches) {
+          cmap.set(m[1]!.toLowerCase(), String.fromCodePoint(parseInt(m[2]!, 16)));
+        }
+      } catch {
+        // ignore non-zlib streams
+      }
+    }
+  }
+
+  return doc.getPages().map((page) => {
+    const contents = (page.node as any).normalizedEntries().Contents;
+    const refs = contents
+      ? Array.isArray(contents.asArray?.())
+        ? contents.asArray()
+        : [contents]
+      : [];
+    let out = "";
+    for (const r of refs) {
+      const stream = doc.context.lookup(r) as any;
+      if (!stream || typeof stream.getContents !== "function") continue;
+      try {
+        const dec = new TextDecoder().decode(unzlibSync(stream.getContents()));
+        for (const hexMatch of dec.matchAll(/<([0-9a-fA-F]+)>\s*Tj/g)) {
+          const hex = hexMatch[1]!;
+          let decodedStr = "";
+          for (let i = 0; i < hex.length; i += 4) {
+            const code = hex.slice(i, i + 4).toLowerCase();
+            decodedStr += cmap.get(code) || "";
+          }
+          out += decodedStr + " ";
+        }
+      } catch {
+        // ignore
+      }
+    }
+    return out;
+  });
+}
 
 // Load actual production font fixture in tests
 const fontPath = existsSync(resolve(process.cwd(), "apps/web/public/fonts/NotoSans-Regular.ttf"))
@@ -592,6 +639,69 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
     expect(keys.length).toBe(2);
     expect(keys[0]).toMatch(/^01-.*\.png$/);
     expect(keys[1]).toMatch(/^02-.*\.png$/);
+  });
+
+  it("supports arbitrary PDF page selection: noncontiguous pages, excludes unselected, preserves logical order, default omitted, and rejects empty/unknown", async () => {
+    const report = createMockReport();
+    const prepared = await prepareDailyReport(report, {
+      imageLoader: async () => TEST_PNG,
+    });
+
+    expect(prepared.pages.length).toBeGreaterThanOrEqual(4);
+    const p0 = prepared.pages[0]!; // Daily overview
+    const p1 = prepared.pages[1]!; // First screenshot
+    const p2 = prepared.pages[2]!; // Trade #1
+    const p3 = prepared.pages[3]!; // Second screenshot
+
+    // 1. Backward compatibility: omitted argument defaults to all pages
+    const defaultExport = await prepared.buildPdf();
+    const defaultPdfBytes = new Uint8Array(await defaultExport.blob.arrayBuffer());
+    const defaultDoc = await PDFDocument.load(defaultPdfBytes);
+    expect(defaultDoc.getPageCount()).toBe(prepared.pages.length);
+
+    // 2. Explicit empty selection throws error
+    await expect(prepared.buildPdf([])).rejects.toThrow("Select at least one page");
+
+    // 3. Unknown page ID throws error
+    await expect(prepared.buildPdf(["unknown-page-id"])).rejects.toThrow(
+      'Invalid page ID: "unknown-page-id".',
+    );
+
+    // 4. Noncontiguous selection (first + third page: p0 and p2), reversed order and duplicate IDs
+    // Pass reversed order with duplicates: [p2.id, p0.id, p2.id]
+    const selectiveExport = await prepared.buildPdf([p2.id, p0.id, p2.id]);
+    expect(selectiveExport.filename).toBe("2026-09-02-daily-report.pdf");
+    expect(selectiveExport.blob.type).toBe("application/pdf");
+
+    // Parse actual PDF bytes
+    const pdfBytes = new Uint8Array(await selectiveExport.blob.arrayBuffer());
+    const doc = await PDFDocument.load(pdfBytes);
+
+    // Confirms count is exactly 2 (duplicates deduped, excluded pages omitted)
+    expect(doc.getPageCount()).toBe(2);
+
+    // Parse actual page content from PDF stream using ToUnicode CMap
+    const pageTexts = extractPdfPageTexts(doc);
+    expect(pageTexts.length).toBe(2);
+
+    // First page in PDF must correspond to p0 (logical report order preserved despite reversed input)
+    expect(pageTexts[0]).toContain("DAILY JOURNAL REPORT");
+    expect(pageTexts[0]).toContain("2026-09-02");
+    expect(pageTexts[0]).toContain(`Page 1 of ${prepared.pages.length}`); // footer retains source page number
+
+    // Second page in PDF must correspond to p2 (third page in report: ES trade)
+    expect(pageTexts[1]).toContain("ES · LONG LOSS");
+    expect(pageTexts[1]).toContain(`Page 3 of ${prepared.pages.length}`); // footer retains source page number
+
+    // Excluded pages (p1 screenshot, p3 screenshot, p4 NQ trade) must NOT be present in any page of the PDF
+    expect(pageTexts[0]).not.toContain("es-daily-context.png");
+    expect(pageTexts[1]).not.toContain("es-daily-context.png");
+    expect(pageTexts[0]).not.toContain("es-trade-fill-chart.png");
+    expect(pageTexts[1]).not.toContain("es-trade-fill-chart.png");
+    expect(pageTexts[0]).not.toContain("NQ · SHORT");
+    expect(pageTexts[1]).not.toContain("NQ · SHORT");
+
+    prepared.dispose();
   });
 
   it("preserves non-ASCII characters and emojis without dropping or replacing with [emoji]", async () => {

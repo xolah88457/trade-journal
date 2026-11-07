@@ -404,9 +404,10 @@ describe("DailyReportExport component", () => {
     expect(dialogText).toContain("3 pages");
     expect(dialogText).toContain("Exports complete PDF with overview and all trades (3 pages)");
 
-    // Per-page checkboxes must NOT be rendered in PDF mode
+    // Per-page checkboxes are rendered in PDF mode and all pages are selected by default
     const checkboxes = dialog?.querySelectorAll("[role='checkbox']");
-    expect(checkboxes?.length ?? 0).toBe(0);
+    expect(checkboxes?.length ?? 0).toBe(4); // 1 preview include checkbox + 3 thumbnail items
+    expect(dialogText).toContain("3 of 3 selected");
 
     const downloadBtn = Array.from(
       dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [],
@@ -420,6 +421,11 @@ describe("DailyReportExport component", () => {
     await flushAsyncEvents();
 
     expect(renderMockState.prepared?.buildPdf).toHaveBeenCalledTimes(1);
+    expect(renderMockState.prepared?.buildPdf).toHaveBeenCalledWith([
+      "page-daily",
+      "page-trade-1",
+      "page-trade-2",
+    ]);
     expect(linkClicks.length).toBe(1);
     expect(linkClicks[0]?.download).toBe("daily-report-2026-11-07.pdf");
   });
@@ -519,6 +525,102 @@ describe("DailyReportExport component", () => {
 
     expect(downloadBtn).toBeDefined();
     expect(downloadBtn?.disabled).toBe(true);
+  });
+
+  it("PDF page selection: select1&3 skipmiddle, selectall/clear/zero disabled, preserves order, and calls buildPdf with selected IDs", async () => {
+    await renderExport({ date: "2026-11-07" });
+
+    const pdfBtn = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find((b) =>
+      b.textContent?.includes("Export PDF"),
+    );
+
+    await act(async () => {
+      pdfBtn?.click();
+    });
+    await flushAsyncEvents();
+
+    const dialog = document.querySelector("[role='dialog']");
+    expect(dialog).not.toBeNull();
+
+    // 1. Initial state: all pages selected (3 of 3)
+    let dialogText = dialog?.textContent ?? "";
+    expect(dialogText).toContain("3 of 3 selected");
+    let downloadBtn = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+      (b) => b.textContent?.includes("Download full PDF (3 pages)"),
+    );
+    expect(downloadBtn).toBeDefined();
+    expect(downloadBtn?.disabled).toBe(false);
+
+    // 2. Select 1 & 3, skipping middle (uncheck page 2: "page-trade-1")
+    const sidebarItems = dialog?.querySelectorAll("[aria-label='Page thumbnail list'] > div");
+    expect(sidebarItems?.length).toBe(3);
+
+    const cb2 = sidebarItems![1]?.querySelector<HTMLButtonElement>("[role='checkbox']");
+    expect(cb2).toBeDefined();
+
+    await act(async () => {
+      cb2?.click();
+    });
+
+    dialogText = dialog?.textContent ?? "";
+    expect(dialogText).toContain("2 of 3 selected");
+    expect(dialogText).toContain("2 pages selected · PDF document");
+
+    downloadBtn = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+      (b) => b.textContent?.includes("Download selected PDF (2 pages)"),
+    );
+    expect(downloadBtn).toBeDefined();
+    expect(downloadBtn?.disabled).toBe(false);
+
+    // Download with pages 1 and 3 selected
+    await act(async () => {
+      downloadBtn?.click();
+    });
+    await flushAsyncEvents();
+
+    expect(renderMockState.prepared?.buildPdf).toHaveBeenCalledWith(["page-daily", "page-trade-2"]);
+    expect(linkClicks.length).toBe(1);
+    expect(linkClicks[0]?.download).toBe("daily-report-2026-11-07.pdf");
+
+    // 3. Clear button: 0 selected, download disabled
+    const clearBtn = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+      (b) => b.textContent === "Clear",
+    );
+    expect(clearBtn).toBeDefined();
+
+    await act(async () => {
+      clearBtn?.click();
+    });
+
+    dialogText = dialog?.textContent ?? "";
+    expect(dialogText).toContain("0 of 3 selected");
+    expect(dialogText).toContain("Select at least 1 page to export");
+
+    downloadBtn = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+      (b) => b.textContent?.includes("Select at least 1 page"),
+    );
+    expect(downloadBtn).toBeDefined();
+    expect(downloadBtn?.disabled).toBe(true);
+
+    // 4. Select all button: all selected again, download enabled
+    const selectAllBtn = Array.from(
+      dialog?.querySelectorAll<HTMLButtonElement>("button") ?? [],
+    ).find((b) => b.textContent === "Select all");
+    expect(selectAllBtn).toBeDefined();
+
+    await act(async () => {
+      selectAllBtn?.click();
+    });
+
+    dialogText = dialog?.textContent ?? "";
+    expect(dialogText).toContain("3 of 3 selected");
+    expect(dialogText).toContain("Exports complete PDF with overview and all trades (3 pages)");
+
+    downloadBtn = Array.from(dialog?.querySelectorAll<HTMLButtonElement>("button") ?? []).find(
+      (b) => b.textContent?.includes("Download full PDF (3 pages)"),
+    );
+    expect(downloadBtn).toBeDefined();
+    expect(downloadBtn?.disabled).toBe(false);
   });
 
   it("close/unmount/stale generation no click download: cancels in-flight work and revokes owned URLs", async () => {

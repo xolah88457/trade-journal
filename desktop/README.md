@@ -60,7 +60,7 @@ Theme, privacy, sidebar, and dashboard preferences are saved in macOS preference
 
 ## Daily reports & review exports
 
-- **Daily full PDF & PNG export actions**: Generate a complete multi-page daily review as a paginated PDF, preview individual page PNGs, or download selected pages as a single image or multi-PNG ZIP archive.
+- **Daily PDF & PNG export actions**: Generate a complete or selectively chosen pages daily review as a paginated PDF, preview individual page PNGs, or download selected pages as a single image or multi-PNG ZIP archive.
 - **Scoped to active filters**: Exports reflect closed trades strictly scoped by the selected date, journal timezone, and active account filter.
 - **Notes, images & critique history**: Daily reports incorporate your day reflection notes, trade execution summaries, full-size trade screenshot images, and saved historical AI critiques. Non-image attachments (such as PDF documents) are listed by filename only.
 - **Saved critiques only**: Only saved AI critique reviews are included; ephemeral or unsaved critiques from prior sessions cannot be recovered during export.

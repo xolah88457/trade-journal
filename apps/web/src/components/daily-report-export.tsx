@@ -254,7 +254,7 @@ export function DailyReportExport({
         setLoading(false);
         setActivePageIndex(0);
 
-        // Default all pages selected for PNG export
+        // Default all pages selected for export
         const allIds = prep.pages.map((p) => p.id);
         setSelectedPageIds(new Set(allIds));
         setThumbnailProgress({ loaded: 0, total: prep.pages.length });
@@ -330,18 +330,18 @@ export function DailyReportExport({
     try {
       let file: ExportFile;
 
+      // Capture selected IDs at download time and preserve page order!
+      const orderedSelectedIds = currentPrepared.pages
+        .map((p) => p.id)
+        .filter((id) => selectedPageIds.has(id));
+
+      if (orderedSelectedIds.length === 0) {
+        throw new Error("Select at least one page to export.");
+      }
+
       if (format === "pdf") {
-        file = await currentPrepared.buildPdf();
+        file = await currentPrepared.buildPdf(orderedSelectedIds);
       } else {
-        // PNG mode: capture selected IDs at download time and preserve page order!
-        const orderedSelectedIds = currentPrepared.pages
-          .map((p) => p.id)
-          .filter((id) => selectedPageIds.has(id));
-
-        if (orderedSelectedIds.length === 0) {
-          throw new Error("Select at least one page to export.");
-        }
-
         file = await currentPrepared.buildPngDownload(orderedSelectedIds);
       }
 
@@ -474,11 +474,9 @@ export function DailyReportExport({
                     {closedTradesCount} {closedTradesCount === 1 ? "trade" : "trades"} ·{" "}
                     {totalPages} {totalPages === 1 ? "page" : "pages"}
                   </span>
-                  {format === "png" && (
-                    <Badge variant="outline" className="bg-background">
-                      {selectedCount} of {totalPages} selected
-                    </Badge>
-                  )}
+                  <Badge variant="outline" className="bg-background">
+                    {selectedCount} of {totalPages} selected
+                  </Badge>
                 </div>
               )}
             </DialogHeader>
@@ -570,13 +568,13 @@ export function DailyReportExport({
                         </span>
                       </div>
 
-                      {/* Checkbox only in PNG mode */}
-                      {format === "png" && currentPage && (
+                      {/* Checkbox for current page */}
+                      {currentPage && (
                         <label className="flex cursor-pointer items-center gap-1.5 font-medium">
                           <Checkbox
                             checked={selectedPageIds.has(currentPage.id)}
                             onCheckedChange={() => togglePageSelection(currentPage.id)}
-                            aria-label={`Include page ${activePageIndex + 1} in PNG export`}
+                            aria-label={`Include page ${activePageIndex + 1} in export`}
                           />
                           <span>Include</span>
                         </label>
@@ -625,26 +623,24 @@ export function DailyReportExport({
                       <span className="font-semibold text-muted-foreground uppercase tracking-wider text-[11px]">
                         Pages ({totalPages})
                       </span>
-                      {format === "png" && (
-                        <div className="flex gap-1">
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-1.5 text-[11px]"
-                            onClick={selectAllPages}
-                          >
-                            Select all
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            className="h-6 px-1.5 text-[11px]"
-                            onClick={clearAllPages}
-                          >
-                            Clear
-                          </Button>
-                        </div>
-                      )}
+                      <div className="flex gap-1">
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-1.5 text-[11px]"
+                          onClick={selectAllPages}
+                        >
+                          Select all
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          className="h-6 px-1.5 text-[11px]"
+                          onClick={clearAllPages}
+                        >
+                          Clear
+                        </Button>
+                      </div>
                     </div>
 
                     {/* Scrollable thumbnail container with accessible button elements */}
@@ -668,17 +664,15 @@ export function DailyReportExport({
                                 : "border-border/70 hover:border-foreground/30 bg-card",
                             )}
                           >
-                            {/* In PNG mode: Checkbox sibling */}
-                            {format === "png" && (
-                              <div className="flex shrink-0 items-center pl-1">
-                                <Checkbox
-                                  id={`select-page-${p.id}`}
-                                  checked={isSelected}
-                                  onCheckedChange={() => togglePageSelection(p.id)}
-                                  aria-label={`Select page ${index + 1}: ${p.title}`}
-                                />
-                              </div>
-                            )}
+                            {/* Checkbox sibling */}
+                            <div className="flex shrink-0 items-center pl-1">
+                              <Checkbox
+                                id={`select-page-${p.id}`}
+                                checked={isSelected}
+                                onCheckedChange={() => togglePageSelection(p.id)}
+                                aria-label={`Select page ${index + 1}: ${p.title}`}
+                              />
+                            </div>
 
                             {/* Real button thumbnail/title: Enter/Space activates page */}
                             <button
@@ -758,7 +752,11 @@ export function DailyReportExport({
                   <div className="text-xs text-muted-foreground">
                     {format === "pdf" ? (
                       <span>
-                        Exports complete PDF with overview and all trades ({totalPages} pages)
+                        {selectedCount === 0
+                          ? "Select at least 1 page to export"
+                          : selectedCount === totalPages
+                            ? `Exports complete PDF with overview and all trades (${totalPages} ${totalPages === 1 ? "page" : "pages"})`
+                            : `${selectedCount} ${selectedCount === 1 ? "page" : "pages"} selected · PDF document`}
                       </span>
                     ) : (
                       <span>
@@ -784,7 +782,7 @@ export function DailyReportExport({
                     {format === "pdf" ? (
                       <Button
                         size="sm"
-                        disabled={downloading || totalPages === 0 || concealed}
+                        disabled={downloading || selectedCount === 0 || concealed}
                         onClick={() => void handleDownload()}
                       >
                         {downloading ? (
@@ -792,10 +790,18 @@ export function DailyReportExport({
                             <Loader2 className="animate-spin" />
                             Building PDF...
                           </>
-                        ) : (
+                        ) : selectedCount === 0 ? (
+                          "Select at least 1 page"
+                        ) : selectedCount === totalPages ? (
                           <>
                             <Download />
                             Download full PDF ({totalPages} {totalPages === 1 ? "page" : "pages"})
+                          </>
+                        ) : (
+                          <>
+                            <Download />
+                            Download selected PDF ({selectedCount}{" "}
+                            {selectedCount === 1 ? "page" : "pages"})
                           </>
                         )}
                       </Button>

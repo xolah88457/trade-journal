@@ -32,7 +32,7 @@ export interface DailyReportPage {
 export interface PreparedDailyReport {
   pages: DailyReportPage[];
   renderPage(pageId: string, scale?: number): Promise<Blob>;
-  buildPdf(): Promise<ExportFile>;
+  buildPdf(pageIds?: string[]): Promise<ExportFile>;
   buildPngDownload(pageIds: string[]): Promise<ExportFile>;
   dispose(): void;
 }
@@ -584,7 +584,29 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
     ctx.fillText(`${finalVal > 0 ? "+" : ""}${finalVal.toFixed(2)} ${curLabel}`, right, top - 4);
   }
 
-  async buildPdf(): Promise<ExportFile> {
+  private resolveSelectedPageLayouts(pageIds?: string[]): ReportPageLayout[] {
+    if (pageIds === undefined) {
+      return this.pageLayouts;
+    }
+
+    if (!Array.isArray(pageIds) || pageIds.length === 0) {
+      throw new Error("Select at least one page to download.");
+    }
+
+    // Validate page IDs
+    for (const id of pageIds) {
+      if (!this.pages.some((p) => p.id === id)) {
+        throw new Error(`Invalid page ID: "${id}".`);
+      }
+    }
+
+    const selectedSet = new Set(pageIds);
+    return this.pageLayouts.filter((p) => selectedSet.has(p.id));
+  }
+
+  async buildPdf(pageIds?: string[]): Promise<ExportFile> {
+    const selectedLayouts = this.resolveSelectedPageLayouts(pageIds);
+
     const { default: fontkit } = await import("@pdf-lib/fontkit");
 
     const pdfDoc = await PDFDocument.create();
@@ -595,7 +617,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
     const font = await pdfDoc.embedFont(this.fontBytes, { subset: true });
     const supportedChars = new Set(font.getCharacterSet());
 
-    for (const layout of this.pageLayouts) {
+    for (const layout of selectedLayouts) {
       const pdfPage = pdfDoc.addPage([PAGE_WIDTH, PAGE_HEIGHT]);
 
       // Page background
@@ -917,18 +939,19 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
       }
     }
 
+    const selectedSet = new Set(pageIds);
+    const selected = this.pages.filter((p) => selectedSet.has(p.id));
+
     // Single PNG selection
-    if (pageIds.length === 1) {
-      const pageId = pageIds[0]!;
-      const page = this.pages.find((p) => p.id === pageId)!;
+    if (selected.length === 1) {
+      const page = selected[0]!;
       const pageNum = this.pages.indexOf(page) + 1;
-      const blob = await this.renderPage(pageId, 2);
+      const blob = await this.renderPage(page.id, 2);
       const filename = `${this.report.date}-daily-report-${String(pageNum).padStart(2, "0")}-${slugify(page.title)}.png`;
       return { blob, filename };
     }
 
     // Multi-page ZIP selection: Maintain deterministic page order
-    const selected = this.pages.filter((p) => pageIds.includes(p.id));
     const entries: Record<string, Uint8Array> = {};
 
     for (const page of selected) {

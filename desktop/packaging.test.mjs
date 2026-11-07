@@ -1668,7 +1668,7 @@ test("copyStandaloneForWindows fails closed on dangling unresolved link", () => 
 
     assert.throws(
       () => copyStandaloneForWindows(mockStandalone, mockDest, root),
-      /Failed to resolve standalone link target for apps\/web\/node_modules\/dangling-pkg/,
+      /Failed to resolve standalone link target for apps[\\/]web[\\/]node_modules[\\/]dangling-pkg/,
     );
   } finally {
     rmSync(mockStandalone, { recursive: true, force: true });

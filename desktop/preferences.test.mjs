@@ -32,14 +32,29 @@ test("resolveDataDirectory obeys test mode contract and isolated directory paths
     process.env.JOURNAL_DATA_DIR = "relative/path/dir";
     assert.throws(() => resolveDataDirectory(), /requires an absolute JOURNAL_DATA_DIR/);
 
-    // Production Sumi path rejected in test mode
-    process.env.JOURNAL_DATA_DIR = defaultDir;
-    assert.throws(() => resolveDataDirectory(), /rejects the production Sumi data directory/);
-
-    // Non-existing directory rejected
+    // Non-existing directory rejected (keep missing-dir case)
     const nonExistentDir = path.join(os.tmpdir(), "sumi-test-nonexistent");
     process.env.JOURNAL_DATA_DIR = nonExistentDir;
     assert.throws(() => resolveDataDirectory(), /must be an existing directory/);
+
+    // Production Sumi path rejected in test mode
+    // (Create fixture fake home/production dir inside temp so canonical prod dir reject
+    // is tested on clean CI machines without writing actual user data)
+    const fakeHome = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-fakehome-contract-"));
+    const fakeProdDir = getDefaultDataDirectory(process.platform, process.env, fakeHome);
+    fs.mkdirSync(fakeProdDir, { recursive: true });
+
+    try {
+      process.env.HOME = fakeHome;
+      process.env.USERPROFILE = fakeHome;
+      process.env.JOURNAL_DATA_DIR = fakeProdDir;
+      assert.throws(() => resolveDataDirectory(), /rejects the production Sumi data directory/);
+    } finally {
+      process.env.HOME = originalEnv.HOME;
+      if (originalEnv.USERPROFILE) process.env.USERPROFILE = originalEnv.USERPROFILE;
+      else delete process.env.USERPROFILE;
+      fs.rmSync(fakeHome, { recursive: true, force: true });
+    }
 
     // Directory directly under os.tmpdir() (root) rejected
     const rootTmpDir = fs.realpathSync(os.tmpdir());
@@ -283,8 +298,10 @@ test("migrates UserDefaults in normal mode on first launch if file does not exis
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pref-mig-normal-"));
   try {
     let defaultsCalled = false;
+    // Inject darwin platform so macOS migration contract is tested deterministically on all host OSes
     const store = createPreferencesStore({
       dataDir: tmpDir,
+      platform: "darwin",
       isTestMode: false,
       defaultsReader: () => {
         defaultsCalled = true;
@@ -299,6 +316,25 @@ test("migrates UserDefaults in normal mode on first launch if file does not exis
     assert.deepEqual(store.getPreferences(), {
       "journal-theme-v1": "dark",
     });
+
+    // Also assert that when platform is non-Mac, defaultsReader is NEVER called and no OS defaults queried
+    const tmpDirNonMac = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pref-mig-nonmac-"));
+    try {
+      let nonMacDefaultsCalled = false;
+      const nonMacStore = createPreferencesStore({
+        dataDir: tmpDirNonMac,
+        platform: "linux",
+        isTestMode: false,
+        defaultsReader: () => {
+          nonMacDefaultsCalled = true;
+          return JSON.stringify({ "journal-theme-v1": "dark" });
+        },
+      });
+      assert.equal(nonMacDefaultsCalled, false, "non-Mac must never read defaults");
+      assert.deepEqual(nonMacStore.getPreferences(), {});
+    } finally {
+      fs.rmSync(tmpDirNonMac, { recursive: true, force: true });
+    }
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

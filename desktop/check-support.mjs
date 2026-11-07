@@ -17,7 +17,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { dirname, join } from "node:path";
+import { dirname, join, posix, win32 } from "node:path";
 import { fileURLToPath } from "node:url";
 
 /**
@@ -65,22 +65,68 @@ export function checkNoPrivateFiles(directory) {
 }
 
 /**
+ * Determines whether targetPath is equal to or a canonical descendant of basePath.
+ * Uses platform-specific path operations (win32 vs posix) so Windows path logic can be
+ * fully verified on non-Windows hosts.
+ *
+ * Enforces canonical realpath resolution, consistent case-folding on Windows,
+ * strict relative boundary check, and rejects cross-drive or absolute relative results.
+ */
+export function isBaseOrChildPath(targetPath, basePath, platform = process.platform) {
+  const isWin = platform === "win32";
+  const pathApi = isWin ? win32 : posix;
+
+  let target = targetPath;
+  let base = basePath;
+
+  try {
+    target = realpathSync(target);
+  } catch {}
+  try {
+    base = realpathSync(base);
+  } catch {}
+
+  target = pathApi.resolve(target);
+  base = pathApi.resolve(base);
+
+  if (isWin) {
+    target = target.toLowerCase();
+    base = base.toLowerCase();
+  }
+
+  if (target === base) return true;
+
+  const rel = pathApi.relative(base, target);
+  if (rel === "") return true;
+
+  // Rejection rules:
+  // 1. Cross-drive / UNC root escape: pathApi.isAbsolute(rel) is true (e.g. 'D:\outside' or '\\server2\share')
+  if (pathApi.isAbsolute(rel)) return false;
+
+  // 2. Parent directory escape: starts with '..'
+  if (rel === ".." || rel.startsWith(`..${pathApi.sep}`) || rel.startsWith("../")) return false;
+
+  // 3. Strict prefix/separator boundary verification: target must start with base + separator
+  const basePrefix = base.endsWith(pathApi.sep) ? base : base + pathApi.sep;
+  return target.startsWith(basePrefix);
+}
+
+/**
  * Recursively asserts that every symbolic link resolves strictly within basePrefix.
  */
 export function checkSelfContainedSymlinks(directory, basePrefix) {
   if (!existsSync(directory)) return;
-  const canonicalPrefix = realpathSync(basePrefix.replace(/\/$/, "")) + "/";
-  const canonicalBase = canonicalPrefix.slice(0, -1);
+  const canonicalBase = realpathSync(basePrefix);
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       const real = realpathSync(path);
       assert.ok(
-        real === canonicalBase || real.startsWith(canonicalPrefix),
+        isBaseOrChildPath(real, canonicalBase),
         `Symlink escapes application bundle into developer checkout: ${path} -> ${real}`,
       );
     } else if (entry.isDirectory()) {
-      checkSelfContainedSymlinks(path, canonicalPrefix);
+      checkSelfContainedSymlinks(path, canonicalBase);
     }
   }
 }
@@ -834,15 +880,41 @@ export function runUnitTests() {
     mkdirSync(join(linkBase, "sub"), { recursive: true });
     writeFileSync(join(linkBase, "sub/target.txt"), "hello");
     symlinkSync(join(linkBase, "sub/target.txt"), join(linkBase, "valid-link.txt"));
-    checkSelfContainedSymlinks(linkBase, linkBase + "/");
+    checkSelfContainedSymlinks(linkBase, linkBase);
 
     const outsideTarget = join(tempDir, "outside.txt");
     writeFileSync(outsideTarget, "escaped");
     symlinkSync(outsideTarget, join(linkBase, "bad-link.txt"));
     assert.throws(
-      () => checkSelfContainedSymlinks(linkBase, linkBase + "/"),
+      () => checkSelfContainedSymlinks(linkBase, linkBase),
       /Symlink escapes application bundle/,
     );
+
+    // Pure Windows and POSIX path containment assertions (cross-platform, case-folding, no symlink dependency)
+    assert.equal(isBaseOrChildPath("C:\\bundle\\sub\\target.txt", "C:\\bundle", "win32"), true);
+    assert.equal(isBaseOrChildPath("C:\\BUNDLE\\sub\\target.txt", "c:\\bundle", "win32"), true);
+    assert.equal(isBaseOrChildPath("C:\\bundle\\target.txt", "C:\\bundle\\", "win32"), true);
+    assert.equal(isBaseOrChildPath("C:\\bundle", "C:\\bundle", "win32"), true);
+    assert.equal(isBaseOrChildPath("C:/bundle/sub/target.txt", "C:/bundle/", "win32"), true);
+    assert.equal(isBaseOrChildPath("D:\\outside", "C:\\bundle", "win32"), false);
+    assert.equal(isBaseOrChildPath("D:\\bundle\\sub\\target.txt", "C:\\bundle", "win32"), false);
+    assert.equal(isBaseOrChildPath("C:\\outside.txt", "C:\\bundle", "win32"), false);
+    assert.equal(isBaseOrChildPath("C:\\bundle-sibling\\target.txt", "C:\\bundle", "win32"), false);
+    assert.equal(
+      isBaseOrChildPath("\\\\server2\\share\\target.txt", "\\\\server1\\share\\bundle", "win32"),
+      false,
+    );
+    assert.equal(
+      isBaseOrChildPath(
+        "\\\\server1\\share\\bundle\\sub\\file.txt",
+        "\\\\server1\\share\\bundle",
+        "win32",
+      ),
+      true,
+    );
+    assert.equal(isBaseOrChildPath("/app/Contents/sub/file", "/app/Contents", "darwin"), true);
+    assert.equal(isBaseOrChildPath("/app/outside", "/app/Contents", "darwin"), false);
+    assert.equal(isBaseOrChildPath("/app/Contents-sibling/file", "/app/Contents", "darwin"), false);
 
     // 3. Test validateInfoPlistContent
     const validPlist = `<?xml version="1.0" encoding="UTF-8"?>

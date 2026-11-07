@@ -680,13 +680,34 @@ test("validateFeedUrl requires a valid HTTPS feed URL", () => {
 
 test("resolveUpdateConfig throws on empty/invalid publicEdKey and non-HTTPS feed BEFORE any build step", () => {
   const realConfig = JSON.parse(readFileSync(join(root, "desktop/update-config.json"), "utf8"));
-  const provisioned = resolveUpdateConfig({ config: realConfig, env: {} });
+
+  // 1. Explicit deterministic ARM fixture: verifies ARM preserves canonical appcast.xml
+  const armProvisioned = resolveUpdateConfig({ config: realConfig, env: {}, arch: "arm64" });
   assert.ok(
-    provisioned.publicEdKey.length > 0,
+    armProvisioned.publicEdKey.length > 0,
     "provisioned config must have a non-empty publicEdKey",
   );
-  assert.equal(provisioned.publicEdKey, validatePublicEdKey(realConfig.publicEdKey));
-  assert.equal(provisioned.feedUrl, realConfig.feedUrl);
+  assert.equal(armProvisioned.publicEdKey, validatePublicEdKey(realConfig.publicEdKey));
+  assert.equal(
+    armProvisioned.feedUrl,
+    "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml",
+  );
+
+  // 2. Explicit deterministic Intel fixture: verifies x64 maps canonical feed to appcast-x64.xml
+  const x64Provisioned = resolveUpdateConfig({ config: realConfig, env: {}, arch: "x64" });
+  assert.equal(x64Provisioned.publicEdKey, validatePublicEdKey(realConfig.publicEdKey));
+  assert.equal(
+    x64Provisioned.feedUrl,
+    "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml",
+  );
+
+  // 3. Host architecture resolution: deterministic assertion matching host architecture
+  const hostProvisioned = resolveUpdateConfig({ config: realConfig, env: {} });
+  const expectedHostFeed =
+    process.arch === "x64"
+      ? "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml"
+      : "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml";
+  assert.equal(hostProvisioned.feedUrl, expectedHostFeed);
 
   assert.throws(
     () => resolveUpdateConfig({ config: { ...realConfig, publicEdKey: "" }, env: {} }),
@@ -720,24 +741,48 @@ test("resolveUpdateConfig throws on empty/invalid publicEdKey and non-HTTPS feed
     /SUPublicEDKey must be valid base64/,
   );
 
-  const resolved = resolveUpdateConfig({
+  // Deterministic ARM vs x64 custom feed resolution
+  const resolvedArm = resolveUpdateConfig({
     config: { feedUrl: "https://example.com/appcast.xml", publicEdKey: VALID_TEST_ED_KEY },
     env: {},
+    arch: "arm64",
   });
-  assert.equal(resolved.feedUrl, "https://example.com/appcast.xml");
-  assert.equal(resolved.publicEdKey, VALID_TEST_ED_KEY);
+  assert.equal(resolvedArm.feedUrl, "https://example.com/appcast.xml");
+  assert.equal(resolvedArm.publicEdKey, VALID_TEST_ED_KEY);
 
+  const resolvedX64 = resolveUpdateConfig({
+    config: { feedUrl: "https://example.com/appcast.xml", publicEdKey: VALID_TEST_ED_KEY },
+    env: {},
+    arch: "x64",
+  });
+  assert.equal(resolvedX64.feedUrl, "https://example.com/appcast-x64.xml");
+  assert.equal(resolvedX64.publicEdKey, VALID_TEST_ED_KEY);
+
+  // Env override wins over config on any architecture
   const envResolved = resolveUpdateConfig({
     config: { feedUrl: "https://config.example/appcast.xml", publicEdKey: VALID_TEST_ED_KEY },
     env: {
       SUMI_FEED_URL: "https://env.example/appcast.xml",
       SUMI_PUBLIC_ED_KEY: VALID_TEST_ED_KEY,
     },
+    arch: "x64",
   });
   assert.equal(envResolved.feedUrl, "https://env.example/appcast.xml");
 
-  const defaultFeed = resolveUpdateConfig({ config: { publicEdKey: VALID_TEST_ED_KEY }, env: {} });
-  assert.equal(defaultFeed.feedUrl, DEFAULT_FEED_URL);
+  // Default feed without config.feedUrl
+  const defaultArmFeed = resolveUpdateConfig({
+    config: { publicEdKey: VALID_TEST_ED_KEY },
+    env: {},
+    arch: "arm64",
+  });
+  assert.equal(defaultArmFeed.feedUrl, DEFAULT_FEED_URL);
+
+  const defaultX64Feed = resolveUpdateConfig({
+    config: { publicEdKey: VALID_TEST_ED_KEY },
+    env: {},
+    arch: "x64",
+  });
+  assert.equal(defaultX64Feed.feedUrl, DEFAULT_X64_FEED_URL);
 });
 
 test("buildInfoPlist NEVER omits SUPublicEDKey and validates feed + key", () => {

@@ -54,7 +54,8 @@ test("parseSumiReady parses exact loopback origin and rejects arbitrary output",
 });
 
 test("buildMenuTemplate includes standard macOS Edit, View, Window and Sumi items", () => {
-  const template = buildMenuTemplate("/tmp/data-dir", () => null);
+  // Deterministic macOS template assertion across all test platforms
+  const template = buildMenuTemplate("/tmp/data-dir", () => null, "darwin");
   const labels = template.map((m) => m.label);
   assert.deepEqual(labels, ["Sumi", "Edit", "View", "Window"]);
 
@@ -81,6 +82,15 @@ test("buildMenuTemplate includes standard macOS Edit, View, Window and Sumi item
   const sumiLabels = sumiMenu.submenu.map((s) => s.label).filter(Boolean);
   assert.ok(sumiLabels.includes("About Sumi"));
   assert.ok(sumiLabels.includes("Show Journal Data"));
+
+  // Verify host platform default adapts deterministically
+  const hostTemplate = buildMenuTemplate("/tmp/data-dir", () => null);
+  const hostLabels = hostTemplate.map((m) => m.label);
+  if (process.platform === "darwin") {
+    assert.deepEqual(hostLabels, ["Sumi", "Edit", "View", "Window"]);
+  } else {
+    assert.deepEqual(hostLabels, ["File", "Edit", "View", "Window", "Help"]);
+  }
 });
 
 test("registerIpcHandlers registers IPC dispatchers with security validation", async () => {

@@ -687,8 +687,34 @@ test("Sparkle events update safe state appropriately", async () => {
 });
 
 test("getState() serialization contains strictly the 7 permitted fields", () => {
+  const originalPlatform = process.platform;
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+  try {
+    const service = createUpdateService({
+      platform: "darwin",
+      app: { getVersion: () => "0.2.0" },
+    });
+    const state = service.getState();
+    const keys = Object.keys(state).sort();
+    assert.deepEqual(keys, [
+      "availableVersion",
+      "currentVersion",
+      "error",
+      "message",
+      "nativeUI",
+      "provider",
+      "status",
+    ]);
+    assert.equal(state.nativeUI, true);
+    assert.equal(state.provider, "sparkle");
+  } finally {
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  }
+});
+
+test("getState() serialization on host platform contains strictly the 7 permitted fields", () => {
   const service = createUpdateService({
-    app: { getVersion: () => "0.2.0" },
+    app: { getVersion: () => "0.3.0" },
   });
   const state = service.getState();
   const keys = Object.keys(state).sort();
@@ -702,7 +728,8 @@ test("getState() serialization contains strictly the 7 permitted fields", () => 
     "status",
   ]);
   assert.equal(state.nativeUI, true);
-  assert.equal(state.provider, "sparkle");
+  const expectedProvider = process.platform === "darwin" ? "sparkle" : "electron-updater";
+  assert.equal(state.provider, expectedProvider);
 });
 
 test("update-tools helpers compute fingerprint and validate config", () => {

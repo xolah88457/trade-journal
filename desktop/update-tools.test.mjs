@@ -213,23 +213,43 @@ test("release plan: feedUrl and archiveURL come from validated config, no undecl
   const config = {
     provider: "sparkle",
     feedUrl: "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml",
+    intelFeedUrl:
+      "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml",
     publicEdKey: makeSyntheticKeypair().publicB64,
     releaseTagPrefix: "electron-v",
     archiveUrlPattern:
-      "https://github.com/xolah88457/trade-journal/releases/download/electron-v{version}/Sumi-{version}-macos-arm64.zip",
+      "https://github.com/xolah88457/trade-journal/releases/download/electron-v{version}/Sumi-{version}-macos-{arch}.zip",
   };
-  const plan = buildReleasePlan({ config, version: "0.2.0", distDir: "dist" });
-  assert.equal(plan.feedUrl, config.feedUrl);
+
+  // Deterministic ARM64 release plan
+  const planArm = buildReleasePlan({ config, version: "0.2.0", arch: "arm64", distDir: "dist" });
+  assert.equal(planArm.arch, "arm64");
+  assert.equal(planArm.feedUrl, config.feedUrl);
+  assert.equal(planArm.appcastName, "appcast.xml");
   assert.equal(
-    plan.archiveURL,
+    planArm.archiveURL,
     "https://github.com/xolah88457/trade-journal/releases/download/electron-v0.2.0/Sumi-0.2.0-macos-arm64.zip",
   );
-  assert.equal(plan.zipName, "Sumi-0.2.0-macos-arm64.zip");
+  assert.equal(planArm.zipName, "Sumi-0.2.0-macos-arm64.zip");
   assert.equal(
-    plan.downloadUrlPrefix,
+    planArm.downloadUrlPrefix,
     "https://github.com/xolah88457/trade-journal/releases/download/electron-v0.2.0/",
   );
-  assert.equal(plan.zipPath, path.join("dist", "Sumi-0.2.0-macos-arm64.zip"));
+  assert.equal(planArm.zipPath, path.join("dist", "Sumi-0.2.0-macos-arm64.zip"));
+  assert.equal(planArm.appcastPath, path.join("dist", "appcast.xml"));
+
+  // Deterministic Intel x64 release plan
+  const planIntel = buildReleasePlan({ config, version: "0.2.0", arch: "x64", distDir: "dist" });
+  assert.equal(planIntel.arch, "x64");
+  assert.equal(planIntel.feedUrl, config.intelFeedUrl);
+  assert.equal(planIntel.appcastName, "appcast-x64.xml");
+  assert.equal(
+    planIntel.archiveURL,
+    "https://github.com/xolah88457/trade-journal/releases/download/electron-v0.2.0/Sumi-0.2.0-macos-x64.zip",
+  );
+  assert.equal(planIntel.zipName, "Sumi-0.2.0-macos-x64.zip");
+  assert.equal(planIntel.zipPath, path.join("dist", "Sumi-0.2.0-macos-x64.zip"));
+  assert.equal(planIntel.appcastPath, path.join("dist", "appcast-x64.xml"));
 
   // Invalid config -> rejected; non-ZIP pattern -> rejected; http feed override -> rejected
   assert.throws(() =>

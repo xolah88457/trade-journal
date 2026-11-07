@@ -237,12 +237,12 @@ jobs:
             fi
 
             SANDBOX_MODE=$(stat -c '%a' /opt/Sumi/chrome-sandbox 2>/dev/null || stat -f '%Lp' /opt/Sumi/chrome-sandbox)
-            if [ -u "/opt/Sumi/chrome-sandbox" ] || [ "$SANDBOX_MODE" = "4755" ]; then
+            if [ "$SANDBOX_MODE" = "4755" ]; then
               echo "Verified official deb sandbox: /opt/Sumi/chrome-sandbox is root-owned setuid 4755"
-            elif [ -L /proc/self/ns/user ] && unshare --user true 2>/dev/null; then
+            elif { [ "$SANDBOX_MODE" = "755" ] || [ "$SANDBOX_MODE" = "0755" ]; } && [ -L /proc/self/ns/user ] && unshare --user true 2>/dev/null; then
               echo "Verified official deb sandbox: unprivileged user namespaces supported (/proc/self/ns/user + unshare --user), /opt/Sumi/chrome-sandbox is root-owned mode $SANDBOX_MODE"
             else
-              echo "::error::Neither valid Linux sandbox mechanism is available! /opt/Sumi/chrome-sandbox is mode $SANDBOX_MODE (not setuid 4755) and unprivileged user namespace probe (unshare --user true) failed."
+              echo "::error::Neither valid Linux sandbox mechanism is available! /opt/Sumi/chrome-sandbox must be root-owned exact mode 4755 OR exact mode 755 with unprivileged user namespaces (current mode: $SANDBOX_MODE, owner: $SANDBOX_OWNER)"
               exit 1
             fi
 

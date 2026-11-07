@@ -58,6 +58,16 @@ Theme, privacy, sidebar, and dashboard preferences are saved in macOS preference
 - **No embedded LuxAlgo live chart**: The trade detail view uses local performance graphics and attachment galleries; it does not embed external LuxAlgo live streaming charts.
 - **Persistent storage**: All manual trades, plans, executions, notes, and metadata are saved locally to your existing `journal.db` database.
 
+## Daily reports & review exports
+
+- **Daily full PDF & PNG export actions**: Generate a complete multi-page daily review as a paginated PDF, preview individual page PNGs, or download selected pages as a single image or multi-PNG ZIP archive.
+- **Scoped to active filters**: Exports reflect closed trades strictly scoped by the selected date, journal timezone, and active account filter.
+- **Notes, images & critique history**: Daily reports incorporate your day reflection notes, trade execution summaries, full-size trade screenshot images, and saved historical AI critiques. Non-image attachments (such as PDF documents) are listed by filename only.
+- **Saved critiques only**: Only saved AI critique reviews are included; ephemeral or unsaved critiques from prior sessions cannot be recovered during export.
+- **Entirely local generation**: Report and document rendering happens completely on-device using local canvas and vector layout engines. Exporting never triggers remote AI requests or network calls.
+- **Privacy mode protection**: When Privacy mode is enabled, financial report and review exports are blocked to prevent inadvertent disclosure of sensitive figures.
+- **About & licenses in Settings**: Project origins, upstream attribution (LuxAlgo Trade Journal and Kami), source repository link, and discoverable offline MIT licenses can be viewed anytime under **Settings → About & licenses**.
+
 ## Checks
 
 ```sh

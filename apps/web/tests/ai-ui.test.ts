@@ -10,6 +10,7 @@ const state = vi.hoisted(() => ({
   timeZone: "UTC",
   save: vi.fn(),
   post: vi.fn(),
+  critiqueApiData: null as unknown,
 }));
 vi.mock("@/components/filter-bar", () => ({
   FilterBar: () => null,
@@ -21,14 +22,24 @@ vi.mock("@/components/filter-bar", () => ({
 }));
 vi.mock("@/lib/use-api", () => ({
   postJson: (...args: unknown[]) => state.post(...args),
-  useApi: () => ({
-    data: {
-      metrics: { ...computeMetrics([]), closedTrades: 1 },
-      trades: [],
-      intraday: [],
-      note: "Original note",
-    },
-  }),
+  useApi: (url: string | null) => {
+    if (url && typeof url === "string" && url.startsWith("/api/ai/critique")) {
+      return {
+        data: state.critiqueApiData,
+        error: null,
+        loading: false,
+        refresh: vi.fn(),
+      };
+    }
+    return {
+      data: {
+        metrics: { ...computeMetrics([]), closedTrades: 1 },
+        trades: [],
+        intraday: [],
+        note: "Original note",
+      },
+    };
+  },
 }));
 vi.mock("@/lib/use-autosave", () => ({
   useAutosave: () => ({ save: state.save, status: "Saved", flush: vi.fn() }),
@@ -47,6 +58,7 @@ vi.mock("@/components/privacy", () => ({ MonetaryValue: () => null }));
 vi.mock("@/components/voice-note", () => ({ VoiceNote: () => null }));
 vi.mock("@/components/attachments", () => ({ Attachments: () => null }));
 vi.mock("@/components/review-export", () => ({ ReviewExport: () => null }));
+vi.mock("@/components/daily-report-export", () => ({ DailyReportExport: () => null }));
 const { AskJournal } = await import("../src/components/ask-journal");
 const { TradeCritiqueSection } = await import("../src/components/ai-critique");
 const { default: JournalDayPage } = await import("../src/app/journal/[date]/page");
@@ -57,6 +69,7 @@ beforeEach(() => {
   Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
   state.filters = { accounts: "a" };
   state.timeZone = "UTC";
+  state.critiqueApiData = null;
   state.post.mockReset();
   state.save.mockReset();
   container = document.createElement("div");
@@ -314,4 +327,209 @@ it("displays drift error and Refresh preview button inside TradeCritiqueSection 
   await click("Refresh preview snapshot");
   expect(state.post).toHaveBeenCalledTimes(3);
   expect(document.body.textContent).toContain("Trade Critique Preview");
+});
+
+it("hydrates and renders latest critique and earlier collapsible critiques with metadata in TradeCritiqueSection", async () => {
+  state.critiqueApiData = {
+    reviews: [
+      {
+        id: "rev_old",
+        createdAt: "2026-11-05T10:00:00.000Z",
+        content: "Older critique content: Entry was premature.",
+        provider: "anthropic",
+        model: "claude-3-5-sonnet",
+      },
+      {
+        id: "rev_new",
+        createdAt: "2026-11-06T15:00:00.000Z",
+        content: "Latest critique content: Followed trading plan cleanly.",
+        provider: "openai",
+        model: "gpt-4.1-mini",
+      },
+    ],
+  };
+
+  await act(async () =>
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(TradeCritiqueSection, { tradeKey: "trade_test_key" }),
+      ),
+    ),
+  );
+
+  // Latest review is shown directly
+  expect(container.textContent).toContain(
+    "Latest critique content: Followed trading plan cleanly.",
+  );
+  expect(container.textContent).toContain("openai");
+  expect(container.textContent).toContain("gpt-4.1-mini");
+  expect(container.textContent).toContain("Latest");
+
+  // Earlier review is collapsed with accessible attributes
+  const toggleBtn = Array.from(container.querySelectorAll("button")).find((b) =>
+    b.textContent?.includes("earlier reviews"),
+  );
+  expect(toggleBtn).toBeDefined();
+  expect(toggleBtn?.getAttribute("aria-expanded")).toBe("false");
+  const controlledId = toggleBtn?.getAttribute("aria-controls");
+  expect(controlledId).toBeTruthy();
+
+  expect(container.textContent).toContain("Show earlier reviews (1)");
+  expect(container.textContent).not.toContain("Older critique content: Entry was premature.");
+
+  // Expand earlier reviews
+  await click("Show earlier reviews (1)");
+  expect(toggleBtn?.getAttribute("aria-expanded")).toBe("true");
+  const expandedSection = container.querySelector(`#${controlledId}`);
+  expect(expandedSection).toBeDefined();
+  expect(container.textContent).toContain("Older critique content: Entry was premature.");
+  expect(container.textContent).toContain("anthropic");
+  expect(container.textContent).toContain("claude-3-5-sonnet");
+  expect(container.textContent).toContain("Hide earlier reviews (1)");
+
+  // Collapse earlier reviews
+  await click("Hide earlier reviews (1)");
+  expect(toggleBtn?.getAttribute("aria-expanded")).toBe("false");
+  expect(container.textContent).not.toContain("Older critique content: Entry was premature.");
+});
+
+it("preserves newly generated review when an older deferred GET resolves after POST (no vanishing review regression)", async () => {
+  // Scenario: Initially GET returned only 1 review
+  state.critiqueApiData = {
+    reviews: [
+      {
+        id: "rev_1",
+        createdAt: "2026-11-06T10:00:00.000Z",
+        content: "First review: Initial analysis.",
+        provider: "anthropic",
+        model: "claude-3-5-sonnet",
+      },
+    ],
+  };
+
+  await act(async () =>
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(TradeCritiqueSection, { tradeKey: "trade_test_key" }),
+      ),
+    ),
+  );
+
+  expect(container.textContent).toContain("First review: Initial analysis.");
+
+  // User generates a second review via POST confirm
+  state.post.mockResolvedValueOnce(previewReply).mockResolvedValueOnce({
+    critique: "Second review: Newly generated analysis.",
+    review: {
+      id: "rev_2",
+      createdAt: "2026-11-06T11:00:00.000Z",
+      content: "Second review: Newly generated analysis.",
+      provider: "openai",
+      model: "gpt-4.1-mini",
+    },
+    reviews: [
+      {
+        id: "rev_1",
+        createdAt: "2026-11-06T10:00:00.000Z",
+        content: "First review: Initial analysis.",
+        provider: "anthropic",
+        model: "claude-3-5-sonnet",
+      },
+      {
+        id: "rev_2",
+        createdAt: "2026-11-06T11:00:00.000Z",
+        content: "Second review: Newly generated analysis.",
+        provider: "openai",
+        model: "gpt-4.1-mini",
+      },
+    ],
+  });
+
+  await click("Critique this trade");
+  await click("Send to Anthropic");
+
+  // Newly generated review is now visible as latest
+  expect(container.textContent).toContain("Second review: Newly generated analysis.");
+  expect(container.textContent).toContain("Show earlier reviews (1)");
+
+  // Now simulate an older deferred GET response arriving with ONLY the older review rev_1
+  // (e.g. from an in-flight network read started earlier)
+  await act(async () => {
+    state.critiqueApiData = {
+      reviews: [
+        {
+          id: "rev_1",
+          createdAt: "2026-11-06T10:00:00.000Z",
+          content: "First review: Initial analysis.",
+          provider: "anthropic",
+          model: "claude-3-5-sonnet",
+        },
+      ],
+    };
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(TradeCritiqueSection, { tradeKey: "trade_test_key" }),
+      ),
+    );
+  });
+
+  // The newly generated review MUST NOT vanish! Append-only merge keeps both!
+  expect(container.textContent).toContain("Second review: Newly generated analysis.");
+  expect(container.textContent).toContain("Show earlier reviews (1)");
+});
+
+it("ignores in-flight async responses when tradeKey changes (cross-trade isolation)", async () => {
+  let resolvePost: (value: unknown) => void = () => {};
+  const pendingPost = new Promise((resolve) => {
+    resolvePost = resolve;
+  });
+  state.post.mockReturnValue(pendingPost);
+
+  // Render for trade_1
+  await act(async () =>
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(TradeCritiqueSection, { tradeKey: "trade_1" }),
+      ),
+    ),
+  );
+
+  // Trigger preview for trade_1
+  await click("Critique this trade");
+  expect(state.post).toHaveBeenCalledWith("/api/ai/critique", {
+    key: "trade_1",
+    preview: true,
+  });
+
+  // Switch tradeKey to trade_2 before trade_1 resolves
+  await act(async () =>
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(TradeCritiqueSection, { tradeKey: "trade_2" }),
+      ),
+    ),
+  );
+
+  // Now resolve the in-flight post for trade_1
+  await act(async () => {
+    resolvePost({
+      preview: {
+        ...previewReply.preview,
+        journalContext: "TRADE 1 CONTEXT THAT MUST NOT LEAK",
+      },
+    });
+  });
+
+  // Trade 2 must NOT show trade 1's preview dialog or context
+  expect(document.body.textContent).not.toContain("TRADE 1 CONTEXT THAT MUST NOT LEAK");
 });

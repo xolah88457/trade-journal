@@ -97,7 +97,7 @@ export const DELETE = handler(async (_request: Request, { params }: Params) => {
   const { key } = await params;
   const row = getTradeByKey(key);
   if (!row) return bad("Trade not found", 404);
-  // Deleting a trade means deleting its executions; the rebuild removes the row.
-  deleteExecutionsForTrades(row.accountId, JSON.parse(row.executionIdsJson) as string[]);
+  // Deleting a trade means deleting its executions and critique history; the rebuild removes the row.
+  deleteExecutionsForTrades(row.accountId, JSON.parse(row.executionIdsJson) as string[], [row.key]);
   return ok({ deleted: true });
 });

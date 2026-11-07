@@ -31,6 +31,7 @@ import {
 } from "@/server/settings";
 import { handler, ok } from "@/server/api";
 import { attachmentExportRecord, EXPORT_ATTACHMENTS_NOTE } from "@/lib/export-format";
+import { listAllTradeAiReviews } from "@/server/ai-review-history";
 
 /**
  * Full data export: your journal is yours. Credentials are deliberately
@@ -108,6 +109,7 @@ export const GET = handler(async (request: Request) => {
       importTimeZone: getImportTimeZone(),
       multipliers: getMultipliers(),
     },
+    aiReviews: listAllTradeAiReviews(),
     // Metadata only: attachment binaries stay in the data directory.
     attachments: db
       .select({

@@ -7,9 +7,11 @@ import {
   Database,
   Download,
   Globe,
+  Info,
   SlidersHorizontal,
   Sparkles,
 } from "lucide-react";
+import { AboutSettings } from "@/components/about-settings";
 import { JournalDefaultSettings } from "@/components/journal-default-settings";
 import { ContractMultiplierSettings, TimeZoneSettings } from "@/components/journal-settings";
 import { MarketDataSettings } from "@/components/market-data-settings";
@@ -59,6 +61,12 @@ const sections = [
     icon: Database,
     description: "Download your journal data for safekeeping or use in other tools.",
   },
+  {
+    id: "about",
+    label: "About & licenses",
+    icon: Info,
+    description: "App origins, open-source licenses, model caveats, and source code.",
+  },
 ] as const;
 type Section = (typeof sections)[number]["id"];
 
@@ -66,6 +74,7 @@ function sectionForHash(hash: string): Section {
   const id = hash.replace(/^#/, "");
   if (id === "market-csv") return "market-data";
   if (id === "contract-multipliers" || id === "journal-defaults") return "trading";
+  if (id === "licenses" || id === "about-licenses") return "about";
   return sections.find((section) => section.id === id)?.id ?? "general";
 }
 
@@ -202,6 +211,7 @@ function Settings() {
                     </CardContent>
                   </Card>
                 )}
+                {id === "about" && <AboutSettings />}
               </div>
             </section>
           ))}

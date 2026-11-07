@@ -14,7 +14,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { Attachments } from "@/components/attachments";
-import { ReviewExport } from "@/components/review-export";
+import { DailyReportExport } from "@/components/daily-report-export";
 import { useAutosave } from "@/lib/use-autosave";
 import { useApi } from "@/lib/use-api";
 import { fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
@@ -218,18 +218,7 @@ function JournalDay({ date }: { date: string }) {
                 Save now
               </Button>
             </div>
-            <ReviewExport
-              containsFinancialData
-              document={{
-                title: `Daily review · ${date}`,
-                subtitle: query ? `Filters: ${query}` : "All accounts",
-                lines: [
-                  `Closed trades: ${m?.closedTrades ?? 0} | Net P&L: ${m?.netPnl.toFixed(2) ?? "0.00"}`,
-                  "",
-                  noteValue,
-                ],
-              }}
-            />
+            <DailyReportExport date={date} query={query} note={note !== null ? note : undefined} />
             <Attachments type="day" id={date} />
           </CardContent>
         </Card>

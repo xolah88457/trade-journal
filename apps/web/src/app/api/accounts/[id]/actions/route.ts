@@ -5,6 +5,7 @@ import { nowIso } from "@/server/ids";
 import { rebuildAccount } from "@/server/rebuild";
 import { syncAccount } from "@/server/sync";
 import { ibkrTransferTimeZone } from "@/server/ibkr-sync-timezone";
+import { deleteTradeAiReviews, migrateTradeAiReviews } from "@/server/ai-review-history";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -29,6 +30,15 @@ export const POST = handler(async (request: Request, { params }: Params) => {
       return ok({ archived: false });
     case "clear":
       db.transaction((tx) => {
+        const tradeRows = tx
+          .select({ key: trades.key })
+          .from(trades)
+          .where(eq(trades.accountId, id))
+          .all();
+        deleteTradeAiReviews(
+          tradeRows.map((t) => t.key),
+          tx,
+        );
         tx.delete(trades).where(eq(trades.accountId, id)).run();
         tx.delete(executions).where(eq(executions.accountId, id)).run();
         tx.update(accounts).set({ ibkrSyncTimeZone: null }).where(eq(accounts.id, id)).run();
@@ -68,6 +78,11 @@ export const POST = handler(async (request: Request, { params }: Params) => {
             .run();
           tx.delete(trades).where(eq(trades.accountId, id)).run();
           tx.update(accounts).set({ ibkrSyncTimeZone: null }).where(eq(accounts.id, id)).run();
+
+          for (const source of sourceTrades) {
+            const newKey = destinationId + source.key.slice(id.length);
+            migrateTradeAiReviews(source.key, newKey, tx);
+          }
         },
         { behavior: "immediate" },
       );

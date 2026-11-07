@@ -3,6 +3,7 @@ import { accounts, db, executions, trades } from "@/db";
 import { bad, handler, ok, requireValue } from "@/server/api";
 import { rebuildAccount } from "@/server/rebuild";
 import { hasSyncedExecutions, isIbkrSyncAccount } from "@/server/ibkr-sync-timezone";
+import { deleteTradeAiReviews } from "@/server/ai-review-history";
 
 type Params = { params: Promise<{ id: string }> };
 
@@ -59,6 +60,15 @@ export const PATCH = handler(async (request: Request, { params }: Params) => {
 export const DELETE = handler(async (_request: Request, { params }: Params) => {
   const { id } = await params;
   db.transaction((tx) => {
+    const tradeRows = tx
+      .select({ key: trades.key })
+      .from(trades)
+      .where(eq(trades.accountId, id))
+      .all();
+    deleteTradeAiReviews(
+      tradeRows.map((t) => t.key),
+      tx,
+    );
     tx.delete(trades).where(eq(trades.accountId, id)).run();
     tx.delete(executions).where(eq(executions.accountId, id)).run();
     tx.delete(accounts).where(eq(accounts.id, id)).run();

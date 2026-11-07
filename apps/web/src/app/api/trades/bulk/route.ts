@@ -45,13 +45,16 @@ export const POST = handler(async (request: Request) => {
         .run();
       return ok({ updated: rows.length });
     case "delete": {
-      const byAccount = new Map<string, string[]>();
+      const byAccount = new Map<string, { executionIds: string[]; tradeKeys: string[] }>();
       for (const row of rows) {
         const ids = JSON.parse(row.executionIdsJson) as string[];
-        byAccount.set(row.accountId, [...(byAccount.get(row.accountId) ?? []), ...ids]);
+        const current = byAccount.get(row.accountId) ?? { executionIds: [], tradeKeys: [] };
+        current.executionIds.push(...ids);
+        current.tradeKeys.push(row.key);
+        byAccount.set(row.accountId, current);
       }
-      for (const [accountId, executionIds] of byAccount) {
-        deleteExecutionsForTrades(accountId, executionIds);
+      for (const [accountId, { executionIds, tradeKeys }] of byAccount) {
+        deleteExecutionsForTrades(accountId, executionIds, tradeKeys);
       }
       return ok({ deleted: rows.length });
     }

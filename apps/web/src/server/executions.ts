@@ -3,6 +3,7 @@ import { positionFillProblem, type ImportedExecution } from "@luxalgo/journal-im
 import { db, executions, accounts, trades } from "@/db";
 import { executionHash, newId, nowIso } from "./ids";
 import { rebuildAccount } from "./rebuild";
+import { deleteTradeAiReviews } from "./ai-review-history";
 import { getJournalDefaults } from "./settings";
 import { defaultFee } from "@/lib/journal-defaults";
 import { requireValue } from "./api";
@@ -356,8 +357,15 @@ export const insertExecutions = (
   return { inserted, duplicates, skipped, skippedReasons, tradeKeys: matchedTradeKeys };
 };
 
-export const deleteExecutionsForTrades = (accountId: string, executionIds: string[]): void => {
+export const deleteExecutionsForTrades = (
+  accountId: string,
+  executionIds: string[],
+  tradeKeys?: string[],
+): void => {
   if (executionIds.length === 0) return;
+  if (tradeKeys && tradeKeys.length > 0) {
+    deleteTradeAiReviews(tradeKeys);
+  }
   db.delete(executions)
     .where(and(eq(executions.accountId, accountId), inArray(executions.id, executionIds)))
     .run();

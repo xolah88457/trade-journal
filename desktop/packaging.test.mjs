@@ -39,6 +39,7 @@ import {
   bundlePackageWithRuntimeDeps,
   checkRequiredScripts,
   cleanPrivateFiles,
+  copyStandaloneForWindows,
   findOwningPackageJson,
   generateAppUpdateYaml,
   getElectronArchiveName,
@@ -65,6 +66,7 @@ import {
   GITHUB_PUBLISH_CONFIG,
   checkNoPrivateFiles,
   checkSelfContainedSymlinks,
+  createDmgWithRetry,
   extractPlistValue,
   mergeLinuxYml,
   packageApp,
@@ -1559,5 +1561,138 @@ test("resolveKoffiPackageDir and assertKoffiPayload verify complete native binar
     assert.ok(found.length > 0);
   } finally {
     rmSync(mockServer, { recursive: true, force: true });
+  }
+});
+
+test("createDmgWithRetry performs bounded retries on Resource busy and fails sanitized on non-busy error", () => {
+  // Test 1: Succeeds on attempt 2 after transient "Resource busy"
+  let callCount = 0;
+  const mockBusyThenSuccess = () => {
+    callCount++;
+    if (callCount === 1) {
+      const err = new Error("hdiutil: create failed - Resource busy");
+      err.stderr = Buffer.from("hdiutil: create failed - Resource busy\n");
+      throw err;
+    }
+  };
+
+  createDmgWithRetry("/staging", "/output.dmg", 3, 10, mockBusyThenSuccess);
+  assert.equal(callCount, 2, "Should retry once on Resource busy and succeed");
+
+  // Test 2: Throws immediately on non-busy error without retrying
+  let nonBusyCalls = 0;
+  assert.throws(
+    () =>
+      createDmgWithRetry("/staging", "/output.dmg", 3, 10, () => {
+        nonBusyCalls++;
+        const err = new Error("hdiutil: file not found");
+        err.stderr = Buffer.from("hdiutil: file not found\n");
+        throw err;
+      }),
+    /hdiutil DMG creation failed: hdiutil: file not found/,
+  );
+  assert.equal(nonBusyCalls, 1, "Non-busy error must not retry");
+
+  // Test 3: Exhausted retries throw sanitized error
+  assert.throws(
+    () =>
+      createDmgWithRetry("/staging", "/output.dmg", 2, 10, () => {
+        const err = new Error("hdiutil: create failed - Resource busy at /private/tmp/secret/path");
+        err.stderr = Buffer.from(
+          "hdiutil: create failed - Resource busy at /private/tmp/secret/path\n",
+        );
+        throw err;
+      }),
+    /hdiutil DMG creation failed: hdiutil: create failed - Resource busy at \[path\]/,
+  );
+});
+
+test("copyStandaloneForWindows copies Next standalone directory tree dereferencing valid packages without EPERM", () => {
+  const mockStandalone = mkdtempSync(join(tmpdir(), "mock-standalone-"));
+  const mockDest = mkdtempSync(join(tmpdir(), "mock-server-dest-"));
+
+  try {
+    // 1. Create simulated pnpm virtual store package
+    const pnpmReactDir = join(
+      mockStandalone,
+      "node_modules",
+      ".pnpm",
+      "react@19.2.8",
+      "node_modules",
+      "react",
+    );
+    mkdirSync(pnpmReactDir, { recursive: true });
+    writeFileSync(
+      join(pnpmReactDir, "package.json"),
+      JSON.stringify({ name: "react", version: "19.2.8" }),
+    );
+    writeFileSync(join(pnpmReactDir, "index.js"), "module.exports = 'react-mock';");
+
+    // 2. Create simulated apps/web with symlink to pnpm react
+    const webModules = join(mockStandalone, "apps", "web", "node_modules");
+    mkdirSync(webModules, { recursive: true });
+    const reactLink = join(webModules, "react");
+    symlinkSync("../../../node_modules/.pnpm/react@19.2.8/node_modules/react", reactLink);
+
+    // 3. Create standalone files
+    writeFileSync(join(mockStandalone, "apps", "web", "server.js"), "console.log('server');");
+    writeFileSync(join(mockStandalone, "package.json"), JSON.stringify({ name: "root" }));
+
+    // Execute copyStandaloneForWindows
+    copyStandaloneForWindows(mockStandalone, mockDest, root);
+
+    // Assert that react was copied dereferenced into destination
+    const copiedReactPkg = join(mockDest, "apps", "web", "node_modules", "react", "package.json");
+    assert.ok(existsSync(copiedReactPkg), "react package.json must exist in copied server");
+    const copiedMeta = JSON.parse(readFileSync(copiedReactPkg, "utf8"));
+    assert.equal(copiedMeta.name, "react");
+    assert.equal(copiedMeta.version, "19.2.8");
+
+    // Assert server.js was copied
+    assert.ok(existsSync(join(mockDest, "apps", "web", "server.js")));
+  } finally {
+    rmSync(mockStandalone, { recursive: true, force: true });
+    rmSync(mockDest, { recursive: true, force: true });
+  }
+});
+
+test("copyStandaloneForWindows fails closed on dangling unresolved link", () => {
+  const mockStandalone = mkdtempSync(join(tmpdir(), "mock-dangling-src-"));
+  const mockDest = mkdtempSync(join(tmpdir(), "mock-dangling-dest-"));
+
+  try {
+    const webModules = join(mockStandalone, "apps", "web", "node_modules");
+    mkdirSync(webModules, { recursive: true });
+    const brokenLink = join(webModules, "dangling-pkg");
+    symlinkSync("/nonexistent/dangling/target/path", brokenLink);
+
+    assert.throws(
+      () => copyStandaloneForWindows(mockStandalone, mockDest, root),
+      /Failed to resolve standalone link target for apps\/web\/node_modules\/dangling-pkg/,
+    );
+  } finally {
+    rmSync(mockStandalone, { recursive: true, force: true });
+    rmSync(mockDest, { recursive: true, force: true });
+  }
+});
+
+test("copyStandaloneForWindows fails fast on circular directory links", () => {
+  const mockStandalone = mkdtempSync(join(tmpdir(), "mock-circular-src-"));
+  const mockDest = mkdtempSync(join(tmpdir(), "mock-circular-dest-"));
+
+  try {
+    const dirA = join(mockStandalone, "dir-a");
+    mkdirSync(dirA, { recursive: true });
+    writeFileSync(join(dirA, "file.txt"), "hello");
+    const loopLink = join(dirA, "loop");
+    symlinkSync(dirA, loopLink);
+
+    assert.throws(
+      () => copyStandaloneForWindows(mockStandalone, mockDest, root),
+      /Circular link detected in standalone bundle/,
+    );
+  } finally {
+    rmSync(mockStandalone, { recursive: true, force: true });
+    rmSync(mockDest, { recursive: true, force: true });
   }
 });

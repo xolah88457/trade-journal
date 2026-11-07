@@ -1,12 +1,15 @@
 import { execFileSync } from "node:child_process";
 import {
   chmodSync,
+  copyFileSync,
   cpSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
+  readlinkSync,
   realpathSync,
   renameSync,
   rmSync,
@@ -15,7 +18,7 @@ import {
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import path, { basename, dirname, join, resolve } from "node:path";
+import path, { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ELECTRON_VERSION = "45.2.3";
@@ -841,6 +844,99 @@ export function bundlePackageWithRuntimeDeps(pkgName, startDir, targetNodeModule
 }
 
 /**
+ * Copies Next.js standalone server directory for Windows without invoking cpSync({ dereference: true })
+ * on Next.js 15 symlinks. Next.js creates symlinks using fs.promises.symlink() without the 'dir'/'junction'
+ * type argument, causing Windows NTFS to create file-type reparse points for directories that throw
+ * EPERM on fs.stat(). Resolves link targets via readlink/realpath/installed package roots, and copies
+ * the actual resolved package directory tree dereferenced.
+ */
+export function copyStandaloneForWindows(standaloneSrc, serverDest, root) {
+  function copyRecursive(srcDir, destDir, ancestors = new Set()) {
+    mkdirSync(destDir, { recursive: true });
+    for (const entry of readdirSync(srcDir, { withFileTypes: true })) {
+      const srcPath = join(srcDir, entry.name);
+      const destPath = join(destDir, entry.name);
+
+      if (entry.isSymbolicLink()) {
+        let resolvedTarget = null;
+
+        // 1. Read the symlink target string and resolve relative to link parent
+        try {
+          const rawLink = readlinkSync(srcPath);
+          const candidate = resolve(srcDir, rawLink);
+          if (existsSync(candidate)) {
+            resolvedTarget = candidate;
+          }
+        } catch {
+          resolvedTarget = null;
+        }
+
+        // 2. Try realpathSync fallback
+        if (!resolvedTarget) {
+          try {
+            const real = realpathSync(srcPath);
+            if (existsSync(real)) {
+              resolvedTarget = real;
+            }
+          } catch {
+            resolvedTarget = null;
+          }
+        }
+
+        // 3. Known installed package roots fallback (apps/web or root package.json)
+        if (!resolvedTarget) {
+          const pkgName = entry.name;
+          for (const start of [join(root, "apps/web/package.json"), join(root, "package.json")]) {
+            if (existsSync(start)) {
+              try {
+                const req = createRequire(start);
+                const entryFile = req.resolve(pkgName);
+                const found = findOwningPackageJson(entryFile);
+                if (found && existsSync(found.pkgDir)) {
+                  resolvedTarget = found.pkgDir;
+                  break;
+                }
+              } catch {}
+            }
+          }
+        }
+
+        // Fail closed immediately on unresolved dangling link
+        if (!resolvedTarget || !existsSync(resolvedTarget)) {
+          const relPath = relative(standaloneSrc, srcPath);
+          throw new Error(
+            `Failed to resolve standalone link target for ${relPath} (link: ${srcPath})`,
+          );
+        }
+
+        // Cycle ancestor fail-fast check
+        if (ancestors.has(resolvedTarget)) {
+          throw new Error(
+            `Circular link detected in standalone bundle: ${srcPath} -> ${resolvedTarget}`,
+          );
+        }
+        const nextAncestors = new Set(ancestors);
+        nextAncestors.add(resolvedTarget);
+
+        // Copy directory via own copyRecursive rather than blind cpSync; preserve file copy
+        const targetStat = lstatSync(resolvedTarget);
+        if (targetStat.isDirectory()) {
+          copyRecursive(resolvedTarget, destPath, nextAncestors);
+        } else {
+          copyFileSync(resolvedTarget, destPath);
+        }
+      } else if (entry.isDirectory()) {
+        copyRecursive(srcPath, destPath, ancestors);
+      } else {
+        copyFileSync(srcPath, destPath);
+      }
+    }
+  }
+
+  copyRecursive(standaloneSrc, serverDest);
+}
+
+/**
  * Augments a staged Next standalone server bundle with genuine portable runtime dependencies.
  * Resolves traced packages from the pnpm store and hoists them so that Next.js sibling dependencies
  * (such as styled-jsx, @next/env, @swc/helpers) resolve cleanly in environments where symlinks
@@ -1160,22 +1256,20 @@ export async function build(options = {}) {
   const standaloneSrc = join(root, "apps/web/.next/standalone");
   const serverDest = join(resources, "server");
 
-  if (platform === "darwin") {
-    // Current Mac preserves verbatim symlinks confinement unchanged
+  if (platform === "win32") {
+    // Windows portable copy: avoids EPERM from cpSync({ dereference: true }) on Next directory junctions
+    copyStandaloneForWindows(standaloneSrc, serverDest, root);
+    augmentStandaloneDependencies(serverDest);
+  } else {
+    // macOS and Linux: preserve proven working paths with verbatim symlinks
     cpSync(standaloneSrc, serverDest, {
       recursive: true,
       dereference: false,
       verbatimSymlinks: true,
     });
-  } else {
-    // On Windows and Linux, copy standalone bundle and augment dereferenced traced packages
-    // with resolved runtime dependency closure so sibling resolution (styled-jsx, @next/env) works
-    cpSync(standaloneSrc, serverDest, {
-      recursive: true,
-      dereference: platform === "win32",
-      verbatimSymlinks: platform !== "win32",
-    });
-    augmentStandaloneDependencies(serverDest);
+    if (platform === "linux") {
+      augmentStandaloneDependencies(serverDest);
+    }
   }
 
   const web = join(resources, "server/apps/web");

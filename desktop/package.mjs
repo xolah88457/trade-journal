@@ -62,6 +62,56 @@ export function resolveArtifactNames(version, arch = process.arch, platform = pr
   };
 }
 
+/**
+ * Invokes hdiutil create with bounded retry for transient "Resource busy" errors.
+ * Spotlight or background system daemons on macOS CI runners can briefly lock files
+ * in staging, throwing "hdiutil: create failed - Resource busy". Retries up to 3 times
+ * with a 2-second delay only on resource busy.
+ */
+export function createDmgWithRetry(
+  dmgStaging,
+  dmgPath,
+  maxRetries = 3,
+  delayMs = 2000,
+  execFn = execFileSync,
+) {
+  const args = [
+    "create",
+    "-volname",
+    "Sumi",
+    "-srcfolder",
+    dmgStaging,
+    "-ov",
+    "-format",
+    "UDZO",
+    dmgPath,
+  ];
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      rmSync(dmgPath, { force: true });
+      execFn("hdiutil", args, { stdio: "pipe" });
+      return;
+    } catch (err) {
+      const stderr = err.stderr ? err.stderr.toString("utf8") : err.message || "";
+      const isBusy = /resource busy/i.test(stderr);
+      if (isBusy && attempt < maxRetries) {
+        console.warn(
+          `[DMG] hdiutil reported resource busy (attempt ${attempt}/${maxRetries}), retrying in ${delayMs / 1000}s...`,
+        );
+        const buffer = new Int32Array(new SharedArrayBuffer(4));
+        Atomics.wait(buffer, 0, 0, delayMs);
+        continue;
+      }
+      const sanitized = stderr.replace(
+        /([A-Za-z]:\\[^\s:"'<>)]*)|(\/(?:Users|home|private|tmp|var)[^\s:"'<>)]*)/gi,
+        "[path]",
+      );
+      throw new Error(`hdiutil DMG creation failed: ${sanitized.trim()}`);
+    }
+  }
+}
+
 export function extractPlistValue(plistContent, key) {
   if (typeof plistContent !== "string") return null;
   const regex = new RegExp(`<key>${key}</key>\\s*<string>([^<]+)</string>`);
@@ -369,11 +419,7 @@ export async function packageApp(options = {}) {
         verbatimSymlinks: true,
       });
       symlinkSync("/Applications", join(dmgStaging, "Applications"));
-      execFileSync(
-        "hdiutil",
-        ["create", "-volname", "Sumi", "-srcfolder", dmgStaging, "-ov", "-format", "UDZO", dmgPath],
-        { stdio: "inherit" },
-      );
+      createDmgWithRetry(dmgStaging, dmgPath, 3, 2000, options.customHdiutil || execFileSync);
     } finally {
       rmSync(dmgStaging, { recursive: true, force: true });
     }

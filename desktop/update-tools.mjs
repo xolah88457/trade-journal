@@ -74,6 +74,7 @@ export function computeKeyFingerprint(base64PublicKey) {
 /**
  * Validates the update configuration object.
  * Canonical fields: feedUrl, publicEdKey, releaseTagPrefix, archiveUrlPattern.
+ * Optional: intelFeedUrl (for x64 feed separation).
  */
 export function validateUpdateConfig(config) {
   const errors = [];
@@ -82,6 +83,9 @@ export function validateUpdateConfig(config) {
   }
   if (!config.feedUrl || !config.feedUrl.startsWith("https://")) {
     errors.push("feedUrl must be an HTTPS URL");
+  }
+  if (config.intelFeedUrl && !config.intelFeedUrl.startsWith("https://")) {
+    errors.push("intelFeedUrl must be an HTTPS URL");
   }
   if (
     !config.publicEdKey ||
@@ -423,6 +427,9 @@ export function buildAppcastCommand(releasesDir, options = {}) {
  * Builds the release plan from the VALIDATED update config — the feed URL and the fixed
  * archive URL always come from desktop/update-config.json (feedUrl / archiveUrlPattern),
  * never from an undeclared default.
+ *
+ * Supports architecture-separated feeds (arm64 -> appcast.xml, x64 -> appcast-x64.xml)
+ * to prevent multiarch feed ambiguity for older 0.2 clients.
  */
 export function buildReleasePlan(options = {}) {
   const config = options.config;
@@ -436,6 +443,10 @@ export function buildReleasePlan(options = {}) {
   if (!/^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$/.test(version)) {
     throw new Error("Sanitized error: version must be semver-like (X.Y.Z).");
   }
+
+  const rawArch = options.arch || (process.arch === "x64" ? "x64" : "arm64");
+  const normArch = rawArch === "x64" || rawArch === "intel" ? "x64" : "arm64";
+
   const pattern = config.archiveUrlPattern;
   if (
     typeof pattern !== "string" ||
@@ -446,7 +457,16 @@ export function buildReleasePlan(options = {}) {
       "Sanitized error: archiveUrlPattern must be an HTTPS URL containing {version}.",
     );
   }
-  const archiveURL = pattern.split("{version}").join(version); // fixed archive URL from config
+
+  let archiveURL = pattern.split("{version}").join(version);
+  if (archiveURL.includes("{arch}")) {
+    archiveURL = archiveURL.split("{arch}").join(normArch);
+  } else if (normArch === "x64" && archiveURL.includes("-arm64.zip")) {
+    archiveURL = archiveURL.replace("-arm64.zip", "-x64.zip");
+  } else if (normArch === "arm64" && archiveURL.includes("-x64.zip")) {
+    archiveURL = archiveURL.replace("-x64.zip", "-arm64.zip");
+  }
+
   const slash = archiveURL.lastIndexOf("/");
   const zipName = decodeURIComponent(archiveURL.slice(slash + 1));
   if (!zipName.toLowerCase().endsWith(".zip")) {
@@ -456,7 +476,16 @@ export function buildReleasePlan(options = {}) {
   }
   const downloadUrlPrefix = archiveURL.slice(0, slash + 1);
 
-  let feedUrl = config.feedUrl; // validated config feedUrl — no undeclared default
+  const appcastName = normArch === "x64" ? "appcast-x64.xml" : "appcast.xml";
+  let feedUrl = config.feedUrl; // validated config feedUrl
+  if (normArch === "x64") {
+    feedUrl =
+      config.intelFeedUrl ||
+      config.feedUrlX64 ||
+      (config.feedUrl && config.feedUrl.endsWith("/appcast.xml")
+        ? config.feedUrl.replace(/\/appcast\.xml$/, "/appcast-x64.xml")
+        : config.feedUrl);
+  }
   if (options.feedUrlOverride) {
     if (!String(options.feedUrlOverride).startsWith("https://")) {
       throw new Error("Sanitized error: --feed-url override must be an HTTPS URL.");
@@ -467,13 +496,15 @@ export function buildReleasePlan(options = {}) {
   const distDir = options.distDir || "dist";
   return {
     version,
+    arch: normArch,
     feedUrl,
     publicEdKey: config.publicEdKey,
     archiveURL,
     zipName,
+    appcastName,
     downloadUrlPrefix,
     zipPath: path.join(distDir, zipName),
-    appcastPath: path.join(distDir, "appcast.xml"),
+    appcastPath: path.join(distDir, appcastName),
     distDir,
     repo: options.repo || DEFAULT_REPO,
     releaseTagPrefix:
@@ -726,34 +757,39 @@ export function parseCliFlag(args, name) {
 }
 
 /**
- * Signs the release ZIP and generates appcast.xml.
+ * Signs the release ZIP and generates appcast.xml (or appcast-x64.xml for Intel).
  *
  * Security/behavior contract:
+ * - Supports architecture separation (arm64 vs x64):
+ *     arm64 signs Sumi-{version}-macos-arm64.zip -> appcast.xml
+ *     x64   signs Sumi-{version}-macos-x64.zip   -> appcast-x64.xml
  * - The SPARKLE_PRIVATE_KEY secret is verified against the configured publicEdKey
  *   (verifyPrivateKeyMatchesPublic) BEFORE any sign/key-use; mismatch halts.
  * - The private key is only ever piped via STDIN (--ed-key-file -), never argv.
  * - generate_appcast writes appcast.xml INTO the release directory; its stdout is
  *   diagnostics and is NEVER published as the feed. The tool-produced appcast.xml is
  *   read back and validated (RSS structure, sparkle:edSignature, ZIP + version) before
- *   being copied to dist/appcast.xml.
+ *   being copied to dist/appcast.xml (or dist/appcast-x64.xml).
  *
- * Injectable for tests: resolveTool, runTool, configPath, distDir, privateKey.
+ * Injectable for tests: resolveTool, runTool, configPath, distDir, privateKey, rootVersion.
  */
 export async function runRelease(options = {}) {
+  const normArch = options.arch === "x64" || options.arch === "intel" ? "x64" : "arm64";
   const resolveTool =
-    options.resolveTool ||
-    ((name) => resolveSparkleBinary(name, { architecture: SPARKLE_ARCHITECTURE }));
+    options.resolveTool || ((name) => resolveSparkleBinary(name, { architecture: normArch }));
   const runTool = options.runTool || runSparkleTool;
   const configPath = options.configPath || CONFIG_PATH;
   const distDir = options.distDir || "dist";
 
-  // Root package.json is the single source of truth for the version (currently 0.2.0)
-  let rootVersion = "0.2.0";
-  try {
-    rootVersion =
-      JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version ||
-      rootVersion;
-  } catch {}
+  // Root package.json is the source of truth for the version when not injected
+  let rootVersion = options.rootVersion || "0.3.0";
+  if (!options.rootVersion) {
+    try {
+      rootVersion =
+        JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version ||
+        rootVersion;
+    } catch {}
+  }
   const version = options.version || rootVersion;
   if (options.version && options.version !== rootVersion) {
     throw new Error("Sanitized error: --version does not match the root package.json version.");
@@ -769,6 +805,7 @@ export async function runRelease(options = {}) {
   const plan = buildReleasePlan({
     config,
     version,
+    arch: normArch,
     distDir,
     feedUrlOverride: options.feedUrlOverride || null,
     repo: options.repo,
@@ -792,7 +829,7 @@ export async function runRelease(options = {}) {
   }
 
   // 1. Sign the ZIP archive — private key via STDIN only (--ed-key-file -), never in argv
-  console.log(`[release] Signing ${plan.zipName}...`);
+  console.log(`[release] Signing ${plan.zipName} (${plan.arch})...`);
   const signUpdateBin = await resolveTool("sign-update");
   const signResult = await runTool(signUpdateBin, ["--ed-key-file", "-", plan.zipPath], {
     input: privateKey,
@@ -800,8 +837,8 @@ export async function runRelease(options = {}) {
   assertToolSuccess(signResult, "Sanitized error: Failed to sign archive.");
   console.log(`[release] Successfully signed ${plan.zipName}`);
 
-  // 2. Generate appcast.xml with ONLY the ZIP (no DMG duplicate in the feed)
-  console.log("[release] Generating appcast.xml...");
+  // 2. Generate appcast.xml (or appcast-x64.xml) with ONLY the corresponding ZIP (no multiarch ambiguity)
+  console.log(`[release] Generating ${plan.appcastName}...`);
   const tempReleaseDir = fs.mkdtempSync(path.join(os.tmpdir(), "sparkle-release-"));
   try {
     fs.copyFileSync(plan.zipPath, path.join(tempReleaseDir, plan.zipName));
@@ -848,6 +885,61 @@ export async function runRelease(options = {}) {
   }
 }
 
+/**
+ * Generates an aggregate SHA256SUMS.txt covering all released assets across all targets.
+ * Strictly excludes the checksum file itself, directories, and forbidden files.
+ */
+export function generateAggregateSha256Sums(
+  distDir,
+  outputFile = path.join(distDir, "SHA256SUMS.txt"),
+) {
+  if (!fs.existsSync(distDir)) {
+    throw new Error(`Sanitized error: dist directory does not exist at ${distDir}`);
+  }
+  const selfName = path.basename(outputFile);
+  const allowedExtensions = new Set([
+    ".zip",
+    ".dmg",
+    ".exe",
+    ".appimage",
+    ".deb",
+    ".blockmap",
+    ".yml",
+    ".yaml",
+    ".xml",
+  ]);
+
+  const entries = fs.readdirSync(distDir, { withFileTypes: true });
+  const assetFiles = entries
+    .filter((entry) => {
+      if (!entry.isFile()) return false;
+      if (entry.name === selfName) return false;
+      if (entry.name.startsWith(".env") || entry.name.startsWith(".secret")) return false;
+      if (/\.(db|sqlite)(-shm|-wal|-journal)?$/i.test(entry.name)) return false;
+      if (/\.(key|pem|pfx|p12)$/i.test(entry.name)) return false;
+      const ext = path.extname(entry.name).toLowerCase();
+      return allowedExtensions.has(ext);
+    })
+    .map((e) => e.name)
+    .sort();
+
+  if (assetFiles.length === 0) {
+    throw new Error("Sanitized error: No allowed release assets found to checksum.");
+  }
+
+  const lines = [];
+  for (const filename of assetFiles) {
+    const fullPath = path.join(distDir, filename);
+    const bytes = fs.readFileSync(fullPath);
+    const hash = createHash("sha256").update(bytes).digest("hex");
+    lines.push(`${hash}  ${filename}`);
+  }
+
+  const content = lines.join("\n") + "\n";
+  fs.writeFileSync(outputFile, content, "utf8");
+  return { count: assetFiles.length, files: assetFiles, content };
+}
+
 // --------------------------------------------------------------------------
 // CLI Entrypoint
 // --------------------------------------------------------------------------
@@ -866,9 +958,12 @@ Commands:
   verify-config             Validate desktop/update-config.json structure and keys
   sign-command <archive>    Print exact sign_update command for given archive
   appcast-command <dir>     Print exact generate_appcast command for release directory
-  release [--version=X.Y.Z] [--dist-dir=dist] [--feed-url=URL]  Sign ZIP and generate appcast.xml (only ZIP).
+  release [--version=X.Y.Z] [--arch=arm64|x64] [--dist-dir=dist] [--feed-url=URL]
+                            Sign ZIP and generate appcast.xml (or appcast-x64.xml).
                             Version defaults to the root package.json version; feed URL and
                             archive URL come from the validated desktop/update-config.json.
+  aggregate-sums [--dist-dir=dist] [--output=FILE]
+                            Generate aggregate SHA256SUMS.txt covering all release assets.
   help                      Show this help message
 `);
     process.exit(0);
@@ -914,13 +1009,16 @@ Commands:
     }
     console.log("Config verification passed:");
     console.log(` - Feed URL: ${config.feedUrl}`);
+    if (config.intelFeedUrl) {
+      console.log(` - Intel Feed URL: ${config.intelFeedUrl}`);
+    }
     console.log(` - Public Key: ${config.publicEdKey}`);
     console.log(` - Fingerprint: ${computeKeyFingerprint(config.publicEdKey)}`);
     process.exit(0);
   }
 
   if (command === "sign-command") {
-    const archive = args[1] || "dist/Sumi-0.2.0-macos-arm64.zip";
+    const archive = args[1] || "dist/Sumi-0.3.0-macos-arm64.zip";
     console.log(buildSignCommand(archive));
     process.exit(0);
   }
@@ -931,19 +1029,36 @@ Commands:
     process.exit(0);
   }
 
+  if (command === "aggregate-sums") {
+    const distDir = parseCliFlag(args, "dist-dir") || "dist";
+    const output = parseCliFlag(args, "output") || path.join(distDir, "SHA256SUMS.txt");
+    try {
+      const result = generateAggregateSha256Sums(distDir, output);
+      console.log(`[aggregate-sums] Generated checksums for ${result.count} assets -> ${output}`);
+      process.exit(0);
+    } catch (err) {
+      console.error(err.message || "Sanitized error: Failed to generate checksums.");
+      process.exit(1);
+    }
+  }
+
   if (command === "release") {
     // Accept both --flag=value and --flag value forms
     const version = parseCliFlag(args, "version");
+    const arch = parseCliFlag(args, "arch");
     const distDir = parseCliFlag(args, "dist-dir") || "dist";
     const feedUrl = parseCliFlag(args, "feed-url");
     try {
       const result = await runRelease({
         version,
+        arch,
         distDir,
         feedUrlOverride: feedUrl,
         privateKey: process.env.SPARKLE_PRIVATE_KEY,
       });
+      console.log(`[release] Architecture: ${result.plan.arch}`);
       console.log(`[release] Feed URL (validated config): ${result.plan.feedUrl}`);
+      console.log(`[release] Appcast file: ${result.plan.appcastPath}`);
       console.log("[release] Release artifacts signed and appcast generated successfully.");
       process.exit(0);
     } catch (err) {

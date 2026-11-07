@@ -432,4 +432,113 @@ describe("AboutSettings update functionality", () => {
       "Opens the update window to download, install, and restart Sumi. Save your work first.",
     );
   });
+
+  it("shows cross-platform update description on Windows and Linux", async () => {
+    setupDesktopBridge(
+      { version: "0.3.0", electronVersion: "45.2.3", platform: "win32", arch: "x64" },
+      vi.fn().mockResolvedValue({ status: "idle", nativeUI: true, provider: "electron-updater" }),
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain(
+      "Checks for updates and prompts to download, install, and restart Sumi.",
+    );
+    expect(text).not.toContain("Opens the update window to download");
+  });
+
+  it("honestly renders unavailable status without false green up-to-date checkmark", async () => {
+    const checkMock = vi.fn().mockResolvedValue({
+      status: "unavailable",
+      message:
+        "Automatic updates are not supported for portable or tarball installations. Please update manually or install via AppImage or .deb.",
+      nativeUI: true,
+      provider: "electron-updater",
+    });
+    setupDesktopBridge(
+      {
+        version: "0.3.0",
+        electronVersion: "45.2.3",
+        platform: "linux",
+        arch: "x64",
+        update: {
+          status: "unavailable",
+          message:
+            "Automatic updates are not supported for portable or tarball installations. Please update manually or install via AppImage or .deb.",
+          nativeUI: true,
+          provider: "electron-updater",
+        },
+      },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    // Truthful message must be displayed
+    expect(text).toContain(
+      "Automatic updates are not supported for portable or tarball installations",
+    );
+    // NO FALSE GREEN: Must NEVER claim "Sumi is up to date"
+    expect(text).not.toContain("Sumi is up to date");
+  });
+
+  it("renders downloading state when update is downloading", async () => {
+    setupDesktopBridge(
+      {
+        version: "0.3.0",
+        electronVersion: "45.2.3",
+        platform: "win32",
+        arch: "x64",
+        update: {
+          status: "downloading",
+          message: "Downloading update… (42%)",
+          nativeUI: true,
+          provider: "electron-updater",
+        },
+      },
+      vi.fn(),
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Downloading update… (42%)");
+  });
+
+  it("renders downloaded and installing states honestly", async () => {
+    setupDesktopBridge(
+      {
+        version: "0.3.0",
+        electronVersion: "45.2.3",
+        platform: "win32",
+        arch: "x64",
+        update: {
+          status: "downloaded",
+          message: "Update 0.4.0 downloaded; ready to install.",
+          nativeUI: true,
+          provider: "electron-updater",
+        },
+      },
+      vi.fn(),
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Update 0.4.0 downloaded; ready to install.");
+  });
 });

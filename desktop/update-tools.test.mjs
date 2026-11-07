@@ -12,6 +12,7 @@ import {
   buildReleasePlan,
   classifyKeychainLookup,
   executeKeyprep,
+  generateAggregateSha256Sums,
   loadSparkleArtifactsModule,
   parseCliFlag,
   resolveSparkleBinary,
@@ -454,7 +455,7 @@ test("keyprep: access-denied lookup halts and never generates a new key (no rota
 // the tool-produced file, never from stdout
 // ---------------------------------------------------------------------------
 
-function makeReleaseFixture() {
+function makeReleaseFixture(version = "0.3.0", arch = "arm64") {
   const keypair = makeSyntheticKeypair();
   const tmp = makeTempDir("release-test-");
   const distDir = path.join(tmp, "dist");
@@ -462,14 +463,16 @@ function makeReleaseFixture() {
   const config = {
     provider: "sparkle",
     feedUrl: "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml",
+    intelFeedUrl:
+      "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml",
     publicEdKey: keypair.publicB64,
     releaseTagPrefix: "electron-v",
     archiveUrlPattern:
-      "https://github.com/xolah88457/trade-journal/releases/download/electron-v{version}/Sumi-{version}-macos-arm64.zip",
+      "https://github.com/xolah88457/trade-journal/releases/download/electron-v{version}/Sumi-{version}-macos-{arch}.zip",
   };
   const configPath = path.join(tmp, "update-config.json");
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2), "utf8");
-  const zipName = "Sumi-0.2.0-macos-arm64.zip";
+  const zipName = `Sumi-${version}-macos-${arch}.zip`;
   fs.writeFileSync(path.join(distDir, zipName), Buffer.from("fake-zip-bytes"), "utf8");
   return {
     keypair,
@@ -477,6 +480,8 @@ function makeReleaseFixture() {
     distDir,
     configPath,
     zipName,
+    version,
+    arch,
     privateKey: keypair.exportFileContent.toString("utf8"),
   };
 }
@@ -496,15 +501,16 @@ test("cli flags: parser accepts both --flag=value and --flag value", () => {
 });
 
 test("release: SPARKLE_PRIVATE_KEY mismatching config publicEdKey is rejected BEFORE any sign/key-use", async () => {
-  const { tmp, configPath, privateKey } = makeReleaseFixture();
+  const { tmp, configPath, privateKey, version } = makeReleaseFixture("0.3.0");
   const other = makeSyntheticKeypair(); // different key -> mismatch
   const toolCalls = [];
   try {
     await assert.rejects(
       runRelease({
-        version: "0.2.0",
+        version,
         distDir: path.join(tmp, "dist"),
         configPath,
+        rootVersion: version,
         privateKey: other.exportFileContent.toString("utf8"), // wrong secret
         resolveTool: async (name) => {
           toolCalls.push(name);
@@ -527,13 +533,13 @@ test("release: SPARKLE_PRIVATE_KEY mismatching config publicEdKey is rejected BE
 });
 
 test("release: publishes only the tool-produced appcast.xml (validated, signed), never stdout diagnostics", async () => {
-  const { tmp, distDir, configPath, zipName, privateKey } = makeReleaseFixture();
+  const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture("0.3.0");
   const calls = [];
   const producedAppcast = [
     '<?xml version="1.0" encoding="utf-8"?>',
     '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">',
     "  <channel>",
-    `    <item><enclosure url="https://example.test/electron-v0.2.0/${zipName}" sparkle:edSignature="c2ln" sparkle:version="0.2.0" sparkle:shortVersionString="0.2.0" type="application/octet-stream"/></item>`,
+    `    <item><enclosure url="https://example.test/electron-v${version}/${zipName}" sparkle:edSignature="c2ln" sparkle:version="${version}" sparkle:shortVersionString="${version}" type="application/octet-stream"/></item>`,
     "  </channel>",
     "</rss>",
   ].join("\n");
@@ -555,9 +561,10 @@ test("release: publishes only the tool-produced appcast.xml (validated, signed),
   };
   try {
     const result = await runRelease({
-      version: "0.2.0",
+      version,
       distDir,
       configPath,
+      rootVersion: version,
       privateKey,
       resolveTool: async (name) => `/fake/${name}`,
       runTool,
@@ -574,20 +581,21 @@ test("release: publishes only the tool-produced appcast.xml (validated, signed),
     assert.ok(calls.every((c) => !c.args.includes(privateKey)));
     // Temp release dir cleaned up (only ZIP + appcast.xml were inside, now removed)
     const leftovers = fs.readdirSync(distDir);
-    assert.deepEqual(leftovers.sort(), ["Sumi-0.2.0-macos-arm64.zip", "appcast.xml"].sort());
+    assert.deepEqual(leftovers.sort(), [`Sumi-${version}-macos-arm64.zip`, "appcast.xml"].sort());
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
 });
 
 test("release: missing tool-produced appcast.xml fails sanitized and publishes nothing", async () => {
-  const { tmp, distDir, configPath, privateKey } = makeReleaseFixture();
+  const { tmp, distDir, configPath, privateKey, version } = makeReleaseFixture("0.3.0");
   try {
     await assert.rejects(
       runRelease({
-        version: "0.2.0",
+        version,
         distDir,
         configPath,
+        rootVersion: version,
         privateKey,
         resolveTool: async (name) => `/fake/${name}`,
         runTool: async () => ({ code: 0, signal: null, stdout: "no file written", stderr: "" }),
@@ -595,6 +603,83 @@ test("release: missing tool-produced appcast.xml fails sanitized and publishes n
       /did not produce appcast\.xml/,
     );
     assert.equal(fs.existsSync(path.join(distDir, "appcast.xml")), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release: x64 Intel signs x64 ZIP and produces appcast-x64.xml without multiarch feed ambiguity", async () => {
+  const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture(
+    "0.3.0",
+    "x64",
+  );
+  const calls = [];
+  const producedAppcast = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">',
+    "  <channel>",
+    `    <item><enclosure url="https://example.test/electron-v${version}/${zipName}" sparkle:edSignature="c2lnSW50ZWw=" sparkle:version="${version}" sparkle:shortVersionString="${version}" type="application/octet-stream"/></item>`,
+    "  </channel>",
+    "</rss>",
+  ].join("\n");
+  const runTool = async (bin, args, opts) => {
+    calls.push({ bin, args: [...args], input: opts && opts.input != null ? "[stdin]" : null });
+    if (bin.includes("sign-update")) {
+      return { code: 0, signal: null, stdout: "signed", stderr: "" };
+    }
+    const releaseDir = args[args.length - 1];
+    fs.writeFileSync(path.join(releaseDir, "appcast.xml"), producedAppcast, "utf8");
+    return { code: 0, signal: null, stdout: "done", stderr: "" };
+  };
+  try {
+    const result = await runRelease({
+      version,
+      arch: "x64",
+      distDir,
+      configPath,
+      rootVersion: version,
+      privateKey,
+      resolveTool: async (name) => `/fake/x64/${name}`,
+      runTool,
+    });
+    assert.equal(result.appcastPath, path.join(distDir, "appcast-x64.xml"));
+    assert.equal(fs.existsSync(path.join(distDir, "appcast-x64.xml")), true);
+    const content = fs.readFileSync(result.appcastPath, "utf8");
+    assert.ok(content.includes(`Sumi-${version}-macos-x64.zip`));
+    assert.ok(content.includes("sparkle:edSignature"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("aggregateSha256Sums: generates checksums covering allowlisted release assets and excludes self", () => {
+  const tmp = makeTempDir("sums-test-");
+  try {
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.0-macos-arm64.zip"), "arm-zip");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.0-macos-arm64.dmg"), "arm-dmg");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.0-win32-x64-setup.exe"), "win-exe");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.0-linux-x64.AppImage"), "linux-appimage");
+    fs.writeFileSync(path.join(tmp, "latest.yml"), "version: 0.3.0");
+    fs.writeFileSync(path.join(tmp, "appcast.xml"), "<rss></rss>");
+    fs.writeFileSync(path.join(tmp, ".env.production"), "FORBIDDEN=1");
+    fs.writeFileSync(path.join(tmp, "private.key"), "FORBIDDEN_KEY");
+    fs.writeFileSync(path.join(tmp, "journal.db"), "FORBIDDEN_DB");
+
+    const sumsPath = path.join(tmp, "SHA256SUMS.txt");
+    const result = generateAggregateSha256Sums(tmp, sumsPath);
+    assert.equal(result.count, 6);
+    assert.ok(fs.existsSync(sumsPath));
+    const content = fs.readFileSync(sumsPath, "utf8");
+    assert.ok(content.includes("Sumi-0.3.0-macos-arm64.zip"));
+    assert.ok(content.includes("Sumi-0.3.0-macos-arm64.dmg"));
+    assert.ok(content.includes("Sumi-0.3.0-win32-x64-setup.exe"));
+    assert.ok(content.includes("Sumi-0.3.0-linux-x64.AppImage"));
+    assert.ok(content.includes("latest.yml"));
+    assert.ok(content.includes("appcast.xml"));
+    assert.ok(!content.includes("SHA256SUMS.txt"));
+    assert.ok(!content.includes(".env"));
+    assert.ok(!content.includes("private.key"));
+    assert.ok(!content.includes("journal.db"));
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

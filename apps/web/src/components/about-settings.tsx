@@ -271,8 +271,9 @@ export function AboutSettings() {
               </div>
 
               <p className="text-xs text-muted-foreground leading-relaxed">
-                Opens the update window to download, install, and restart Sumi. Save your work
-                first.
+                {info?.platform === "win32" || info?.platform === "linux"
+                  ? "Checks for updates and prompts to download, install, and restart Sumi. Save your work first."
+                  : "Opens the update window to download, install, and restart Sumi. Save your work first."}
               </p>
 
               {error && (
@@ -307,6 +308,49 @@ export function AboutSettings() {
                     {info.update.availableVersion ? `: v${info.update.availableVersion}` : ""}.{" "}
                     {info.update.message ||
                       "Native updater window will guide download and restart."}
+                  </span>
+                </div>
+              )}
+
+              {!error && info?.update?.status === "downloading" && (
+                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs text-foreground">
+                  <Loader2
+                    className="size-4 shrink-0 animate-spin text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span>{info.update.message || "Downloading update…"}</span>
+                </div>
+              )}
+
+              {!error && info?.update?.status === "downloaded" && (
+                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs text-foreground">
+                  <CheckCircle2
+                    className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+                    aria-hidden="true"
+                  />
+                  <span>{info.update.message || "Update downloaded; ready to install."}</span>
+                </div>
+              )}
+
+              {!error && info?.update?.status === "installing" && (
+                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs text-foreground">
+                  <Loader2
+                    className="size-4 shrink-0 animate-spin text-muted-foreground"
+                    aria-hidden="true"
+                  />
+                  <span>{info.update.message || "Installing update…"}</span>
+                </div>
+              )}
+
+              {!error && info?.update?.status === "unavailable" && (
+                <div className="flex items-start gap-2 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs text-muted-foreground">
+                  <AlertCircle
+                    className="size-4 shrink-0 text-muted-foreground mt-0.5"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    {info.update.message ||
+                      "Automatic updates are unavailable for this installation format."}
                   </span>
                 </div>
               )}

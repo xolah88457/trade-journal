@@ -1,85 +1,122 @@
 name: Release Electron Desktop App
 
-on:
+"on":
   push:
+    branches:
+      - electron
     tags:
       - "electron-v*"
-  workflow_dispatch:
-    inputs:
-      tag:
-        description: "Release tag to build and publish (must match electron-v<semver>, e.g. electron-v0.2.0)"
-        required: true
-        type: string
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: electron-release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  release-macos-arm64:
-    name: Build & Publish macOS Apple Silicon (arm64) Release
-    # Verified GitHub-hosted Apple Silicon ARM64 runner label from official runner-images documentation
-    runs-on: macos-15
+  build-check-smoke:
+    name: Build & Verify (${{ matrix.target.name }})
+    runs-on: ${{ matrix.target.os }}
+    defaults:
+      run:
+        shell: bash
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - id: macos-arm64
+            name: macOS Apple Silicon (arm64)
+            os: macos-15
+            arch: arm64
+            platform: darwin
+          - id: macos-x64
+            name: macOS Intel (x64)
+            os: macos-15-intel
+            arch: x64
+            platform: darwin
+          - id: windows-x64
+            name: Windows (x64)
+            os: windows-latest
+            arch: x64
+            platform: win32
+          - id: linux-x64
+            name: Linux Ubuntu (x64)
+            os: ubuntu-22.04
+            arch: x64
+            platform: linux
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+          persist-credentials: false
 
-      - name: Strict ARM64 Architecture Guard
+      - name: Strict Architecture & Platform Guard
         run: |
           RUNNER_ARCH="$(uname -m)"
-          echo "Detected runner architecture: $RUNNER_ARCH"
-          if [ "$RUNNER_ARCH" != "arm64" ]; then
-            echo "::error::Strict ARM64 guard failed: expected arm64 runner, got $RUNNER_ARCH"
-            exit 1
+          echo "Detected runner architecture: $RUNNER_ARCH for target ${{ matrix.target.id }}"
+          EXPECTED_ARCH="${{ matrix.target.arch }}"
+          if [ "$EXPECTED_ARCH" = "arm64" ]; then
+            if [ "$RUNNER_ARCH" != "arm64" ] && [ "$RUNNER_ARCH" != "aarch64" ]; then
+              echo "::error::Strict ARM64 guard failed: expected arm64 runner, got $RUNNER_ARCH"
+              exit 1
+            fi
+          elif [ "$EXPECTED_ARCH" = "x64" ]; then
+            if [ "$RUNNER_ARCH" != "x86_64" ] && [ "$RUNNER_ARCH" != "AMD64" ]; then
+              echo "::error::Strict x64 guard failed: expected x86_64 runner, got $RUNNER_ARCH"
+              exit 1
+            fi
           fi
 
       - name: Validate Tag, Root Version, and Branch Ancestry
         id: validate
+        env:
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          COMMIT_SHA: ${{ github.sha }}
         run: |
-          # 1. Determine release tag
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            TAG_NAME="${{ inputs.tag }}"
-          else
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "Evaluating release tag: $TAG_NAME"
-
-          # 2. Strict tag format verification: electron-v<semver>
-          if ! echo "$TAG_NAME" | grep -Eq '^electron-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::Tag '$TAG_NAME' does not match required format 'electron-v<semver>' (e.g. electron-v0.2.0)"
-            exit 1
-          fi
-
-          # 3. Version parity check with root package.json single source of truth
-          TAG_VERSION="${TAG_NAME#electron-v}"
           ROOT_VERSION=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version)')
-          echo "Tag version: $TAG_VERSION | Root package.json version: $ROOT_VERSION"
-          if [ "$TAG_VERSION" != "$ROOT_VERSION" ]; then
-            echo "::error::Version mismatch: tag specifies $TAG_VERSION but package.json specifies $ROOT_VERSION"
-            exit 1
-          fi
+          echo "Root package.json version: $ROOT_VERSION"
 
-          # 4. Strict branch ancestry check against origin/electron
-          git fetch origin electron || true
-          COMMIT_SHA="${{ github.sha }}"
-          echo "Verifying ancestry for commit SHA: $COMMIT_SHA"
+          if [ "$REF_TYPE" = "tag" ]; then
+            TAG_NAME="$REF_NAME"
+            IS_RELEASE="true"
+            echo "Evaluating release tag: $TAG_NAME"
 
-          if git merge-base --is-ancestor "$COMMIT_SHA" origin/electron; then
+            # Strict tag format verification: electron-v<semver>
+            if ! echo "$TAG_NAME" | grep -Eq '^electron-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+              echo "::error::Tag '$TAG_NAME' does not match required format 'electron-v<semver>' (e.g. electron-v0.3.0)"
+              exit 1
+            fi
+
+            TAG_VERSION="${TAG_NAME#electron-v}"
+            echo "Tag version: $TAG_VERSION | Root package.json version: $ROOT_VERSION"
+            if [ "$TAG_VERSION" != "$ROOT_VERSION" ]; then
+              echo "::error::Version mismatch: tag specifies $TAG_VERSION but package.json specifies $ROOT_VERSION"
+              exit 1
+            fi
+
+            # Strict branch ancestry check against origin/electron: fetch must succeed, commit must be an ancestor of origin/electron
+            git fetch origin electron
+            echo "Verifying ancestry: commit SHA $COMMIT_SHA must be an ancestor of origin/electron"
+            if ! git merge-base --is-ancestor "$COMMIT_SHA" origin/electron; then
+              echo "::error::Commit $COMMIT_SHA is not an ancestor of origin/electron branch"
+              exit 1
+            fi
             echo "Ancestry verified: $COMMIT_SHA is an ancestor of origin/electron"
-          elif git merge-base --is-ancestor origin/electron "$COMMIT_SHA"; then
-            echo "Ancestry verified: $COMMIT_SHA descends from origin/electron"
+            VERSION="$TAG_VERSION"
           else
-            echo "::error::Commit $COMMIT_SHA is neither ancestor nor descendant of origin/electron branch"
-            exit 1
+            TAG_NAME="ci-push-${ROOT_VERSION}"
+            IS_RELEASE="false"
+            VERSION="$ROOT_VERSION"
+            echo "Running CI validation on push to electron branch (is_release: false)"
           fi
 
+          echo "is_release=$IS_RELEASE" >> "$GITHUB_OUTPUT"
           echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
-          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm (pinned 11.0.8)
         uses: pnpm/action-setup@v6
@@ -95,153 +132,406 @@ jobs:
       - name: Install dependencies (frozen)
         run: pnpm install --frozen-lockfile
 
-      - name: Updater tooling syntax + owned unit tests (node:test, synthetic fixtures only — no keys, no network)
+      - name: Tooling syntax & owned unit tests (no secrets, synthetic fixtures only)
         run: |
           node --check desktop/update-tools.mjs
           node --check desktop/update-service.cjs
-          node --test desktop/update-service.test.mjs desktop/update-tools.test.mjs
+          node --check desktop/check-support.mjs
+          node desktop/check-support.mjs
+          node --test \
+            desktop/child-shutdown.test.mjs \
+            desktop/lifecycle.test.mjs \
+            desktop/preferences.test.mjs \
+            desktop/preload.test.mjs \
+            desktop/security.test.mjs \
+            desktop/packaging.test.mjs \
+            desktop/update-service.test.mjs \
+            desktop/update-tools.test.mjs \
+            desktop/cross-platform-smoke.test.mjs
 
       - name: TypeScript typecheck
         run: pnpm typecheck
 
-      - name: Run test suite
-        run: pnpm test
+      - name: Run vitest test suite
+        run: pnpm test --maxWorkers=2
+
+      - name: Install Linux GUI, Xvfb, and native dependencies
+        if: matrix.target.platform == 'linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libasound2 libgbm1 libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libdrm2 libxkbcommon0 libxcomposite1 libxdamage1 libxfixes3 libxrandr2
 
       - name: Build Electron desktop app
         run: pnpm desktop:build
 
-      - name: Run desktop check & native Sparkle doctor
+      - name: Run desktop check & native ASR doctor
         run: |
           pnpm desktop:check
-          if [ -f "desktop/sparkle-doctor.mjs" ]; then
-            node desktop/sparkle-doctor.mjs
-          elif [ -f "desktop/doctor.mjs" ]; then
-            node desktop/doctor.mjs
+          if [ "${{ matrix.target.platform }}" = "darwin" ]; then
+            if [ -f "desktop/sparkle-doctor.mjs" ]; then
+              node desktop/sparkle-doctor.mjs
+            elif [ -f "desktop/doctor.mjs" ]; then
+              node desktop/doctor.mjs
+            fi
           fi
 
-      - name: Package desktop distribution (ZIP, DMG, SHA256SUMS)
+      - name: Package desktop distribution
         run: pnpm desktop:package
 
-      - name: Sign Release Archive and Generate Sparkle Appcast
+      - name: Sign macOS Release Archive and Generate Sparkle Appcast
+        if: matrix.target.platform == 'darwin' && steps.validate.outputs.is_release == 'true'
         env:
           SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
           VERSION: ${{ steps.validate.outputs.version }}
+          TARGET_ARCH: ${{ matrix.target.arch }}
         run: |
-          # The SPARKLE_PRIVATE_KEY secret is never echoed or logged.
+          # The SPARKLE_PRIVATE_KEY secret is piped via STDIN only, never echoed or logged.
           if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
-            echo "::warning::SPARKLE_PRIVATE_KEY secret is not configured; updates will not be signed with Ed25519."
+            echo "::error::SPARKLE_PRIVATE_KEY secret is required for signing macOS release archives."
             exit 1
           fi
 
-          # Sign ZIP and generate appcast.xml (ZIP only, no DMG duplicate in feed)
-          echo "Running desktop/update-tools.mjs release command..."
+          echo "Running desktop/update-tools.mjs release for macOS ($TARGET_ARCH)..."
           node desktop/update-tools.mjs release \
             --version="$VERSION" \
+            --arch="$TARGET_ARCH" \
             --dist-dir="dist"
 
-      - name: Strict Release Artifacts Guard
+      - name: Native Cross-Platform Smoke Check (packaged Electron)
         env:
+          PLATFORM: ${{ matrix.target.platform }}
           VERSION: ${{ steps.validate.outputs.version }}
         run: |
-          echo "Validating explicit release artifacts for version: $VERSION"
+          if [ ! -f "desktop/cross-platform-smoke.mjs" ]; then
+            echo "::error::desktop/cross-platform-smoke.mjs is missing! Native cross-platform smoke contract requires desktop/cross-platform-smoke.mjs to exist (no fake green)."
+            exit 1
+          fi
 
-          REQUIRED_ASSETS=(
-            "dist/Sumi-${VERSION}-macos-arm64.zip"
-            "dist/Sumi-${VERSION}-macos-arm64.dmg"
-            "dist/SHA256SUMS.txt"
-            "dist/appcast.xml"
-          )
-
-          for asset in "${REQUIRED_ASSETS[@]}"; do
-            if [ ! -f "$asset" ]; then
-              echo "::error::Required release artifact missing: $asset"
+          if [ "$PLATFORM" = "darwin" ]; then
+            SUMI_SMOKE_APP="$PWD/dist/Sumi.app/Contents/MacOS/Sumi"
+          elif [ "$PLATFORM" = "win32" ]; then
+            SUMI_SMOKE_APP="$PWD/dist/sumi-win32-x64/Sumi.exe"
+          elif [ "$PLATFORM" = "linux" ]; then
+            DEB_PATH="dist/Sumi-${VERSION}-linux-x64.deb"
+            echo "Installing Debian package $DEB_PATH via apt-get to verify official Linux sandbox integration..."
+            if [ ! -f "$DEB_PATH" ] || [ ! -s "$DEB_PATH" ]; then
+              echo "::error::Linux Debian package missing or empty at $DEB_PATH; required for smoke check"
               exit 1
             fi
-            if [ ! -s "$asset" ]; then
-              echo "::error::Release artifact is empty (0 bytes): $asset"
+            sudo apt-get install -y "./$DEB_PATH"
+
+            if [ ! -x "/opt/Sumi/sumi" ]; then
+              echo "::error::Installed /opt/Sumi/sumi missing or not executable after deb install"
               exit 1
             fi
-            echo "Verified asset: $asset ($(ls -lh "$asset" | awk '{print $5}'))"
-          done
 
-          # Checksum contents verification
-          if ! grep -q "Sumi-${VERSION}-macos-arm64.zip" dist/SHA256SUMS.txt; then
-            echo "::error::dist/SHA256SUMS.txt missing checksum entry for Sumi-${VERSION}-macos-arm64.zip"
+            # Verify root-owned 4755 chrome-sandbox (strict check, no || true)
+            if [ ! -f "/opt/Sumi/chrome-sandbox" ]; then
+              echo "::error::/opt/Sumi/chrome-sandbox missing from installed deb package"
+              exit 1
+            fi
+            if [ ! -u "/opt/Sumi/chrome-sandbox" ]; then
+              echo "::error::/opt/Sumi/chrome-sandbox is not setuid (mode 4755)"
+              exit 1
+            fi
+            SANDBOX_OWNER=$(stat -c '%U' /opt/Sumi/chrome-sandbox 2>/dev/null || stat -f '%Su' /opt/Sumi/chrome-sandbox)
+            if [ "$SANDBOX_OWNER" != "root" ]; then
+              echo "::error::/opt/Sumi/chrome-sandbox is not owned by root (owner: $SANDBOX_OWNER)"
+              exit 1
+            fi
+            echo "Verified official deb sandbox: /opt/Sumi/chrome-sandbox is root-owned 4755"
+
+            SUMI_SMOKE_APP="/opt/Sumi/sumi"
+          fi
+
+          if [ ! -f "$SUMI_SMOKE_APP" ]; then
+            echo "::error::Packaged application executable missing at: $SUMI_SMOKE_APP"
             exit 1
           fi
-          if ! grep -q "Sumi-${VERSION}-macos-arm64.dmg" dist/SHA256SUMS.txt; then
-            echo "::error::dist/SHA256SUMS.txt missing checksum entry for Sumi-${VERSION}-macos-arm64.dmg"
-            exit 1
+
+          export SUMI_SMOKE_APP
+          export SUMI_TEST_MODE=1
+          echo "Executing native cross-platform smoke check: SUMI_SMOKE_APP=$SUMI_SMOKE_APP SUMI_TEST_MODE=1"
+
+          if [ "$PLATFORM" = "linux" ]; then
+            xvfb-run --auto-servernum --server-args="-screen 0 1280x800x24" node desktop/cross-platform-smoke.mjs
+          else
+            node desktop/cross-platform-smoke.mjs
           fi
 
-          # Appcast XML sanity check
-          if ! grep -q "<rss" dist/appcast.xml || ! grep -q "<channel>" dist/appcast.xml; then
-            echo "::error::dist/appcast.xml does not appear to be a valid Sparkle RSS feed"
-            exit 1
-          fi
+      - name: Strict Target Release Artifacts Guard
+        env:
+          PLATFORM: ${{ matrix.target.platform }}
+          ARCH: ${{ matrix.target.arch }}
+          VERSION: ${{ steps.validate.outputs.version }}
+          IS_RELEASE: ${{ steps.validate.outputs.is_release }}
+        run: |
+          echo "Validating target release artifacts for $PLATFORM ($ARCH), v$VERSION..."
 
-          # Leak prevention: Ensure no user data, private keys, or databases reside in dist
+          # Universal leak prevention: assert no journal data, secret files, or private keys
           for forbidden in "journal.db" ".secret" ".env" "private.key"; do
-            if find dist/ -name "$forbidden" | grep -q .; then
+            if find dist/ -name "$forbidden" 2>/dev/null | grep -q .; then
               echo "::error::Forbidden file matching pattern '$forbidden' found in dist/ directory!"
               exit 1
             fi
           done
 
-          # GGUF/ASR weights: allow ONLY the fixed, checksum-gated MIT Silero VAD model that is
-          # intentionally bundled in the app (same name+size+SHA256 gate principle as the desktop
-          # checksum checks). Any other GGUF/ASR weight anywhere under dist/ is rejected.
+          # GGUF/ASR weights check: ONLY approved Silero VAD (1.2MB) permitted
           ALLOWED_GGUF_NAME="silero-vad-v6.2-F32.gguf"
           ALLOWED_GGUF_SIZE="1241056"
           ALLOWED_GGUF_SHA256="0d871a800c420fdd5d1b17a3aea4296d1c39608f0ff4a9295eb76457eb1c88e6"
           while IFS= read -r -d '' gguf; do
             base="$(basename "$gguf")"
-            size="$(stat -f %z "$gguf")"
-            sha="$(shasum -a 256 "$gguf" | awk '{print $1}')"
+            if [ "$PLATFORM" = "darwin" ]; then
+              size="$(stat -f %z "$gguf")"
+              sha="$(shasum -a 256 "$gguf" | awk '{print $1}')"
+            else
+              size="$(stat -c %s "$gguf" 2>/dev/null || wc -c < "$gguf" | tr -d ' ')"
+              sha="$(sha256sum "$gguf" | awk '{print $1}')"
+            fi
             if [ "$base" != "$ALLOWED_GGUF_NAME" ] || [ "$size" != "$ALLOWED_GGUF_SIZE" ] || [ "$sha" != "$ALLOWED_GGUF_SHA256" ]; then
-              echo "::error::Unexpected GGUF/ASR weight in dist: $gguf (name=$base size=$size)"
+              echo "::error::Unexpected GGUF/ASR weight in dist: $gguf (name=$base size=$size sha=$sha)"
               exit 1
             fi
-            echo "Verified allowed bundled model: $gguf (size=$size sha256=$sha)"
+            echo "Verified allowed bundled model: $gguf (size=$size)"
           done < <(find dist/ -name "*.gguf" -print0)
-          echo "All release artifacts verified strictly and successfully."
 
-      - name: Publish GitHub Release
+          # Platform-specific EXACT artifact assertions on release triggers
+          if [ "$IS_RELEASE" = "true" ]; then
+            if [ "$PLATFORM" = "darwin" ]; then
+              if [ "$ARCH" = "arm64" ]; then
+                REQUIRED=(
+                  "dist/Sumi-${VERSION}-macos-arm64.zip"
+                  "dist/Sumi-${VERSION}-macos-arm64.dmg"
+                  "dist/appcast.xml"
+                )
+              else
+                REQUIRED=(
+                  "dist/Sumi-${VERSION}-macos-x64.zip"
+                  "dist/Sumi-${VERSION}-macos-x64.dmg"
+                  "dist/appcast-x64.xml"
+                )
+              fi
+            elif [ "$PLATFORM" = "win32" ]; then
+              REQUIRED=(
+                "dist/Sumi-${VERSION}-win32-x64-setup.exe"
+                "dist/Sumi-${VERSION}-win32-x64.zip"
+                "dist/latest.yml"
+              )
+            elif [ "$PLATFORM" = "linux" ]; then
+              REQUIRED=(
+                "dist/Sumi-${VERSION}-linux-x64.AppImage"
+                "dist/Sumi-${VERSION}-linux-x64.deb"
+                "dist/latest-linux.yml"
+              )
+            fi
+
+            for asset in "${REQUIRED[@]}"; do
+              if [ ! -f "$asset" ] || [ ! -s "$asset" ]; then
+                echo "::error::Required $PLATFORM artifact missing or empty: $asset"
+                exit 1
+              fi
+              echo "Verified artifact: $asset ($(ls -lh "$asset" | awk '{print $5}'))"
+            done
+          fi
+          echo "Target release artifacts verified successfully."
+
+      - name: Upload Target Release Artifacts
+        if: steps.validate.outputs.is_release == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: artifacts-${{ matrix.target.id }}
+          path: |
+            dist/*.zip
+            dist/*.dmg
+            dist/*.exe
+            dist/*.AppImage
+            dist/*.deb
+            dist/*.blockmap
+            dist/*.yml
+            dist/*.xml
+          if-no-files-found: error
+
+  publish-release:
+    name: Aggregate & Publish Multi-Platform Release
+    needs: [build-check-smoke]
+    if: startsWith(github.ref, 'refs/tags/electron-v')
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup pnpm (pinned 11.0.8)
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.0.8
+
+      - name: Setup Node.js (pinned 26.13.0)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+
+      - name: Install dependencies (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Download all target artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          pattern: artifacts-*
+          merge-multiple: true
+
+      - name: Determine Release Tag and Version
+        id: release_info
+        env:
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          TAG_NAME="$REF_NAME"
+          VERSION="${TAG_NAME#electron-v}"
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Generate Aggregate SHA256SUMS covering all released assets
+        run: |
+          echo "Generating aggregate SHA256SUMS.txt covering all platform assets..."
+          node desktop/update-tools.mjs aggregate-sums --dist-dir="dist"
+          cat dist/SHA256SUMS.txt
+
+      - name: Strict Multi-Platform Release Guard
+        env:
+          VERSION: ${{ steps.release_info.outputs.version }}
+        run: |
+          echo "Validating complete multi-platform release assets for v${VERSION}..."
+
+          REQUIRED_ASSETS=(
+            "dist/Sumi-${VERSION}-macos-arm64.zip"
+            "dist/Sumi-${VERSION}-macos-arm64.dmg"
+            "dist/appcast.xml"
+            "dist/Sumi-${VERSION}-macos-x64.zip"
+            "dist/Sumi-${VERSION}-macos-x64.dmg"
+            "dist/appcast-x64.xml"
+            "dist/Sumi-${VERSION}-win32-x64-setup.exe"
+            "dist/Sumi-${VERSION}-win32-x64.zip"
+            "dist/latest.yml"
+            "dist/Sumi-${VERSION}-linux-x64.AppImage"
+            "dist/Sumi-${VERSION}-linux-x64.deb"
+            "dist/latest-linux.yml"
+            "dist/SHA256SUMS.txt"
+          )
+
+          for asset in "${REQUIRED_ASSETS[@]}"; do
+            if [ ! -f "$asset" ] || [ ! -s "$asset" ]; then
+              echo "::error::Required release artifact missing or empty: $asset"
+              exit 1
+            fi
+            echo "Verified asset: $asset ($(ls -lh "$asset" | awk '{print $5}'))"
+          done
+
+          # Checksum contents verification (SHA256SUMS must cover all assets and exclude itself)
+          if grep -q "SHA256SUMS.txt" dist/SHA256SUMS.txt; then
+            echo "::error::SHA256SUMS.txt must not contain a checksum entry for itself"
+            exit 1
+          fi
+
+          for asset in "${REQUIRED_ASSETS[@]}"; do
+            base="$(basename "$asset")"
+            if [ "$base" != "SHA256SUMS.txt" ]; then
+              if ! grep -q "$base" dist/SHA256SUMS.txt; then
+                echo "::error::SHA256SUMS.txt missing checksum entry for $base"
+                exit 1
+              fi
+            fi
+          done
+
+          # Appcast XML sanity check on both Sparkle feeds
+          for feed in "dist/appcast.xml" "dist/appcast-x64.xml"; do
+            if ! grep -q "<rss" "$feed" || ! grep -q "<channel>" "$feed" || ! grep -q "sparkle:edSignature" "$feed"; then
+              echo "::error::$feed does not appear to be a valid Sparkle RSS feed"
+              exit 1
+            fi
+          done
+
+          # Leak prevention
+          for forbidden in "journal.db" ".secret" ".env" "private.key"; do
+            if find dist/ -name "$forbidden" | grep -q .; then
+              echo "::error::Forbidden file matching '$forbidden' found in release assets!"
+              exit 1
+            fi
+          done
+
+          echo "All multi-platform release assets verified strictly and successfully."
+
+      - name: Generate Release Notes & Publish GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          TAG_NAME: ${{ steps.validate.outputs.tag_name }}
-          VERSION: ${{ steps.validate.outputs.version }}
+          TAG_NAME: ${{ steps.release_info.outputs.tag_name }}
+          VERSION: ${{ steps.release_info.outputs.version }}
         run: |
           cat << 'EOF' > release-notes.md
-          ## Sumi macOS (Apple Silicon arm64) v${{ steps.validate.outputs.version }}
+          ## Sumi v${{ steps.release_info.outputs.version }}
 
-          Independent desktop release of Sumi for macOS 14+ (Apple Silicon arm64).
+          Cross-platform desktop release of Sumi for macOS (Apple Silicon arm64 & Intel x64), Windows (x64), and Linux (x64).
 
           ### Downloads & Checksums
-          - **ZIP Archive**: `Sumi-${{ steps.validate.outputs.version }}-macos-arm64.zip`
-          - **DMG Installer**: `Sumi-${{ steps.validate.outputs.version }}-macos-arm64.dmg`
-          - **Checksums**: `SHA256SUMS.txt`
-          - **Sparkle Update Feed**: `appcast.xml`
 
-          ### Initial Launch Instructions (Gatekeeper)
+          Full cryptographic verification digests are published in `SHA256SUMS.txt`.
+
+          #### macOS
+          - **Apple Silicon (arm64)**: `Sumi-${{ steps.release_info.outputs.version }}-macos-arm64.dmg` | `Sumi-${{ steps.release_info.outputs.version }}-macos-arm64.zip`
+          - **Intel (x64)**: `Sumi-${{ steps.release_info.outputs.version }}-macos-x64.dmg` | `Sumi-${{ steps.release_info.outputs.version }}-macos-x64.zip`
+          - **Sparkle Feeds**: `appcast.xml` (arm64 & v0.2 clients) | `appcast-x64.xml` (Intel x64)
+
+          ##### Initial Launch Instructions (macOS Gatekeeper)
           This build is ad-hoc signed without an Apple Developer ID. When opening for the first time:
           1. In Finder, **Right-Click (Control-Click)** on `Sumi.app` and choose **Open**.
           2. Click **Open** in the confirmation dialog.
           3. Alternatively, open **System Settings → Privacy & Security** and select **Open Anyway**.
           *(Managed corporate Macs with strict MDM profiles may block ad-hoc binaries.)*
 
-          ### Native In-App Updates (Sparkle 2.9.6)
+          ##### Native In-App Updates (Sparkle 2.9.6)
           - Updates are authenticated via Ed25519 signatures and installed atomically via native Sparkle 2.9.6.
-          - Stable release feed: `https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml`
-          - *Update testing note*: Feed signing and updater state handling are covered by local unit tests only. End-to-end Ed25519 verification and atomic replacement by the native Sparkle installer have NOT yet been validated in production; the first real upgrade transition (from v0.2.0 to a future version) is pending validation on a subsequent release.
+          - Stable release feeds:
+            - Apple Silicon (arm64): `https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml`
+            - Intel (x64): `https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml`
+
+          #### Windows (x64)
+          - **Installer**: `Sumi-${{ steps.release_info.outputs.version }}-win32-x64-setup.exe`
+          - **Standalone Archive**: `Sumi-${{ steps.release_info.outputs.version }}-win32-x64.zip`
+          - **Updater Metadata**: `latest.yml`
+          - **Windows Note**: This preview build is currently unsigned. Windows SmartScreen may display an "Unknown Publisher" warning upon launch; select "More info" and "Run anyway" to proceed. In-app updater handling is verified via local automated unit tests and headless updater checks; first real production upgrade transitions remain pending validation on subsequent releases. App-local Visual C++ Runtime CRT dependencies are bundled; no global Visual Studio installation is required on user systems.
+
+          #### Linux (x64)
+          - **AppImage**: `Sumi-${{ steps.release_info.outputs.version }}-linux-x64.AppImage`
+          - **Debian Package**: `Sumi-${{ steps.release_info.outputs.version }}-linux-x64.deb`
+          - **Updater Metadata**: `latest-linux.yml`
+          - **Linux Note**: Built on Ubuntu 22.04 LTS (oldest advertised baseline, GLIBC 2.35). AppImage runs with standard unprivileged user namespaces. Debian package installs the official Electron sandbox (`chrome-sandbox`) with setuid root under `/opt/Sumi` without `--no-sandbox`.
+
+          #### Local Voice Engine & Models
+          - Voice activity detection is handled locally via the bundled, verified MIT Silero VAD model (1.2 MB).
+          - Speech recognition weights (~700 MB Parakeet) are downloaded on-demand inside the app and cached in user data.
+          - Cross-platform verification was performed in automated CI environments (macOS 15 Apple Silicon arm64, macOS 15 Intel x64, Windows Server 2025 x64, and Ubuntu 22.04 x64). Test results and metadata reflect automated verification and do not claim physical desktop user testing beyond CI.
           EOF
 
-          # Upload ONLY the explicit release assets (least privilege, avoiding any cache/source leakage)
+          # Upload strictly the explicit allowlisted release assets
           gh release create "$TAG_NAME" \
-            "dist/Sumi-${VERSION}-macos-arm64.zip" \
-            "dist/Sumi-${VERSION}-macos-arm64.dmg" \
-            "dist/SHA256SUMS.txt" \
-            "dist/appcast.xml" \
-            --title "Sumi v${VERSION} (macOS arm64)" \
+            dist/*.zip \
+            dist/*.dmg \
+            dist/*.exe \
+            dist/*.AppImage \
+            dist/*.deb \
+            dist/*.blockmap \
+            dist/*.yml \
+            dist/*.xml \
+            dist/SHA256SUMS.txt \
+            --title "Sumi v${VERSION}" \
             --notes-file release-notes.md \
             --latest

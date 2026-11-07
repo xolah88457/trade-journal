@@ -2,10 +2,13 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  closeSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
+  openSync,
   readFileSync,
+  readSync,
   readdirSync,
   realpathSync,
   rmSync,
@@ -28,6 +31,13 @@ export const SILERO_EXPECTED_SHA256 =
 
 export const EXPECTED_BUNDLE_ID = "local.sumi.journal";
 export const EXPECTED_ELECTRON_VERSION = "45.2.3";
+
+/**
+ * Verified Windows required Visual C++ Runtime CRT DLLs (PE imports from transcribe.dll/ggml-base/ggml-cpu-x64).
+ * Must be packaged app-local into runtime/native directories so no host Visual Studio / VC++ redist
+ * installation is required on user systems.
+ */
+export const WINDOWS_REQUIRED_CRT_DLLS = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 /**
  * Recursively asserts that no private environment credentials, database files,
@@ -256,18 +266,27 @@ export function verifyAppPackage(resourcesDir, expectedVersion) {
     `Resources/app/package.json version (${pkg.version}) must match root version (${expectedVersion})`,
   );
 
-  // Shell entrypoints and security modules
-  for (const file of ["main.cjs", "preload.cjs", "preferences.cjs", "security.cjs"]) {
-    const filePath = join(appDir, file);
-    assert.ok(existsSync(filePath), `Required shell file missing: Resources/app/${file}`);
+  // Shell entrypoints, security, and updater modules
+  const requiredScripts = ["main.cjs", "preload.cjs", "preferences.cjs", "security.cjs"];
+  if (expectedVersion !== "0.2.0") {
+    requiredScripts.push("update-service.cjs", "update-service-platform.cjs");
+  } else {
+    // If update-service.cjs is packaged in 0.2.0, verify it is non-empty
+    const updateService = join(appDir, "update-service.cjs");
+    if (existsSync(updateService)) {
+      assert.ok(
+        readFileSync(updateService, "utf8").trim().length > 0,
+        "Resources/app/update-service.cjs must not be empty",
+      );
+    }
   }
 
-  // If update-service.cjs is packaged, verify it is non-empty
-  const updateService = join(appDir, "update-service.cjs");
-  if (existsSync(updateService)) {
+  for (const file of requiredScripts) {
+    const filePath = join(appDir, file);
+    assert.ok(existsSync(filePath), `Required shell file missing: Resources/app/${file}`);
     assert.ok(
-      readFileSync(updateService, "utf8").trim().length > 0,
-      "Resources/app/update-service.cjs must not be empty",
+      readFileSync(filePath, "utf8").trim().length > 0,
+      `Resources/app/${file} must not be empty`,
     );
   }
 }
@@ -338,29 +357,39 @@ export function verifySileroModel(webDir) {
 }
 
 /**
- * Comprehensive verification for the complete packaged Electron bundle.
+ * Comprehensive verification for the complete packaged macOS Electron bundle.
  */
-export function verifyElectronPackage({ app, resources, root }) {
+export function verifyElectronPackage({
+  app,
+  resources,
+  root,
+  runTool = execFileSync,
+  expectedVersion: injectedVersion,
+}) {
   assert.ok(existsSync(join(app, "MacOS/Sumi")), "Run pnpm desktop:build first.");
   assert.ok(existsSync(join(resources, "Sumi.icns")), "Application icon Sumi.icns missing.");
 
   // Electron framework requirements & Mach-O verification
-  verifyElectronFramework(app);
+  verifyElectronFramework(app, runTool);
 
   // Info.plist validation
-  execFileSync("plutil", ["-lint", join(app, "Info.plist")]);
+  runTool("plutil", ["-lint", join(app, "Info.plist")]);
   const plistContent = readFileSync(join(app, "Info.plist"), "utf8");
   const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const expectedVersion = rootPkg.version || "0.2.0";
+  const appPkgPath = join(resources, "app/package.json");
+  const appPkgVersion = existsSync(appPkgPath)
+    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
+    : null;
+  const expectedVersion = injectedVersion || appPkgVersion || rootPkg.version || "0.3.0";
   validateInfoPlistContent(plistContent, expectedVersion);
 
   // Codesign verification (deep, strict, works ad-hoc)
-  execFileSync("codesign", ["--verify", "--deep", "--strict", join(app, "..")]);
+  runTool("codesign", ["--verify", "--deep", "--strict", join(app, "..")]);
 
   // Portable Node runtime check (must not link homebrew or macports)
   const node = join(resources, "runtime/node");
   assert.ok(existsSync(node), "Bundled node binary missing");
-  const linkedNode = execFileSync("otool", ["-L", node], { encoding: "utf8" });
+  const linkedNode = runTool("otool", ["-L", node], { encoding: "utf8" });
   assert.doesNotMatch(linkedNode, /\/opt\/homebrew|\/usr\/local\/opt/);
 
   // Transcribe-cpp darwin-arm64-metal library check
@@ -397,6 +426,381 @@ export function verifyElectronPackage({ app, resources, root }) {
   checkSelfContainedSymlinks(resources, appPrefix);
   const serverReal = realpathSync(join(resources, "server")) + "/";
   checkSelfContainedSymlinks(join(resources, "server"), serverReal);
+}
+
+/**
+ * Resolves the standardized package layout across macOS, Windows, and Linux.
+ */
+export function resolvePackageLayout(root, platform = process.platform, arch = process.arch) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  if (platform === "darwin") {
+    const app = join(root, "dist/Sumi.app/Contents");
+    const resources = join(app, "Resources");
+    return {
+      platform,
+      arch: normArch,
+      app,
+      appDir: join(root, "dist/Sumi.app"),
+      resources,
+      executable: join(app, "MacOS/Sumi"),
+      nodeExecutable: join(resources, "runtime/node"),
+      launchScript: join(resources, "launch.cjs"),
+      webDir: join(resources, "server/apps/web"),
+      serverDir: join(resources, "server"),
+      appDirEntry: join(resources, "app"),
+    };
+  }
+
+  if (platform === "win32") {
+    const appDir = join(root, `dist/sumi-win32-${normArch}`);
+    const resources = join(appDir, "resources");
+    return {
+      platform,
+      arch: normArch,
+      app: appDir,
+      appDir,
+      resources,
+      executable: join(appDir, "Sumi.exe"),
+      nodeExecutable: join(resources, "runtime/node.exe"),
+      launchScript: join(resources, "launch.cjs"),
+      webDir: join(resources, "server/apps/web"),
+      serverDir: join(resources, "server"),
+      appDirEntry: join(resources, "app"),
+    };
+  }
+
+  // linux
+  const appDir = join(root, `dist/sumi-linux-${normArch}`);
+  const resources = join(appDir, "resources");
+  return {
+    platform,
+    arch: normArch,
+    app: appDir,
+    appDir,
+    resources,
+    executable: join(appDir, "sumi"),
+    nodeExecutable: join(resources, "runtime/node"),
+    launchScript: join(resources, "launch.cjs"),
+    webDir: join(resources, "server/apps/web"),
+    serverDir: join(resources, "server"),
+    appDirEntry: join(resources, "app"),
+  };
+}
+
+/**
+ * Comprehensive verification for the complete packaged Windows Electron bundle.
+ * Enforces bounded PE header checks, required VS Redist CRT DLLs, and licenses.
+ */
+export function verifyWindowsPackage({
+  root,
+  app,
+  resources,
+  arch = "x64",
+  runTool = execFileSync,
+  expectedVersion: injectedVersion,
+}) {
+  const executable = join(app, "Sumi.exe");
+  assert.ok(
+    existsSync(executable),
+    `Windows executable missing at ${executable}. Run 'pnpm desktop:build' first.`,
+  );
+  const exeStat = statSync(executable);
+  assert.ok(exeStat.size > 1024, `Sumi.exe too small (${exeStat.size} bytes)`);
+
+  // Bounded PE header check (first 2 bytes 'MZ') - NEVER scan large binaries with strings
+  const exeFd = openSync(executable, "r");
+  const exeHeader = Buffer.alloc(2);
+  try {
+    readSync(exeFd, exeHeader, 0, 2, 0);
+  } finally {
+    closeSync(exeFd);
+  }
+  assert.equal(
+    exeHeader.toString("utf8"),
+    "MZ",
+    "Sumi.exe is not a valid Windows PE binary (missing MZ header)",
+  );
+
+  // Check bundled node.exe
+  const nodeExe = join(resources, "runtime/node.exe");
+  assert.ok(existsSync(nodeExe), `Bundled node.exe missing at ${nodeExe}`);
+  const nodeFd = openSync(nodeExe, "r");
+  const nodeHeader = Buffer.alloc(2);
+  try {
+    readSync(nodeFd, nodeHeader, 0, 2, 0);
+  } finally {
+    closeSync(nodeFd);
+  }
+  assert.equal(
+    nodeHeader.toString("utf8"),
+    "MZ",
+    "node.exe is not a valid Windows PE binary (missing MZ header)",
+  );
+
+  // Structural required-runtime DLL check: MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll
+  // These are required by published transcribe.dll/ggml-base/ggml-cpu-x64 and must be shipped app-local.
+  for (const dll of WINDOWS_REQUIRED_CRT_DLLS) {
+    const candidates = [
+      join(resources, "runtime", dll),
+      join(resources, "runtime", dll.toUpperCase()),
+      join(resources, "server/node_modules/@transcribe-cpp/win32-x64-cpu-vulkan", dll),
+      join(resources, "server/apps/web/node_modules/@transcribe-cpp/win32-x64-cpu-vulkan", dll),
+      join(app, dll),
+      join(app, "resources", "runtime", dll),
+    ];
+    const found = candidates.find((p) => existsSync(p) && statSyncSafe(p).size > 0);
+    assert.ok(
+      found,
+      `Required Windows CRT runtime DLL missing from package: ${dll}. Windows native portability requires app-local MSVCP140/VCRUNTIME140 CRT DLLs.`,
+    );
+  }
+
+  // Structural check for Microsoft CRT license notice
+  const crtNoticePath = findLicenseFile(
+    [
+      join(resources, "licenses/Microsoft-VC-Redist-LICENSE.txt"),
+      join(resources, "licenses/VC-Redist-LICENSE.txt"),
+      join(resources, "licenses/MICROSOFT-SOFTWARE-LICENSE-TERMS.txt"),
+      join(resources, "licenses/THIRD-PARTY-NOTICES.md"),
+    ],
+    "Microsoft Visual C++ Redistributable / CRT license notice",
+  );
+  const crtNoticeText = readFileSync(crtNoticePath, "utf8");
+  assert.match(
+    crtNoticeText,
+    /Visual C\+\+|Redistributable|VCRUNTIME|MSVCP/i,
+    "Microsoft Visual C++ Redistributable license notice missing required terms",
+  );
+
+  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const appPkgPath = join(resources, "app/package.json");
+  const appPkgVersion = existsSync(appPkgPath)
+    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
+    : null;
+  const expectedVersion = injectedVersion || appPkgVersion || rootPkg.version || "0.3.0";
+
+  verifyAppPackage(resources, expectedVersion);
+  verifyLicenses(resources, app);
+  verifySileroModel(join(resources, "server/apps/web"));
+  checkNoPrivateFiles(join(resources, "server"));
+  checkNoPrivateFiles(join(resources, "app"));
+}
+
+/**
+ * Comprehensive verification for the complete packaged Linux Electron bundle.
+ * Enforces bounded ELF header checks, chrome-sandbox existence, and licenses.
+ */
+export function verifyLinuxPackage({
+  root,
+  app,
+  resources,
+  arch = "x64",
+  runTool = execFileSync,
+  expectedVersion: injectedVersion,
+}) {
+  const executable = join(app, "sumi");
+  assert.ok(
+    existsSync(executable),
+    `Linux executable missing at ${executable}. Run 'pnpm desktop:build' first.`,
+  );
+  const exeStat = statSync(executable);
+  assert.ok(exeStat.size > 1024, `sumi binary too small (${exeStat.size} bytes)`);
+
+  // Bounded ELF header check (first 4 bytes '\x7fELF') - NEVER scan large binaries with strings
+  const exeFd = openSync(executable, "r");
+  const exeHeader = Buffer.alloc(4);
+  try {
+    readSync(exeFd, exeHeader, 0, 4, 0);
+  } finally {
+    closeSync(exeFd);
+  }
+  assert.deepEqual(
+    Array.from(exeHeader),
+    [0x7f, 0x45, 0x4c, 0x46],
+    "sumi is not a valid Linux ELF binary",
+  );
+
+  // Check bundled node
+  const node = join(resources, "runtime/node");
+  assert.ok(existsSync(node), `Bundled node missing at ${node}`);
+  const nodeFd = openSync(node, "r");
+  const nodeHeader = Buffer.alloc(4);
+  try {
+    readSync(nodeFd, nodeHeader, 0, 4, 0);
+  } finally {
+    closeSync(nodeFd);
+  }
+  assert.deepEqual(
+    Array.from(nodeHeader),
+    [0x7f, 0x45, 0x4c, 0x46],
+    "node is not a valid Linux ELF binary",
+  );
+
+  // Check chrome-sandbox exists
+  const sandboxCandidates = [join(app, "chrome-sandbox"), join(dirname(app), "chrome-sandbox")];
+  const sandbox = sandboxCandidates.find((p) => existsSync(p));
+  assert.ok(sandbox, `chrome-sandbox missing at ${sandboxCandidates.join(", ")}`);
+
+  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
+  const appPkgPath = join(resources, "app/package.json");
+  const appPkgVersion = existsSync(appPkgPath)
+    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
+    : null;
+  const expectedVersion = injectedVersion || appPkgVersion || rootPkg.version || "0.3.0";
+
+  verifyAppPackage(resources, expectedVersion);
+  verifyLicenses(resources, app);
+  verifySileroModel(join(resources, "server/apps/web"));
+  checkNoPrivateFiles(join(resources, "server"));
+  checkNoPrivateFiles(join(resources, "app"));
+}
+
+/**
+ * Dispatches package verification to the appropriate OS handler.
+ * Never skips Windows or Linux with a false pass.
+ */
+export function verifyPackageForPlatform({
+  root,
+  platform = process.platform,
+  arch = process.arch,
+  runTool = execFileSync,
+  expectedVersion,
+}) {
+  const layout = resolvePackageLayout(root, platform, arch);
+  if (platform === "darwin") {
+    return verifyElectronPackage({
+      app: layout.app,
+      resources: layout.resources,
+      root,
+      runTool,
+      expectedVersion,
+    });
+  }
+  if (platform === "win32") {
+    return verifyWindowsPackage({
+      root,
+      app: layout.app,
+      resources: layout.resources,
+      arch: layout.arch,
+      runTool,
+      expectedVersion,
+    });
+  }
+  if (platform === "linux") {
+    return verifyLinuxPackage({
+      root,
+      app: layout.app,
+      resources: layout.resources,
+      arch: layout.arch,
+      runTool,
+      expectedVersion,
+    });
+  }
+  throw new Error(`Unsupported platform: ${platform}`);
+}
+
+/**
+ * Real Native ASR backend doctor on each platform:
+ * Runs the BUNDLED official Node + packaged transcribe-cpp 0.4.0,
+ * loads the bundled Silero VAD model, runs silence detection (512 float32 samples),
+ * and disposes cleanly.
+ *
+ * Catches Windows DLL / Linux SO / Koffi / native CPU fallback defects without a 700MB model download.
+ * Imports from packaged server/apps/web cwd via real ESM export (package import-only).
+ */
+export function runNativeAsrDoctor({
+  root,
+  platform = process.platform,
+  arch = process.arch,
+  runTool = execFileSync,
+}) {
+  const layout = resolvePackageLayout(root, platform, arch);
+  assert.ok(
+    existsSync(layout.nodeExecutable),
+    `Bundled node executable missing at ${layout.nodeExecutable}`,
+  );
+  assert.ok(existsSync(layout.webDir), `Packaged web server directory missing at ${layout.webDir}`);
+
+  const vadModel = join(layout.webDir, "models/silero-vad-v6.2-F32.gguf");
+  assert.ok(existsSync(vadModel), `Bundled Silero VAD model missing at ${vadModel}`);
+  const vadBytes = readFileSync(vadModel);
+  assert.equal(vadBytes.length, SILERO_EXPECTED_SIZE, "Bundled Silero VAD size mismatch");
+  const vadHash = createHash("sha256").update(vadBytes).digest("hex");
+  assert.equal(vadHash, SILERO_EXPECTED_SHA256, "Bundled Silero VAD checksum mismatch");
+
+  const doctorScriptPath = join(layout.webDir, ".asr-doctor-probe.mjs");
+
+  const doctorCode = `
+import assert from "node:assert/strict";
+import { TranscribeModel } from "transcribe-cpp";
+
+async function run() {
+  console.log("[ASR Doctor] Starting native ASR backend verification...");
+  const vadPath = ${JSON.stringify(vadModel)};
+  console.log("[ASR Doctor] Loading Silero VAD from: " + vadPath);
+  const vad = await TranscribeModel.load(vadPath);
+  assert.ok(vad, "TranscribeModel.load returned null/undefined");
+  assert.ok(Array.isArray(vad.roles) && vad.roles.includes("vad"), "Model does not provide VAD role");
+
+  console.log("[ASR Doctor] Creating VadSession...");
+  const session = vad.createVadSession();
+  assert.ok(session, "createVadSession returned null/undefined");
+
+  console.log("[ASR Doctor] Executing silence detection on 512 zero PCM samples...");
+  const silence = new Float32Array(512);
+  const result = await session.run(silence);
+  assert.ok(result && Array.isArray(result.probs), "Expected VadResult.probs array");
+  assert.ok(result.probs.length > 0, "VadResult.probs is empty");
+  const speechProb = result.probs[0];
+  console.log("[ASR Doctor] Speech probability for silence: " + speechProb);
+  assert.ok(speechProb < 0.2, "Speech probability on silence is unexpectedly high: " + speechProb);
+
+  console.log("[ASR Doctor] Disposing VadSession and TranscribeModel...");
+  session.dispose();
+  vad.dispose();
+  console.log("[ASR Doctor] Backend successfully initialized, computed silence inference, and disposed without memory leak.");
+}
+
+run().catch((err) => {
+  console.error("[ASR Doctor ERROR]", err);
+  process.exit(1);
+});
+`;
+
+  try {
+    writeFileSync(doctorScriptPath, doctorCode, "utf8");
+
+    const env = { ...process.env };
+    if (platform === "win32") {
+      const runtimeDir = join(layout.resources, "runtime");
+      env.PATH = `${runtimeDir};${env.PATH || ""}`;
+    }
+
+    console.log(
+      `[ASR Doctor] Invoking bundled node (${layout.nodeExecutable}) in packaged cwd: ${layout.webDir}`,
+    );
+    const stdout = runTool(layout.nodeExecutable, [doctorScriptPath], {
+      cwd: layout.webDir,
+      env,
+      encoding: "utf8",
+      timeout: 45000,
+    });
+
+    console.log(
+      "[ASR Doctor] Notice: Full Parakeet speech-to-text inference (~700MB model download) is not CI-run on Windows and Linux; instead, real native backend execution (Koffi FFI, native DLL/SO loading, GGUF tensor computation) is verified via bundled Silero VAD (1.2MB) load, silence detection, and clean disposal.",
+    );
+
+    return {
+      success: true,
+      platform,
+      arch: layout.arch,
+      output: stdout,
+    };
+  } finally {
+    try {
+      rmSync(doctorScriptPath, { force: true });
+    } catch {}
+  }
 }
 
 // Self-contained unit helper tests for check-support validation functions
@@ -486,6 +890,30 @@ export function runUnitTests() {
       /version \(0\.2\.0\) must match root version \(0\.2\.1\)/,
     );
 
+    // Test 0.3.0 requires update-service-platform.cjs
+    writeFileSync(
+      join(mockApp, "package.json"),
+      JSON.stringify({ main: "main.cjs", version: "0.3.0" }),
+    );
+    for (const f of [
+      "main.cjs",
+      "preload.cjs",
+      "preferences.cjs",
+      "security.cjs",
+      "update-service.cjs",
+      "update-service-platform.cjs",
+    ]) {
+      writeFileSync(join(mockApp, f), "// shell");
+    }
+    verifyAppPackage(mockResources, "0.3.0");
+
+    rmSync(join(mockApp, "update-service-platform.cjs"));
+    assert.throws(
+      () => verifyAppPackage(mockResources, "0.3.0"),
+      /Required shell file missing: Resources\/app\/update-service-platform\.cjs/,
+    );
+    writeFileSync(join(mockApp, "update-service-platform.cjs"), "// shell");
+
     // 5. Test findLicenseFile
     const mockLicenses = join(tempDir, "mock-lic");
     mkdirSync(mockLicenses, { recursive: true });
@@ -555,6 +983,182 @@ export function runUnitTests() {
     assert.equal(extractPlistString(fwPlistXml("1.2.3"), "CFBundleShortVersionString"), "1.2.3");
     assert.equal(extractPlistString(fwPlistXml("1.2.3"), "CFBundleVersion"), "1.2.3");
     assert.equal(extractPlistString("<dict></dict>", "CFBundleVersion"), null);
+
+    // 7. Test resolvePackageLayout
+    const macLayout = resolvePackageLayout(tempDir, "darwin", "arm64");
+    assert.equal(macLayout.executable, join(tempDir, "dist/Sumi.app/Contents/MacOS/Sumi"));
+    assert.equal(
+      macLayout.nodeExecutable,
+      join(tempDir, "dist/Sumi.app/Contents/Resources/runtime/node"),
+    );
+
+    const winLayout = resolvePackageLayout(tempDir, "win32", "x64");
+    assert.equal(winLayout.executable, join(tempDir, "dist/sumi-win32-x64/Sumi.exe"));
+    assert.equal(
+      winLayout.nodeExecutable,
+      join(tempDir, "dist/sumi-win32-x64/resources/runtime/node.exe"),
+    );
+
+    const linuxLayout = resolvePackageLayout(tempDir, "linux", "x64");
+    assert.equal(linuxLayout.executable, join(tempDir, "dist/sumi-linux-x64/sumi"));
+    assert.equal(
+      linuxLayout.nodeExecutable,
+      join(tempDir, "dist/sumi-linux-x64/resources/runtime/node"),
+    );
+
+    // 8. Test verifyWindowsPackage with synthetic mock
+    const mockWinRoot = join(tempDir, "mock-win-root");
+    const mockWinApp = join(mockWinRoot, "dist/sumi-win32-x64");
+    const mockWinRes = join(mockWinApp, "resources");
+    mkdirSync(join(mockWinRes, "runtime"), { recursive: true });
+    mkdirSync(join(mockWinRes, "app"), { recursive: true });
+    mkdirSync(join(mockWinRes, "licenses"), { recursive: true });
+    mkdirSync(join(mockWinRes, "server/apps/web/models"), { recursive: true });
+
+    // Sumi.exe and node.exe with valid MZ PE headers (> 1024 bytes)
+    const fakePeBuffer = Buffer.concat([Buffer.from("MZ"), Buffer.alloc(1100, 0)]);
+    writeFileSync(join(mockWinApp, "Sumi.exe"), fakePeBuffer);
+    writeFileSync(join(mockWinRes, "runtime/node.exe"), fakePeBuffer);
+
+    // All required Windows CRT DLLs present
+    for (const dll of WINDOWS_REQUIRED_CRT_DLLS) {
+      writeFileSync(join(mockWinRes, "runtime", dll), "fake-crt-dll");
+    }
+
+    // Required licenses + Microsoft CRT redistributable notice
+    writeFileSync(join(mockWinRes, "licenses/Trade-Journal-MIT.txt"), "A".repeat(150));
+    writeFileSync(join(mockWinRes, "licenses/Kami-MIT.txt"), "A".repeat(150));
+    writeFileSync(join(mockWinRes, "licenses/Node-LICENSE.txt"), "A".repeat(150));
+    writeFileSync(join(mockWinRes, "licenses/Silero-VAD-MIT.txt"), "A".repeat(150));
+    writeFileSync(join(mockWinRes, "licenses/Electron-LICENSE.txt"), "A".repeat(150));
+    writeFileSync(join(mockWinRes, "licenses/THIRD-PARTY-NOTICES.md"), "A".repeat(150));
+    writeFileSync(
+      join(mockWinRes, "licenses/Microsoft-VC-Redist-LICENSE.txt"),
+      "Microsoft Visual C++ Runtime Redistributable License Terms\n" + "A".repeat(100),
+    );
+
+    // App files
+    writeFileSync(
+      join(mockWinRes, "app/package.json"),
+      JSON.stringify({ main: "main.cjs", version: "0.3.0" }),
+    );
+    for (const f of [
+      "main.cjs",
+      "preload.cjs",
+      "preferences.cjs",
+      "security.cjs",
+      "update-service.cjs",
+      "update-service-platform.cjs",
+    ]) {
+      writeFileSync(join(mockWinRes, "app", f), "// shell");
+    }
+
+    // Silero model fixture (use real model bytes so size and SHA256 match perfectly)
+    const realSileroPath = join(
+      dirname(fileURLToPath(import.meta.url)),
+      "../models/silero-vad-v6.2-F32.gguf",
+    );
+    if (existsSync(realSileroPath)) {
+      writeFileSync(
+        join(mockWinRes, "server/apps/web/models/silero-vad-v6.2-F32.gguf"),
+        readFileSync(realSileroPath),
+      );
+    } else {
+      writeFileSync(
+        join(mockWinRes, "server/apps/web/models/silero-vad-v6.2-F32.gguf"),
+        Buffer.alloc(SILERO_EXPECTED_SIZE),
+      );
+    }
+
+    writeFileSync(join(mockWinRoot, "package.json"), JSON.stringify({ version: "0.3.0" }));
+
+    // Mock hash calculation for test fixture
+    const origCreateHash = createHash;
+    // Window check happy path (with dummy silero sha bypass only for synthetic test)
+    // We test required DLL missing:
+    rmSync(join(mockWinRes, "runtime/msvcp140.dll"), { force: true });
+    assert.throws(
+      () =>
+        verifyWindowsPackage({
+          root: mockWinRoot,
+          app: mockWinApp,
+          resources: mockWinRes,
+          arch: "x64",
+        }),
+      /Required Windows CRT runtime DLL missing from package: msvcp140\.dll/,
+    );
+    // Restore msvcp140.dll
+    writeFileSync(join(mockWinRes, "runtime/msvcp140.dll"), "fake-crt-dll");
+
+    // Missing Microsoft CRT license notice throws
+    rmSync(join(mockWinRes, "licenses/Microsoft-VC-Redist-LICENSE.txt"), { force: true });
+    assert.throws(
+      () =>
+        verifyWindowsPackage({
+          root: mockWinRoot,
+          app: mockWinApp,
+          resources: mockWinRes,
+          arch: "x64",
+        }),
+      /Microsoft Visual C\+\+ Redistributable license notice missing required terms/,
+    );
+
+    // 9. Test verifyLinuxPackage with synthetic mock
+    const mockLinuxRoot = join(tempDir, "mock-linux-root");
+    const mockLinuxApp = join(mockLinuxRoot, "dist/sumi-linux-x64");
+    const mockLinuxRes = join(mockLinuxApp, "resources");
+    mkdirSync(join(mockLinuxRes, "runtime"), { recursive: true });
+    mkdirSync(join(mockLinuxRes, "app"), { recursive: true });
+    mkdirSync(join(mockLinuxRes, "licenses"), { recursive: true });
+    mkdirSync(join(mockLinuxRes, "server/apps/web/models"), { recursive: true });
+
+    // sumi and node with valid ELF magic bytes (\x7fELF)
+    const fakeElfBuffer = Buffer.concat([
+      Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
+      Buffer.alloc(1100, 0),
+    ]);
+    writeFileSync(join(mockLinuxApp, "sumi"), fakeElfBuffer);
+    writeFileSync(join(mockLinuxRes, "runtime/node"), fakeElfBuffer);
+
+    // Missing chrome-sandbox throws
+    assert.throws(
+      () =>
+        verifyLinuxPackage({
+          root: mockLinuxRoot,
+          app: mockLinuxApp,
+          resources: mockLinuxRes,
+          arch: "x64",
+        }),
+      /chrome-sandbox missing/,
+    );
+    writeFileSync(join(mockLinuxApp, "chrome-sandbox"), "#!/bin/sh\n");
+
+    // 10. Test runNativeAsrDoctor with synthetic mock runner
+    const mockDoctorRoot = join(tempDir, "mock-doctor-root");
+    const mockDoctorLayout = resolvePackageLayout(mockDoctorRoot, "linux", "x64");
+    mkdirSync(dirname(mockDoctorLayout.nodeExecutable), { recursive: true });
+    mkdirSync(join(mockDoctorLayout.webDir, "models"), { recursive: true });
+    writeFileSync(mockDoctorLayout.nodeExecutable, "#!/bin/sh\n");
+    if (existsSync(realSileroPath)) {
+      writeFileSync(
+        join(mockDoctorLayout.webDir, "models/silero-vad-v6.2-F32.gguf"),
+        readFileSync(realSileroPath),
+      );
+    }
+    const mockRunCalls = [];
+    const mockDoctorTool = (cmd, args, opts) => {
+      mockRunCalls.push({ cmd, args, cwd: opts && opts.cwd });
+      return "[ASR Doctor] Silence speech probability: 0.0016\n[ASR Doctor] Backend successfully initialized.";
+    };
+    const doctorRes = runNativeAsrDoctor({
+      root: mockDoctorRoot,
+      platform: "linux",
+      arch: "x64",
+      runTool: mockDoctorTool,
+    });
+    assert.equal(doctorRes.success, true);
+    assert.equal(mockRunCalls.length, 1);
+    assert.equal(mockRunCalls[0].cwd, mockDoctorLayout.webDir);
 
     console.log("All check-support unit tests passed successfully.");
   } finally {

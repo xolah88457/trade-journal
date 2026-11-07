@@ -1,13 +1,14 @@
 {
   "name": "trade-journal-monorepo",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "The open-source trade journal. Broker sync, deep analytics, daily journaling, and AI-native reflection. Self-hosted, free forever.",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/LuxAlgo/trade-journal.git"
+    "url": "git+https://github.com/xolah88457/trade-journal.git"
   },
+  "author": "Sumi contributors <noreply@github.com>",
   "engines": {
     "node": ">=22"
   },
@@ -18,7 +19,7 @@
     "start": "pnpm --filter web start",
     "preview": "pnpm build && pnpm start",
     "desktop:build": "node desktop/build.mjs",
-    "desktop:open": "open dist/Sumi.app",
+    "desktop:open": "node desktop/open.mjs",
     "desktop:check": "node --test desktop/check.test.mjs",
     "desktop:package": "node desktop/package.mjs",
     "test": "vitest run",
@@ -27,13 +28,17 @@
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },
+  "dependencies": {
+    "electron-updater": "6.8.11"
+  },
   "devDependencies": {
+    "electron-builder": "26.18.0",
+    "electron-sparkle": "0.2.0",
     "jsdom": "^26.1.0",
     "prettier": "^3.6.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0",
-    "electron-sparkle": "0.2.0"
+    "vitest": "^3.2.0"
   },
   "pnpm": {
     "autoInstallPeers": false,
@@ -41,6 +46,10 @@
       "ignoreMissing": [
         "electron"
       ]
-    }
+    },
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "esbuild"
+    ]
   }
 }

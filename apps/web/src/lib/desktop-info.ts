@@ -26,7 +26,7 @@ export interface DesktopUpdateState {
   message?: string;
   error?: string;
   nativeUI: boolean;
-  provider: "sparkle";
+  provider: "sparkle" | "electron-updater" | string;
 }
 
 /**

@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import {
+  chmodSync,
   cpSync,
   existsSync,
   mkdirSync,
@@ -12,17 +13,24 @@ import {
   writeFileSync,
 } from "node:fs";
 import { createHash } from "node:crypto";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ELECTRON_VERSION = "45.2.3";
 
-// Verified official Electron v45.2.3 Darwin asset SHA-256 hashes
+// Verified official Electron v45.2.3 asset SHA-256 hashes
 export const PINNED_ELECTRON_CHECKSUMS = {
   "darwin-arm64": "4d7c429064087a47b855d9bd06c76ead4819b7f02b385de232d4a5c37ecef55f",
-  "darwin-x64": "e619dacecaeda36f4bc708ac7df5a6bdcdfe2f554d5a4f5c0f47bcd66d51a86c",
+  "darwin-x64": "d87323533cc8750ef177e5b48058f7a8b381f677d4e103cc63360006c08829c2",
+  "linux-x64": "a87fe741f6d121285117e574da6c9a2e65210d410123bbc04713b099add0263b",
+  "linux-arm64": "397c060fd9da99ab72b78787d65545b432fcadf13ef6c96658e4f525692aae0f",
+  "win32-x64": "489cd061908e697394b004298bf5ffd345c935d10e8ca197ba819f019ab2dec0",
+  "win32-arm64": "f664bd7a4adfc45ac237a6f5fbf6c8e041b71b174466e9cb6fc9416c918e249d",
 };
+
+export const SUPPORTED_PLATFORMS = ["darwin", "linux", "win32"];
 
 // Verified via otool -l LC_BUILD_VERSION inspection:
 // Electron 45.2.3 minos: 13.0
@@ -37,10 +45,154 @@ export const REQUIRED_DESKTOP_SCRIPTS = [
   "preferences.cjs",
   "security.cjs",
   "update-service.cjs",
+  "update-service-platform.cjs",
 ];
 
 export const DEFAULT_FEED_URL =
   "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml";
+export const DEFAULT_X64_FEED_URL =
+  "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml";
+
+export const APP_UPDATE_CONFIG = Object.freeze({
+  owner: "xolah88457",
+  repo: "trade-journal",
+  provider: "github",
+  updaterCacheDirName: "sumi-updater",
+});
+
+/**
+ * Generates the canonical app-update.yml content for electron-updater on Windows and Linux.
+ */
+export function generateAppUpdateYaml(config = APP_UPDATE_CONFIG) {
+  return (
+    `owner: ${config.owner}\n` +
+    `repo: ${config.repo}\n` +
+    `provider: ${config.provider}\n` +
+    `updaterCacheDirName: ${config.updaterCacheDirName}\n`
+  );
+}
+
+export const SILERO_EXPECTED_SHA256 =
+  "0d871a800c420fdd5d1b17a3aea4296d1c39608f0ff4a9295eb76457eb1c88e6";
+
+export const REQUIRED_WIN32_CRT_DLLS = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
+
+/**
+ * Resolves the location of app-local Visual C++ 14.x x64 CRT DLLs on Windows.
+ * Prefers the official Microsoft Visual C++ Redistributable directory
+ * (via vswhere or VCToolsRedistDir), or falls back to system32 if necessary.
+ */
+export function resolveWindowsCrtDlls(options = {}) {
+  const env = options.env || process.env;
+  const candidates = [];
+
+  // 1. Explicit environment override
+  if (env.VC_REDIST_X64_DIR && existsSync(env.VC_REDIST_X64_DIR)) {
+    candidates.push(env.VC_REDIST_X64_DIR);
+  }
+
+  // 2. VCToolsRedistDir environment variable (set in VS command prompts)
+  if (env.VCToolsRedistDir) {
+    const vcDir = join(env.VCToolsRedistDir, "x64");
+    if (existsSync(vcDir)) {
+      try {
+        for (const entry of readdirSync(vcDir)) {
+          if (/^Microsoft\.VC\d+\.CRT$/i.test(entry)) {
+            candidates.push(join(vcDir, entry));
+          }
+        }
+      } catch {}
+    }
+  }
+
+  // 3. Probe vswhere if available on Windows
+  if (process.platform === "win32") {
+    try {
+      const vswhere = join(
+        env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+        "Microsoft Visual Studio",
+        "Installer",
+        "vswhere.exe",
+      );
+      if (existsSync(vswhere)) {
+        const found = execFileSync(
+          vswhere,
+          ["-latest", "-products", "*", "-find", "VC/Redist/MSVC/**/x64/Microsoft.VC*.CRT"],
+          { encoding: "utf8" },
+        )
+          .trim()
+          .split(/\r?\n/)
+          .filter(Boolean);
+        candidates.push(...found);
+      }
+    } catch {
+      // vswhere not found or failed
+    }
+  }
+
+  // 4. Common Visual Studio / Build Tools paths on C:\
+  const programFiles = [
+    env["ProgramFiles"] || "C:\\Program Files",
+    env["ProgramFiles(x86)"] || "C:\\Program Files (x86)",
+  ];
+  for (const pf of programFiles) {
+    for (const edition of ["Enterprise", "Professional", "Community", "BuildTools"]) {
+      for (const year of ["2022", "2019"]) {
+        const redistBase = join(
+          pf,
+          "Microsoft Visual Studio",
+          year,
+          edition,
+          "VC",
+          "Redist",
+          "MSVC",
+        );
+        if (existsSync(redistBase)) {
+          try {
+            for (const ver of readdirSync(redistBase)) {
+              const crtDir = join(redistBase, ver, "x64");
+              if (existsSync(crtDir)) {
+                for (const entry of readdirSync(crtDir)) {
+                  if (/^Microsoft\.VC\d+\.CRT$/i.test(entry)) {
+                    candidates.push(join(crtDir, entry));
+                  }
+                }
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  }
+
+  // 5. System32 fallback
+  const sys32 = join(env["SystemRoot"] || env["WINDIR"] || "C:\\Windows", "System32");
+  if (existsSync(sys32)) {
+    candidates.push(sys32);
+  }
+
+  // Search candidates for the required DLLs
+  const resolved = {};
+  for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+    for (const dir of candidates) {
+      const fullPath = join(dir, dll);
+      if (existsSync(fullPath)) {
+        resolved[dll] = fullPath;
+        break;
+      }
+      try {
+        const entries = readdirSync(dir);
+        const match = entries.find((e) => e.toLowerCase() === dll.toLowerCase());
+        if (match) {
+          resolved[dll] = join(dir, match);
+          break;
+        }
+      } catch {}
+    }
+  }
+
+  return resolved;
+}
 
 /**
  * Validates the Sparkle update feed URL.
@@ -99,21 +251,42 @@ export function validatePublicEdKey(key) {
 }
 
 /**
+ * Resolves the Mac architecture feed URL split.
+ * ARM keeps canonical appcast.xml (v0.2 clients already use it);
+ * Intel (x64) uses appcast-x64.xml.
+ */
+export function resolveMacFeedUrl(baseFeedUrl, arch = process.arch) {
+  if (arch === "x64") {
+    if (baseFeedUrl.endsWith("/appcast.xml")) {
+      return baseFeedUrl.replace(/\/appcast\.xml$/, "/appcast-x64.xml");
+    }
+  }
+  return baseFeedUrl;
+}
+
+/**
  * Resolves and validates the canonical update configuration.
  *
  * Canonical source is desktop/update-config.json ({ feedUrl, publicEdKey });
  * environment overrides (SUMI_FEED_URL / SUFeedURL, SUMI_PUBLIC_ED_KEY / SUPublicEDKey)
- * take precedence when set. feedUrl defaults to DEFAULT_FEED_URL.
+ * take precedence when set. feedUrl defaults to DEFAULT_FEED_URL (or DEFAULT_X64_FEED_URL for x64).
  *
  * Empty or invalid publicEdKey MUST THROW - SUPublicEDKey is never omitted.
  * This MUST run before any Next build / download / staging / replacement step,
  * so an unreleasable config fails the build immediately and loudly.
  */
-export function resolveUpdateConfig({ config = {}, env = process.env } = {}) {
+export function resolveUpdateConfig({ config = {}, env = process.env, arch = process.arch } = {}) {
   let feedUrl = env.SUMI_FEED_URL || env.SUFeedURL || config.feedUrl || "";
   let publicEdKey = env.SUMI_PUBLIC_ED_KEY || env.SUPublicEDKey || config.publicEdKey || "";
   if (!feedUrl) {
-    feedUrl = DEFAULT_FEED_URL;
+    feedUrl = arch === "x64" ? DEFAULT_X64_FEED_URL : DEFAULT_FEED_URL;
+  } else if (
+    arch === "x64" &&
+    feedUrl.endsWith("/appcast.xml") &&
+    !env.SUMI_FEED_URL &&
+    !env.SUFeedURL
+  ) {
+    feedUrl = resolveMacFeedUrl(feedUrl, "x64");
   }
   validateFeedUrl(feedUrl);
   const validatedKey = validatePublicEdKey(publicEdKey);
@@ -164,8 +337,6 @@ export function assertFrameworkSymlinksConfined(frameworkPath) {
 
 export function buildInfoPlist(version, options = {}) {
   const minSystemVersion = options.minSystemVersion || LS_MINIMUM_SYSTEM_VERSION;
-  // SUFeedURL and SUPublicEDKey are ALWAYS emitted - never omitted.
-  // Both are validated: HTTPS feed and raw 32-byte base64 Ed25519 key required.
   const suFeedUrl = validateFeedUrl(options.suFeedUrl || DEFAULT_FEED_URL);
   const suPublicEDKey = validatePublicEdKey(options.suPublicEDKey);
   const extraKeys = [];
@@ -310,15 +481,30 @@ export function buildEntitlementsXml() {
 </plist>\n`;
 }
 
-export async function ensureElectronArchive(cacheDir, arch = process.arch) {
+export function getElectronArchiveName(
+  version = ELECTRON_VERSION,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const plat = platform === "win32" ? "win32" : platform === "darwin" ? "darwin" : "linux";
+  return `electron-v${version}-${plat}-${normArch}.zip`;
+}
+
+export async function ensureElectronArchive(
+  cacheDir,
+  arch = process.arch,
+  platform = process.platform,
+) {
   mkdirSync(cacheDir, { recursive: true });
-  const electronArch = arch === "arm64" ? "darwin-arm64" : "darwin-x64";
-  const archiveName = `electron-v${ELECTRON_VERSION}-${electronArch}.zip`;
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const platformKey = `${platform === "win32" ? "win32" : platform}-${normArch}`;
+  const archiveName = getElectronArchiveName(ELECTRON_VERSION, platform, arch);
   const base = `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`;
   const archivePath = join(cacheDir, archiveName);
   const sumsPath = join(cacheDir, `electron-v${ELECTRON_VERSION}-SHASUMS256.txt`);
 
-  const pinnedSha = PINNED_ELECTRON_CHECKSUMS[electronArch];
+  const pinnedSha = PINNED_ELECTRON_CHECKSUMS[platformKey];
 
   let checksum = pinnedSha;
   if (existsSync(sumsPath)) {
@@ -365,13 +551,30 @@ export async function ensureElectronArchive(cacheDir, arch = process.arch) {
   return { archivePath, checksum };
 }
 
+export function getNodeArchiveName(
+  runtimeVersion = process.version,
+  platform = process.platform,
+  arch = process.arch,
+) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  if (platform === "win32") {
+    return `node-${runtimeVersion}-win-${normArch}.zip`;
+  }
+  return `node-${runtimeVersion}-${platform}-${normArch}.tar.gz`;
+}
+
+export function getNodeBinaryRelativePath(platform = process.platform) {
+  return platform === "win32" ? "node.exe" : "bin/node";
+}
+
 export async function ensureNodeArchive(
   cacheDir,
   runtimeVersion = process.version,
   arch = process.arch,
+  platform = process.platform,
 ) {
   mkdirSync(cacheDir, { recursive: true });
-  const archiveName = `node-${runtimeVersion}-darwin-${arch}.tar.gz`;
+  const archiveName = getNodeArchiveName(runtimeVersion, platform, arch);
   const base = `https://nodejs.org/dist/${runtimeVersion}`;
   const archivePath = join(cacheDir, archiveName);
   const sumsPath = join(cacheDir, `node-${runtimeVersion}-SHASUMS256.txt`);
@@ -414,62 +617,405 @@ export async function ensureNodeArchive(
   return { archivePath, checksum };
 }
 
-export async function build() {
-  const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  if (process.platform !== "darwin") throw new Error("Sumi's native desktop build requires macOS.");
+/**
+ * Resolves the verified transcribe-cpp native platform tuple.
+ */
+export function getNativeTuple(platform = process.platform, arch = process.arch) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  if (platform === "darwin") {
+    return normArch === "arm64" ? "darwin-arm64-metal" : "darwin-x64-cpu";
+  }
+  if (platform === "linux") {
+    return normArch === "arm64" ? "linux-arm64-cpu-vulkan" : "linux-x64-cpu-vulkan";
+  }
+  if (platform === "win32") {
+    return normArch === "x64" ? "win32-x64-cpu-vulkan" : null;
+  }
+  return null;
+}
 
-  // Pre-flight 1: update config MUST be valid BEFORE any Next build, download,
-  // staging, or dist replacement. Empty/invalid config.publicEdKey THROWS here,
-  // and a non-HTTPS feedUrl THROWS here. SUPublicEDKey is never omitted.
+export function getNativeLibName(platform = process.platform) {
+  if (platform === "darwin") return "libtranscribe.dylib";
+  if (platform === "win32") return "transcribe.dll";
+  return "libtranscribe.so";
+}
+
+export function getKoffiPackageName(platform = process.platform, arch = process.arch) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  return `@koromix/koffi-${platform}-${normArch}`;
+}
+
+/**
+ * Resolves the installed @koromix native directory for Koffi from actual installed metadata.
+ */
+export function resolveKoffiNativeDir(root, platform = process.platform, arch = process.arch) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const pkgName = `@koromix/koffi-${platform}-${normArch}`;
+
+  // 1. Try resolving via Node's createRequire from apps/web or root
+  for (const start of [join(root, "apps/web/package.json"), join(root, "package.json")]) {
+    if (existsSync(start)) {
+      try {
+        const req = createRequire(start);
+        const resolvedPath = req.resolve(`${pkgName}/package.json`);
+        const koromixDir = dirname(dirname(resolvedPath));
+        if (existsSync(koromixDir)) {
+          return koromixDir;
+        }
+      } catch {
+        // Continue to search pnpm store
+      }
+    }
+  }
+
+  // 2. Scan node_modules/.pnpm for @koromix directory matching the target package
+  const pnpmDir = join(root, "node_modules/.pnpm");
+  if (existsSync(pnpmDir)) {
+    const pattern = `@koromix+koffi-${platform}-${normArch}@`;
+    for (const entry of readdirSync(pnpmDir)) {
+      if (entry.startsWith(pattern)) {
+        const candidate = join(pnpmDir, entry, "node_modules/@koromix");
+        if (existsSync(candidate)) {
+          return candidate;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Locates the owning package.json for an entrypoint file by walking up directories.
+ * Fallback for packages whose "exports" map hides ./package.json.
+ */
+export function findOwningPackageJson(entryPath) {
+  let dir = dirname(entryPath);
+  while (dir && dir !== dirname(dir)) {
+    const pkgPath = join(dir, "package.json");
+    if (existsSync(pkgPath)) {
+      try {
+        const json = JSON.parse(readFileSync(pkgPath, "utf8"));
+        return { pkgPath, pkgDir: dir, json };
+      } catch {}
+    }
+    dir = dirname(dir);
+  }
+  return null;
+}
+
+/**
+ * Resolves a package's directory and metadata from a starting directory.
+ * Tries direct package.json subpath first; if hidden by exports (e.g. fs-extra),
+ * resolves the entrypoint and walks up to the owning package.json.
+ * Throws loudly if the required dependency is missing.
+ */
+export function resolvePackage(pkgName, startDir) {
+  const req = createRequire(
+    existsSync(join(startDir, "package.json"))
+      ? join(startDir, "package.json")
+      : join(startDir, "dummy.js"),
+  );
+
+  // 1. Try direct package.json subpath
+  try {
+    const pkgPath = req.resolve(`${pkgName}/package.json`);
+    const json = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return { pkgPath, pkgDir: dirname(pkgPath), json };
+  } catch (err) {
+    // 2. Try entrypoint then find owning package.json
+    try {
+      const entryPath = req.resolve(pkgName);
+      const found = findOwningPackageJson(entryPath);
+      if (found) return found;
+    } catch (e2) {}
+  }
+
+  throw new Error(`Required runtime dependency missing: ${pkgName} (required from ${startDir})`);
+}
+
+/**
+ * Bundles a package and its production dependencies with version-aware hoisting and nesting.
+ * If conflicting versions of a transitive dependency are encountered, nests the dependency
+ * in the requiring package's local node_modules directory rather than overwriting or skipping it.
+ * Bounded recursion prevents infinite cycles on circular dependencies.
+ */
+export function bundlePackageWithRuntimeDeps(pkgName, startDir, targetNodeModules) {
+  const topInstalled = new Map(); // packageName -> version
+
+  function bundle(name, fromDir, currentTargetModules, stack = new Set()) {
+    const { pkgDir, json } = resolvePackage(name, fromDir);
+    const pkgId = `${json.name}@${json.version}`;
+    if (stack.has(pkgId)) return; // Bounded cycle prevention
+    const nextStack = new Set(stack);
+    nextStack.add(pkgId);
+
+    let destDir;
+    let nextTargetModules;
+
+    if (!topInstalled.has(json.name)) {
+      // First time seeing this package: install at top level
+      destDir = join(targetNodeModules, json.name);
+      topInstalled.set(json.name, json.version);
+      nextTargetModules = targetNodeModules;
+    } else if (topInstalled.get(json.name) === json.version) {
+      // Already installed at top level with identical version
+      destDir = join(targetNodeModules, json.name);
+      nextTargetModules = targetNodeModules;
+    } else {
+      // Version conflict: nest inside the requiring package's node_modules
+      destDir = join(currentTargetModules, json.name);
+      nextTargetModules = join(destDir, "node_modules");
+    }
+
+    if (!existsSync(destDir)) {
+      mkdirSync(dirname(destDir), { recursive: true });
+      cpSync(pkgDir, destDir, { recursive: true, dereference: true });
+    }
+
+    const deps = Object.keys(json.dependencies || {});
+    for (const dep of deps) {
+      const depTargetModules = join(destDir, "node_modules");
+      bundle(dep, pkgDir, depTargetModules, nextStack);
+    }
+  }
+
+  bundle(pkgName, startDir, targetNodeModules);
+}
+
+/**
+ * Augments a staged Next standalone server bundle with genuine portable runtime dependencies.
+ * Resolves traced packages from the pnpm store and hoists them so that Next.js sibling dependencies
+ * (such as styled-jsx, @next/env, @swc/helpers) resolve cleanly in environments where symlinks
+ * are dereferenced or where NTFS junctions cannot reference the checkout.
+ */
+export function augmentStandaloneDependencies(serverDir) {
+  const pnpmDir = join(serverDir, "node_modules", ".pnpm");
+  if (!existsSync(pnpmDir)) return;
+
+  const targets = [join(serverDir, "node_modules"), join(serverDir, "apps/web/node_modules")];
+
+  for (const entry of readdirSync(pnpmDir)) {
+    const modulesDir = join(pnpmDir, entry, "node_modules");
+    if (!existsSync(modulesDir)) continue;
+
+    for (const item of readdirSync(modulesDir)) {
+      if (item.startsWith(".")) continue;
+      const itemPath = join(modulesDir, item);
+      if (item.startsWith("@")) {
+        for (const subItem of readdirSync(itemPath)) {
+          const subPath = join(itemPath, subItem);
+          const pkgName = `${item}/${subItem}`;
+          for (const target of targets) {
+            const dest = join(target, pkgName);
+            if (!existsSync(dest)) {
+              mkdirSync(dirname(dest), { recursive: true });
+              cpSync(subPath, dest, { recursive: true, dereference: true });
+            }
+          }
+        }
+      } else {
+        for (const target of targets) {
+          const dest = join(target, item);
+          if (!existsSync(dest)) {
+            mkdirSync(dirname(dest), { recursive: true });
+            cpSync(itemPath, dest, { recursive: true, dereference: true });
+          }
+        }
+      }
+    }
+  }
+}
+
+/**
+ * Removes sensitive and environment files from a distribution directory.
+ */
+export function cleanPrivateFiles(directory) {
+  if (!existsSync(directory)) return;
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const p = join(directory, entry.name);
+    if (
+      entry.name.startsWith(".env") ||
+      /\.(db|sqlite)(-shm|-wal|-journal)?$/.test(entry.name) ||
+      (entry.name.endsWith(".gguf") && entry.name !== "silero-vad-v6.2-F32.gguf") ||
+      entry.name === ".secret"
+    ) {
+      rmSync(p, { recursive: true, force: true });
+    } else if (entry.isDirectory()) {
+      cleanPrivateFiles(p);
+    }
+  }
+}
+
+/**
+ * Resolves the platform-safe command and arguments for invoking pnpm.
+ * On Windows, dispatches via ComSpec cmd.exe /d /s /c "pnpm build" or validated
+ * Node + npm_execpath to avoid ENOENT/EINVAL and Node batch file security restrictions.
+ */
+export function getPnpmCommand(args = [], env = process.env, platform = process.platform) {
+  // 1. If npm_execpath points to a validated JS script, invoke directly with current Node binary
+  if (env.npm_execpath && existsSync(env.npm_execpath) && /\.[cm]?js$/i.test(env.npm_execpath)) {
+    return {
+      command: process.execPath,
+      args: [env.npm_execpath, ...args],
+      options: {},
+    };
+  }
+
+  // 2. On Windows, dispatch via ComSpec cmd.exe /d /s /c without arbitrary shell argument concatenation
+  if (platform === "win32") {
+    const comSpec = env.ComSpec || env.COMSPEC || "cmd.exe";
+    return {
+      command: comSpec,
+      args: ["/d", "/s", "/c", ["pnpm", ...args].join(" ")],
+      options: { windowsVerbatimArguments: true },
+    };
+  }
+
+  // 3. Unix standard dispatch
+  return {
+    command: "pnpm",
+    args,
+    options: {},
+  };
+}
+
+/**
+ * Verifies that symlinks within a directory do not escape the application bundle.
+ */
+export function assertSelfContained(directory, serverBase) {
+  const serverPrefix = serverBase.endsWith("/") ? serverBase : serverBase + "/";
+  for (const entry of readdirSync(directory, { withFileTypes: true })) {
+    const p = join(directory, entry.name);
+    if (entry.isSymbolicLink()) {
+      const target = realpathSync(p);
+      if (target !== serverBase && !target.startsWith(serverPrefix)) {
+        throw new Error(`Symlink escapes application bundle: ${p} -> ${target}`);
+      }
+    } else if (entry.isDirectory()) {
+      assertSelfContained(p, serverBase);
+    }
+  }
+}
+
+/**
+ * Cross-platform desktop build pipeline for Sumi.
+ * Builds macOS (.app), Linux, and Windows desktop distributions on their native host.
+ */
+export async function build(options = {}) {
+  const root = options.root || resolve(dirname(fileURLToPath(import.meta.url)), "..");
+  const platform = options.platform || process.platform;
+  const arch = options.arch || process.arch;
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+
+  if (!SUPPORTED_PLATFORMS.includes(platform)) {
+    throw new Error(
+      `Unsupported desktop build platform: ${platform}. Supported: ${SUPPORTED_PLATFORMS.join(", ")}`,
+    );
+  }
+
+  // Pre-flight 1: on macOS, update config MUST be valid BEFORE any build step.
   const updateConfigPath = join(root, "desktop/update-config.json");
   let rawUpdateConfig = {};
   if (existsSync(updateConfigPath)) {
     rawUpdateConfig = JSON.parse(readFileSync(updateConfigPath, "utf8"));
   }
-  const { feedUrl: suFeedUrl, publicEdKey: suPublicEDKey } = resolveUpdateConfig({
-    config: rawUpdateConfig,
-    env: process.env,
-  });
+
+  let suFeedUrl = "";
+  let suPublicEDKey = "";
+  if (platform === "darwin") {
+    const resolved = resolveUpdateConfig({
+      config: rawUpdateConfig,
+      env: process.env,
+      arch: normArch,
+    });
+    suFeedUrl = resolved.feedUrl;
+    suPublicEDKey = resolved.publicEdKey;
+  }
 
   const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const appVersion = rootPkg.version || "0.2.0";
+  const appVersion = rootPkg.version || "0.3.0";
 
-  // Pre-flight check: required desktop scripts must exist before build proceeds.
+  // Pre-flight 2: check required desktop scripts
   checkRequiredScripts(join(root, "desktop"));
 
-  const output = join(root, "dist", "Sumi.app");
-  const staging = join(root, "dist/.Sumi-build");
-  const stagedApp = join(staging, "Sumi.app");
-  const contents = join(stagedApp, "Contents");
-  const resources = join(contents, "Resources");
-  const frameworks = join(contents, "Frameworks");
-  const macos = join(contents, "MacOS");
-  const appDir = join(resources, "app");
-
   const run = (command, args) => execFileSync(command, args, { cwd: root, stdio: "inherit" });
+  const runPnpm = (args) => {
+    const dispatch = getPnpmCommand(args, process.env, platform);
+    return execFileSync(dispatch.command, dispatch.args, {
+      cwd: root,
+      stdio: "inherit",
+      ...dispatch.options,
+    });
+  };
 
   // 1. Build Next.js production standalone bundle
-  run("pnpm", ["build"]);
-
-  // 2. Clean and initialize staging directory
-  rmSync(staging, { recursive: true, force: true });
-  mkdirSync(staging, { recursive: true });
+  if (!options.skipNextBuild) {
+    runPnpm(["build"]);
+  }
 
   const cacheDir = join(root, ".desktop-cache");
   mkdirSync(cacheDir, { recursive: true });
 
+  // 2. Setup staging layout per platform
+  let output;
+  let staging;
+  let stagedApp;
+  let resources;
+  let appDir;
+  let binDir;
+
+  if (platform === "darwin") {
+    output = join(root, "dist", "Sumi.app");
+    staging = join(root, "dist", ".Sumi-build");
+    stagedApp = join(staging, "Sumi.app");
+    const contents = join(stagedApp, "Contents");
+    resources = join(contents, "Resources");
+    binDir = join(contents, "MacOS");
+    appDir = join(resources, "app");
+  } else if (platform === "win32") {
+    output = join(root, "dist", `sumi-win32-${normArch}`);
+    staging = join(root, "dist", `.sumi-win-build-${normArch}`);
+    stagedApp = staging;
+    resources = join(staging, "resources");
+    binDir = staging;
+    appDir = join(resources, "app");
+  } else if (platform === "linux") {
+    output = join(root, "dist", `sumi-linux-${normArch}`);
+    staging = join(root, "dist", `.sumi-linux-build-${normArch}`);
+    stagedApp = staging;
+    resources = join(staging, "resources");
+    binDir = staging;
+    appDir = join(resources, "app");
+  }
+
+  rmSync(staging, { recursive: true, force: true });
+  mkdirSync(staging, { recursive: true });
+
   // 3. Download and extract official Electron archive
-  console.log(`Downloading and verifying official Electron v${ELECTRON_VERSION}...`);
-  const { archivePath: electronZipPath } = await ensureElectronArchive(cacheDir, process.arch);
+  console.log(
+    `Downloading and verifying official Electron v${ELECTRON_VERSION} for ${platform}-${normArch}...`,
+  );
+  const { archivePath: electronZipPath } = await ensureElectronArchive(
+    cacheDir,
+    normArch,
+    platform,
+  );
 
   const electronTemp = mkdtempSync(join(tmpdir(), "sumi-electron-"));
   try {
     execFileSync("unzip", ["-q", electronZipPath, "-d", electronTemp]);
-    const extractedApp = join(electronTemp, "Electron.app");
-    if (!existsSync(extractedApp)) {
-      throw new Error("Electron archive did not contain Electron.app");
+
+    if (platform === "darwin") {
+      const extractedApp = join(electronTemp, "Electron.app");
+      if (!existsSync(extractedApp)) {
+        throw new Error("Electron archive did not contain Electron.app");
+      }
+      renameSync(extractedApp, stagedApp);
+    } else {
+      // Copy all extracted Electron files into staged directory
+      cpSync(electronTemp, stagedApp, { recursive: true });
     }
-    renameSync(extractedApp, stagedApp);
 
     // Preserve Electron licenses
     mkdirSync(join(resources, "licenses"), { recursive: true });
@@ -485,54 +1031,95 @@ export async function build() {
     rmSync(electronTemp, { recursive: true, force: true });
   }
 
-  // 4. Clean Electron defaults (both ASAR off) and rename binary
+  // 4. Clean Electron defaults (unpacked ASAR off) and rename binary
   rmSync(join(resources, "default_app.asar"), { force: true });
-  rmSync(join(resources, "electron.icns"), { force: true });
-  renameSync(join(macos, "Electron"), join(macos, "Sumi"));
 
-  // 5. Generate and install native application icon via Icon.swift
-  const iconTemp = mkdtempSync(join(tmpdir(), "sumi-icon-"));
-  try {
-    const masterPng = join(iconTemp, "icon_1024x1024.png");
-    run("xcrun", [
-      "swift",
-      "-module-cache-path",
-      cacheDir,
-      join(root, "desktop/Icon.swift"),
-      masterPng,
-    ]);
-    const iconset = join(iconTemp, "Sumi.iconset");
-    mkdirSync(iconset, { recursive: true });
-    for (const [size, scale] of [
-      [16, 1],
-      [16, 2],
-      [32, 1],
-      [32, 2],
-      [128, 1],
-      [128, 2],
-      [256, 1],
-      [256, 2],
-      [512, 1],
-      [512, 2],
-    ]) {
-      const px = size * scale;
-      const name = `icon_${size}x${size}${scale > 1 ? "@2x" : ""}.png`;
-      const dest = join(iconset, name);
-      if (px === 1024) cpSync(masterPng, dest);
-      else run("sips", ["-z", String(px), String(px), masterPng, "--out", dest]);
+  if (platform === "darwin") {
+    rmSync(join(resources, "electron.icns"), { force: true });
+    renameSync(join(binDir, "Electron"), join(binDir, "Sumi"));
+  } else if (platform === "win32") {
+    const electronExe = join(stagedApp, "electron.exe");
+    if (existsSync(electronExe)) {
+      renameSync(electronExe, join(stagedApp, "Sumi.exe"));
     }
-    run("iconutil", ["-c", "icns", iconset, "-o", join(resources, "Sumi.icns")]);
-  } finally {
-    rmSync(iconTemp, { recursive: true, force: true });
+  } else if (platform === "linux") {
+    const electronBin = join(stagedApp, "electron");
+    if (existsSync(electronBin)) {
+      renameSync(electronBin, join(stagedApp, "sumi"));
+    }
+    // Verify chrome-sandbox permissions on Linux
+    const sandboxPath = join(stagedApp, "chrome-sandbox");
+    if (existsSync(sandboxPath)) {
+      try {
+        chmodSync(sandboxPath, 0o4755);
+      } catch {
+        // Running as non-root during build: ensure at least executable
+        chmodSync(sandboxPath, 0o755);
+      }
+    }
+  }
+
+  // 5. Generate and install native application icon via Icon.swift (macOS only)
+  if (platform === "darwin") {
+    const iconTemp = mkdtempSync(join(tmpdir(), "sumi-icon-"));
+    try {
+      const masterPng = join(iconTemp, "icon_1024x1024.png");
+      run("xcrun", [
+        "swift",
+        "-module-cache-path",
+        cacheDir,
+        join(root, "desktop/Icon.swift"),
+        masterPng,
+      ]);
+      const iconset = join(iconTemp, "Sumi.iconset");
+      mkdirSync(iconset, { recursive: true });
+      for (const [size, scale] of [
+        [16, 1],
+        [16, 2],
+        [32, 1],
+        [32, 2],
+        [128, 1],
+        [128, 2],
+        [256, 1],
+        [256, 2],
+        [512, 1],
+        [512, 2],
+      ]) {
+        const px = size * scale;
+        const name = `icon_${size}x${size}${scale > 1 ? "@2x" : ""}.png`;
+        const dest = join(iconset, name);
+        if (px === 1024) cpSync(masterPng, dest);
+        else run("sips", ["-z", String(px), String(px), masterPng, "--out", dest]);
+      }
+      run("iconutil", ["-c", "icns", iconset, "-o", join(resources, "Sumi.icns")]);
+    } finally {
+      rmSync(iconTemp, { recursive: true, force: true });
+    }
   }
 
   // 6. Assemble Next standalone server and official Node runtime
   mkdirSync(join(resources, "runtime"), { recursive: true });
-  cpSync(join(root, "apps/web/.next/standalone"), join(resources, "server"), {
-    recursive: true,
-    dereference: false,
-    verbatimSymlinks: true,
-  });
+
+  const standaloneSrc = join(root, "apps/web/.next/standalone");
+  const serverDest = join(resources, "server");
+
+  if (platform === "darwin") {
+    // Current Mac preserves verbatim symlinks confinement unchanged
+    cpSync(standaloneSrc, serverDest, {
+      recursive: true,
+      dereference: false,
+      verbatimSymlinks: true,
+    });
+  } else {
+    // On Windows and Linux, copy standalone bundle and augment dereferenced traced packages
+    // with resolved runtime dependency closure so sibling resolution (styled-jsx, @next/env) works
+    cpSync(standaloneSrc, serverDest, {
+      recursive: true,
+      dereference: platform === "win32",
+      verbatimSymlinks: platform !== "win32",
+    });
+    augmentStandaloneDependencies(serverDest);
+  }
 
   const web = join(resources, "server/apps/web");
   const entrypoint = join(web, "server.js");
@@ -548,18 +1135,37 @@ export async function build() {
   cpSync(join(root, "apps/web/.next/static"), join(web, ".next/static"), { recursive: true });
   cpSync(join(root, "apps/web/public"), join(web, "public"), { recursive: true });
 
-  console.log(`Downloading and verifying official Node runtime (${process.version})...`);
+  console.log(
+    `Downloading and verifying official Node runtime (${process.version}) for ${platform}-${normArch}...`,
+  );
   const { archivePath: nodeArchivePath } = await ensureNodeArchive(
     cacheDir,
     process.version,
-    process.arch,
+    normArch,
+    platform,
   );
+
   const nodeTemp = mkdtempSync(join(tmpdir(), "sumi-node-"));
   try {
-    run("tar", ["-xzf", nodeArchivePath, "-C", nodeTemp]);
-    const runtime = join(nodeTemp, `node-${process.version}-darwin-${process.arch}`);
-    cpSync(join(runtime, "bin/node"), join(resources, "runtime/node"));
-    cpSync(join(runtime, "LICENSE"), join(resources, "licenses/Node-LICENSE.txt"));
+    if (platform === "win32") {
+      execFileSync("unzip", ["-q", nodeArchivePath, "-d", nodeTemp]);
+      const runtimeDir = join(nodeTemp, `node-${process.version}-win-${normArch}`);
+      cpSync(join(runtimeDir, "node.exe"), join(resources, "runtime/node.exe"));
+      const nodeLicense = join(runtimeDir, "LICENSE");
+      if (existsSync(nodeLicense)) {
+        cpSync(nodeLicense, join(resources, "licenses/Node-LICENSE.txt"));
+      }
+    } else {
+      run("tar", ["-xzf", nodeArchivePath, "-C", nodeTemp]);
+      const runtimeDir = join(nodeTemp, `node-${process.version}-${platform}-${normArch}`);
+      const nodeDest = join(resources, "runtime/node");
+      cpSync(join(runtimeDir, "bin/node"), nodeDest);
+      chmodSync(nodeDest, 0o755);
+      const nodeLicense = join(runtimeDir, "LICENSE");
+      if (existsSync(nodeLicense)) {
+        cpSync(nodeLicense, join(resources, "licenses/Node-LICENSE.txt"));
+      }
+    }
   } finally {
     rmSync(nodeTemp, { recursive: true, force: true });
   }
@@ -582,34 +1188,18 @@ export async function build() {
   );
 
   // Clean private files from standalone server bundle
-  function clean(directory) {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (
-        entry.name.startsWith(".env") ||
-        /\.(db|sqlite)(-shm|-wal|-journal)?$/.test(entry.name) ||
-        /\.gguf$/.test(entry.name) ||
-        entry.name === ".secret"
-      ) {
-        rmSync(path, { recursive: true, force: true });
-      } else if (entry.isDirectory()) {
-        clean(path);
-      }
-    }
-  }
-  clean(join(resources, "server"));
+  cleanPrivateFiles(join(resources, "server"));
 
   // Bundle ONLY the lightweight MIT-licensed Silero VAD asset (1.2 MB)
   const sileroSrc = join(root, "models/silero-vad-v6.2-F32.gguf");
-  const sileroExpectedSha256 = "0d871a800c420fdd5d1b17a3aea4296d1c39608f0ff4a9295eb76457eb1c88e6";
   if (!existsSync(sileroSrc)) {
     throw new Error(`Silero VAD model missing at ${sileroSrc}`);
   }
   const sileroBytes = readFileSync(sileroSrc);
   const sileroHash = createHash("sha256").update(sileroBytes).digest("hex");
-  if (sileroHash !== sileroExpectedSha256) {
+  if (sileroHash !== SILERO_EXPECTED_SHA256) {
     throw new Error(
-      `Silero VAD checksum mismatch: expected ${sileroExpectedSha256}, got ${sileroHash}`,
+      `Silero VAD checksum mismatch: expected ${SILERO_EXPECTED_SHA256}, got ${sileroHash}`,
     );
   }
   const serverWebModels = join(web, "models");
@@ -621,9 +1211,9 @@ export async function build() {
     cpSync(sileroLicenseSrc, join(resources, "licenses/Silero-VAD-MIT.txt"));
   }
 
-  // Package transcribe-cpp and koffi native dependencies
-  const nativeTuple =
-    process.platform === "darwin" && process.arch === "arm64" ? "darwin-arm64-metal" : null;
+  // Package transcribe-cpp native binary
+  const nativeTuple = getNativeTuple(platform, normArch);
+  const libName = getNativeLibName(platform);
   if (nativeTuple) {
     try {
       const packageDir = realpathSync(join(root, "apps/web/node_modules/transcribe-cpp"));
@@ -632,9 +1222,8 @@ export async function build() {
       const entryPath = join(packageDir, entryRelative);
       const { artifactDir } = await import(pathToFileURL(entryPath).href);
       const nativeSrc = artifactDir();
-      const libName = "libtranscribe.dylib";
       if (!existsSync(join(nativeSrc, libName))) {
-        throw new Error(`transcribe-cpp native library missing from ${nativeSrc}`);
+        throw new Error(`transcribe-cpp native library missing: ${join(nativeSrc, libName)}`);
       }
       for (const nm of [
         join(resources, "server/node_modules"),
@@ -652,11 +1241,9 @@ export async function build() {
       });
     }
 
-    const koffiNative = join(
-      root,
-      "node_modules/.pnpm/@koromix+koffi-darwin-arm64@3.3.7/node_modules/@koromix",
-    );
-    if (existsSync(koffiNative)) {
+    // Package Koffi native module from actual installed metadata
+    const koffiNative = resolveKoffiNativeDir(root, platform, normArch);
+    if (koffiNative && existsSync(koffiNative)) {
       for (const nm of [
         join(resources, "server/node_modules/@koromix"),
         join(resources, "server/apps/web/node_modules/@koromix"),
@@ -671,21 +1258,7 @@ export async function build() {
 
   // Verify self-contained symlinks
   const serverBase = realpathSync(join(resources, "server"));
-  const serverPrefix = serverBase + "/";
-  function assertSelfContained(directory) {
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const path = join(directory, entry.name);
-      if (entry.isSymbolicLink()) {
-        const target = realpathSync(path);
-        if (target !== serverBase && !target.startsWith(serverPrefix)) {
-          throw new Error(`Symlink escapes application bundle: ${path} -> ${target}`);
-        }
-      } else if (entry.isDirectory()) {
-        assertSelfContained(path);
-      }
-    }
-  }
-  assertSelfContained(join(resources, "server"));
+  assertSelfContained(join(resources, "server"), serverBase);
 
   // Collect dependency licenses
   const collected = new Set();
@@ -717,11 +1290,14 @@ export async function build() {
       }
     }
   }
-  for (const entry of readdirSync(join(root, "node_modules/.pnpm"))) {
-    collectLicenses(join(root, "node_modules/.pnpm", entry, "node_modules"));
+  const pnpmRoot = join(root, "node_modules/.pnpm");
+  if (existsSync(pnpmRoot)) {
+    for (const entry of readdirSync(pnpmRoot)) {
+      collectLicenses(join(pnpmRoot, entry, "node_modules"));
+    }
   }
 
-  // 7. Assemble Electron Application Entry in Contents/Resources/app (unpacked ASAR off)
+  // 7. Assemble Electron Application Entry in resources/app (unpacked ASAR off)
   mkdirSync(appDir, { recursive: true });
   writeFileSync(
     join(appDir, "package.json"),
@@ -743,211 +1319,260 @@ export async function build() {
     cpSync(src, join(appDir, script));
   }
 
-  // 8. Sparkle Integration: Native framework + bindings + runtime JS
-  const sparklePkgPath = join(root, "node_modules/electron-sparkle");
-  if (existsSync(sparklePkgPath)) {
-    try {
-      console.log("Materializing and bundling Sparkle updater assets...");
-      const { materializeDarwinDistribution } = await import(
-        pathToFileURL(join(sparklePkgPath, "dist/artifacts-C_Z5iSIA.cjs")).href
-      );
-      const sparkleDist = await materializeDarwinDistribution({
-        architecture: process.arch === "arm64" ? "arm64" : "x64",
-      });
+  const appNodeModules = join(appDir, "node_modules");
+  mkdirSync(appNodeModules, { recursive: true });
 
-      // Install Sparkle.framework and electron_sparkle.node into Frameworks
-      const frameworkDest = join(frameworks, "Sparkle.framework");
-      const addonDest = join(frameworks, "electron_sparkle.node");
-      cpSync(sparkleDist.frameworkPath, frameworkDest, {
-        recursive: true,
-        dereference: false,
-        verbatimSymlinks: true,
-      });
-      cpSync(sparkleDist.addonPath, addonDest, {
-        dereference: false,
-        verbatimSymlinks: true,
-      });
+  if (platform === "darwin") {
+    // 8a. Sparkle Integration (macOS only)
+    const contents = join(stagedApp, "Contents");
+    const frameworks = join(contents, "Frameworks");
+    const sparklePkgPath = join(root, "node_modules/electron-sparkle");
+    if (existsSync(sparklePkgPath)) {
+      try {
+        console.log(`Materializing and bundling Sparkle updater assets (${normArch})...`);
+        const { materializeDarwinDistribution } = await import(
+          pathToFileURL(join(sparklePkgPath, "dist/artifacts-C_Z5iSIA.cjs")).href
+        );
+        const sparkleDist = await materializeDarwinDistribution({
+          architecture: normArch,
+        });
 
-      // Confine Sparkle framework symlinks
-      assertFrameworkSymlinksConfined(frameworkDest);
+        const frameworkDest = join(frameworks, "Sparkle.framework");
+        const addonDest = join(frameworks, "electron_sparkle.node");
+        cpSync(sparkleDist.frameworkPath, frameworkDest, {
+          recursive: true,
+          dereference: false,
+          verbatimSymlinks: true,
+        });
+        cpSync(sparkleDist.addonPath, addonDest, {
+          dereference: false,
+          verbatimSymlinks: true,
+        });
 
-      // Install Sparkle licenses & marker
-      const thirdPartyLicenses = join(resources, "ThirdPartyLicenses");
-      mkdirSync(thirdPartyLicenses, { recursive: true });
-      cpSync(sparkleDist.licensePath, join(thirdPartyLicenses, "Sparkle-LICENSE.txt"));
-      cpSync(sparkleDist.licensePath, join(resources, "licenses/Sparkle-LICENSE.txt"));
+        assertFrameworkSymlinksConfined(frameworkDest);
 
-      writeFileSync(
-        join(resources, ".electron-sparkle.json"),
-        JSON.stringify(
-          {
-            schemaVersion: 1,
-            packageName: "electron-sparkle",
-            packageVersion: "0.2.0",
-            sparkleVersion: "2.9.6",
-          },
-          null,
-          2,
-        ) + "\n",
-        "utf8",
-      );
+        const thirdPartyLicenses = join(resources, "ThirdPartyLicenses");
+        mkdirSync(thirdPartyLicenses, { recursive: true });
+        cpSync(sparkleDist.licensePath, join(thirdPartyLicenses, "Sparkle-LICENSE.txt"));
+        cpSync(sparkleDist.licensePath, join(resources, "licenses/Sparkle-LICENSE.txt"));
 
-      // Copy runtime electron-sparkle and plist dependencies into app/node_modules
-      const appNodeModules = join(appDir, "node_modules");
-      mkdirSync(appNodeModules, { recursive: true });
-      const sparkleReal = realpathSync(sparklePkgPath);
-      cpSync(sparkleReal, join(appNodeModules, "electron-sparkle"), {
-        recursive: true,
-        dereference: true,
-      });
+        writeFileSync(
+          join(resources, ".electron-sparkle.json"),
+          JSON.stringify(
+            {
+              schemaVersion: 1,
+              packageName: "electron-sparkle",
+              packageVersion: "0.2.0",
+              sparkleVersion: "2.9.6",
+            },
+            null,
+            2,
+          ) + "\n",
+          "utf8",
+        );
 
-      // Copy plist dependency
-      const pnpmDir = join(root, "node_modules/.pnpm");
-      if (existsSync(pnpmDir)) {
-        for (const entry of readdirSync(pnpmDir)) {
-          if (entry.startsWith("plist@")) {
-            const plistModules = join(pnpmDir, entry, "node_modules");
-            if (existsSync(plistModules)) {
-              for (const mod of readdirSync(plistModules)) {
-                const srcMod = join(plistModules, mod);
-                const destMod = join(appNodeModules, mod);
-                if (!existsSync(destMod)) {
-                  cpSync(srcMod, destMod, { recursive: true, dereference: true });
+        const sparkleReal = realpathSync(sparklePkgPath);
+        cpSync(sparkleReal, join(appNodeModules, "electron-sparkle"), {
+          recursive: true,
+          dereference: true,
+        });
+
+        if (existsSync(pnpmRoot)) {
+          for (const entry of readdirSync(pnpmRoot)) {
+            if (entry.startsWith("plist@")) {
+              const plistModules = join(pnpmRoot, entry, "node_modules");
+              if (existsSync(plistModules)) {
+                for (const mod of readdirSync(plistModules)) {
+                  const srcMod = join(plistModules, mod);
+                  const destMod = join(appNodeModules, mod);
+                  if (!existsSync(destMod)) {
+                    cpSync(srcMod, destMod, { recursive: true, dereference: true });
+                  }
                 }
               }
             }
           }
         }
-      }
-    } catch (err) {
-      throw new Error(`Failed to bundle Sparkle updater assets: ${err.message}`, { cause: err });
-    }
-  }
-
-  // 9. Update Info.plist files
-  // suFeedUrl / suPublicEDKey were already resolved AND validated pre-flight;
-  // buildInfoPlist re-validates and always emits SUPublicEDKey.
-  writeFileSync(
-    join(contents, "Info.plist"),
-    buildInfoPlist(appVersion, {
-      suFeedUrl,
-      suPublicEDKey,
-      minSystemVersion: LS_MINIMUM_SYSTEM_VERSION,
-    }),
-  );
-
-  // Update Helper Info.plists
-  const helpers = [
-    { dir: "Electron Helper.app", id: "local.sumi.journal.helper", name: "Electron Helper" },
-    {
-      dir: "Electron Helper (GPU).app",
-      id: "local.sumi.journal.helper.gpu",
-      name: "Electron Helper (GPU)",
-    },
-    {
-      dir: "Electron Helper (Plugin).app",
-      id: "local.sumi.journal.helper.plugin",
-      name: "Electron Helper (Plugin)",
-    },
-    {
-      dir: "Electron Helper (Renderer).app",
-      id: "local.sumi.journal.helper.renderer",
-      name: "Electron Helper (Renderer)",
-    },
-  ];
-
-  for (const h of helpers) {
-    const helperPlist = join(frameworks, h.dir, "Contents/Info.plist");
-    if (existsSync(helperPlist)) {
-      writeFileSync(helperPlist, buildHelperInfoPlist(h.id, h.name, appVersion));
-    }
-  }
-
-  const frameworkPlist = join(
-    frameworks,
-    "Electron Framework.framework/Versions/A/Resources/Info.plist",
-  );
-  if (existsSync(frameworkPlist)) {
-    // The Electron Framework is VENDOR metadata: stamp the pinned Electron
-    // version (45.2.3), NOT the root app version (0.2.0). App/helper plists
-    // above keep the app version.
-    writeFileSync(frameworkPlist, buildFrameworkInfoPlist(ELECTRON_VERSION));
-  }
-
-  // 10. Hardened Runtime Ad-Hoc Code Signing
-  const entitlementsPath = join(cacheDir, "entitlements.mac.plist");
-  writeFileSync(entitlementsPath, buildEntitlementsXml(), "utf8");
-
-  function signItem(itemPath, entitlements = null) {
-    if (!existsSync(itemPath)) return;
-    const args = ["--force", "--sign", "-"];
-    if (entitlements && existsSync(entitlements)) {
-      args.push("--entitlements", entitlements);
-    }
-    args.push(itemPath);
-    run("codesign", args);
-  }
-
-  // Sign Framework internals
-  const efVersionsA = join(frameworks, "Electron Framework.framework/Versions/A");
-  signItem(join(efVersionsA, "Libraries/libffmpeg.dylib"));
-  signItem(join(efVersionsA, "Libraries/libvk_swiftshader.dylib"));
-  signItem(join(efVersionsA, "Helpers/app_shim_loader"));
-  signItem(join(efVersionsA, "Helpers/chrome_crashpad_handler"));
-  signItem(join(frameworks, "Electron Framework.framework"));
-  signItem(join(frameworks, "Mantle.framework"));
-  signItem(join(frameworks, "ReactiveObjC.framework"));
-  signItem(join(frameworks, "Squirrel.framework"));
-
-  // Sign Sparkle internals if present
-  const sparkleFramework = join(frameworks, "Sparkle.framework");
-  if (existsSync(sparkleFramework)) {
-    signItem(join(frameworks, "electron_sparkle.node"));
-    signItem(join(sparkleFramework, "Versions/B/Autoupdate"));
-    signItem(join(sparkleFramework, "Versions/B/Updater.app"));
-    signItem(sparkleFramework);
-  }
-
-  // Sign Helpers
-  for (const h of helpers) {
-    signItem(join(frameworks, h.dir), entitlementsPath);
-  }
-
-  // Sign Resources runtime and binaries
-  signItem(join(resources, "runtime/node"));
-  function signBinaries(directory) {
-    if (!existsSync(directory)) return;
-    for (const entry of readdirSync(directory, { withFileTypes: true })) {
-      const p = join(directory, entry.name);
-      if (entry.isDirectory()) {
-        signBinaries(p);
-      } else if (/\.(dylib|node)$/.test(entry.name)) {
-        signItem(p);
+      } catch (err) {
+        throw new Error(`Failed to bundle Sparkle updater assets: ${err.message}`, { cause: err });
       }
     }
+
+    // Stage update-config.json in resources/app with architecture-split feedUrl
+    const stagedUpdateConfig = {
+      ...rawUpdateConfig,
+      feedUrl: suFeedUrl,
+    };
+    writeFileSync(
+      join(appDir, "update-config.json"),
+      JSON.stringify(stagedUpdateConfig, null, 2) + "\n",
+      "utf8",
+    );
+
+    // Write Info.plist files
+    writeFileSync(
+      join(contents, "Info.plist"),
+      buildInfoPlist(appVersion, {
+        suFeedUrl,
+        suPublicEDKey,
+        minSystemVersion: LS_MINIMUM_SYSTEM_VERSION,
+      }),
+    );
+
+    const helpers = [
+      { dir: "Electron Helper.app", id: "local.sumi.journal.helper", name: "Electron Helper" },
+      {
+        dir: "Electron Helper (GPU).app",
+        id: "local.sumi.journal.helper.gpu",
+        name: "Electron Helper (GPU)",
+      },
+      {
+        dir: "Electron Helper (Plugin).app",
+        id: "local.sumi.journal.helper.plugin",
+        name: "Electron Helper (Plugin)",
+      },
+      {
+        dir: "Electron Helper (Renderer).app",
+        id: "local.sumi.journal.helper.renderer",
+        name: "Electron Helper (Renderer)",
+      },
+    ];
+
+    for (const h of helpers) {
+      const helperPlist = join(frameworks, h.dir, "Contents/Info.plist");
+      if (existsSync(helperPlist)) {
+        writeFileSync(helperPlist, buildHelperInfoPlist(h.id, h.name, appVersion));
+      }
+    }
+
+    const frameworkPlist = join(
+      frameworks,
+      "Electron Framework.framework/Versions/A/Resources/Info.plist",
+    );
+    if (existsSync(frameworkPlist)) {
+      writeFileSync(frameworkPlist, buildFrameworkInfoPlist(ELECTRON_VERSION));
+    }
+
+    // Hardened Runtime Ad-Hoc Code Signing (macOS only)
+    const entitlementsPath = join(cacheDir, "entitlements.mac.plist");
+    writeFileSync(entitlementsPath, buildEntitlementsXml(), "utf8");
+
+    function signItem(itemPath, entitlements = null) {
+      if (!existsSync(itemPath)) return;
+      const args = ["--force", "--sign", "-"];
+      if (entitlements && existsSync(entitlements)) {
+        args.push("--entitlements", entitlements);
+      }
+      args.push(itemPath);
+      run("codesign", args);
+    }
+
+    const efVersionsA = join(frameworks, "Electron Framework.framework/Versions/A");
+    signItem(join(efVersionsA, "Libraries/libffmpeg.dylib"));
+    signItem(join(efVersionsA, "Libraries/libvk_swiftshader.dylib"));
+    signItem(join(efVersionsA, "Helpers/app_shim_loader"));
+    signItem(join(efVersionsA, "Helpers/chrome_crashpad_handler"));
+    signItem(join(frameworks, "Electron Framework.framework"));
+    signItem(join(frameworks, "Mantle.framework"));
+    signItem(join(frameworks, "ReactiveObjC.framework"));
+    signItem(join(frameworks, "Squirrel.framework"));
+
+    const sparkleFramework = join(frameworks, "Sparkle.framework");
+    if (existsSync(sparkleFramework)) {
+      signItem(join(frameworks, "electron_sparkle.node"));
+      signItem(join(sparkleFramework, "Versions/B/Autoupdate"));
+      signItem(join(sparkleFramework, "Versions/B/Updater.app"));
+      signItem(sparkleFramework);
+    }
+
+    for (const h of helpers) {
+      signItem(join(frameworks, h.dir), entitlementsPath);
+    }
+
+    signItem(join(resources, "runtime/node"));
+    function signBinaries(directory) {
+      if (!existsSync(directory)) return;
+      for (const entry of readdirSync(directory, { withFileTypes: true })) {
+        const p = join(directory, entry.name);
+        if (entry.isDirectory()) {
+          signBinaries(p);
+        } else if (/\.(dylib|node)$/.test(entry.name)) {
+          signItem(p);
+        }
+      }
+    }
+    signBinaries(join(resources, "server"));
+
+    run("codesign", [
+      "--force",
+      "--deep",
+      "--sign",
+      "-",
+      "--entitlements",
+      entitlementsPath,
+      stagedApp,
+    ]);
+    run("codesign", ["--verify", "--deep", "--strict", stagedApp]);
+  } else {
+    // 8b. Windows / Linux: bundle electron-updater runtime dependency closure
+    console.log("Bundling electron-updater runtime dependencies...");
+    bundlePackageWithRuntimeDeps("electron-updater", root, appNodeModules);
+
+    if (existsSync(updateConfigPath)) {
+      cpSync(updateConfigPath, join(appDir, "update-config.json"));
+    }
+
+    // Stage canonical resources/app-update.yml required by electron-updater
+    // (when electron-builder runs in prepackaged mode, doPack returns early and skips afterPack,
+    // so resources/app-update.yml must be explicitly staged with canonical fork coordinates)
+    console.log("Staging canonical resources/app-update.yml...");
+    writeFileSync(join(resources, "app-update.yml"), generateAppUpdateYaml(), "utf8");
+
+    // On Windows: bundle licensed app-local Visual C++ 14.x x64 CRT DLLs
+    // (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll) into runtime and transcribe artifact dirs
+    if (platform === "win32") {
+      console.log("Locating and bundling Microsoft Visual C++ x64 CRT runtime DLLs...");
+      const crtDlls = resolveWindowsCrtDlls();
+      const missingDlls = REQUIRED_WIN32_CRT_DLLS.filter((dll) => !crtDlls[dll]);
+      if (missingDlls.length > 0) {
+        console.warn(
+          `Notice: Could not locate app-local VC++ CRT DLLs: ${missingDlls.join(", ")}. User systems without VC++ Redistributable may require them for offline dictation.`,
+        );
+      }
+
+      const crtTargets = [join(resources, "runtime")];
+      if (nativeTuple) {
+        crtTargets.push(
+          join(resources, "server/node_modules", `@transcribe-cpp/${nativeTuple}`),
+          join(resources, "server/apps/web/node_modules", `@transcribe-cpp/${nativeTuple}`),
+        );
+      }
+
+      for (const targetDir of crtTargets) {
+        mkdirSync(targetDir, { recursive: true });
+        for (const [dllName, dllPath] of Object.entries(crtDlls)) {
+          cpSync(dllPath, join(targetDir, dllName));
+        }
+      }
+
+      writeFileSync(
+        join(resources, "licenses", "Microsoft-Visual-CPP-Redist-Notice.txt"),
+        "Microsoft Visual C++ Runtime (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll)\n" +
+          "Redistributed under Visual Studio 2015-2022 Redistributable License Terms for local application runtime.\n",
+        "utf8",
+      );
+    }
   }
-  signBinaries(join(resources, "server"));
 
-  // Top-level staged app signing with entitlements
-  run("codesign", [
-    "--force",
-    "--deep",
-    "--sign",
-    "-",
-    "--entitlements",
-    entitlementsPath,
-    stagedApp,
-  ]);
-  run("codesign", ["--verify", "--deep", "--strict", stagedApp]);
-
-  // 11. Atomic swap: replace dist/Sumi.app only after complete staging success
+  // 9. Atomic swap: replace output only after complete staging success
   rmSync(output, { recursive: true, force: true });
   renameSync(stagedApp, output);
   rmSync(staging, { recursive: true, force: true });
 
   console.log(
-    `\nBuilt ${output} (v${appVersion}, Electron v${ELECTRON_VERSION})\nRun: open "${output}"`,
+    `\nBuilt ${output} (v${appVersion}, Electron v${ELECTRON_VERSION}, ${platform}-${normArch})\n`,
   );
+  return { output, version: appVersion, platform, arch: normArch };
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);

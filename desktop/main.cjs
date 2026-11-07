@@ -3,7 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
-const { spawn } = require("node:child_process");
+const { spawn, execFileSync } = require("node:child_process");
 
 // Conditionally require electron to allow unit tests and node --check to run cleanly
 let electron;
@@ -26,32 +26,82 @@ const {
 /**
  * Child runtime environment whitelist.
  * Explicitly whitelists PATH, HOME, TMPDIR, LANG, and JOURNAL_DATA_DIR.
+ * Prepends trusted runtimeDirectory to PATH so bundled runtime DLLs/CRTs resolve reliably on Windows.
+ * On Windows, preserves essential system variables (SystemRoot, TEMP, USERPROFILE, etc.).
  * Strictly avoids inheriting NODE_OPTIONS, API keys, or arbitrary shell variables.
  */
-function buildChildEnv(dataDir) {
-  return {
-    PATH: process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin",
+function buildChildEnv(dataDir, options = {}) {
+  const platform = options.platform || process.platform;
+  const delimiter = platform === "win32" ? ";" : ":";
+
+  const defaultPath =
+    platform === "win32" ? "C:\\Windows\\System32;C:\\Windows" : "/usr/bin:/bin:/usr/sbin:/sbin";
+
+  let basePath =
+    platform === process.platform && process.env.PATH
+      ? process.env.PATH
+      : platform === "win32" && process.platform !== "win32"
+        ? defaultPath
+        : process.env.PATH || defaultPath;
+
+  const pathValue =
+    options.runtimeDirectory && typeof options.runtimeDirectory === "string"
+      ? `${options.runtimeDirectory}${delimiter}${basePath}`
+      : basePath;
+
+  const env = {
+    PATH: pathValue,
     HOME: process.env.HOME || os.homedir(),
     TMPDIR: process.env.TMPDIR || os.tmpdir(),
     LANG: process.env.LANG || "en_US.UTF-8",
     JOURNAL_DATA_DIR: dataDir,
   };
+
+  if (platform === "win32") {
+    const winKeys = [
+      "SystemRoot",
+      "SystemDrive",
+      "TEMP",
+      "TMP",
+      "USERPROFILE",
+      "APPDATA",
+      "LOCALAPPDATA",
+      "PATHEXT",
+      "COMSPEC",
+    ];
+    for (const key of winKeys) {
+      if (process.env[key]) {
+        env[key] = process.env[key];
+      }
+    }
+    if (!env.SystemRoot) env.SystemRoot = "C:\\Windows";
+    if (!env.USERPROFILE) env.USERPROFILE = env.HOME;
+    if (!env.TEMP) env.TEMP = env.TMPDIR;
+    if (!env.TMP) env.TMP = env.TMPDIR;
+  }
+
+  return env;
 }
 
 /**
  * Resolves the bundled official Node runtime and launch.cjs entrypoint.
  * In a packaged application (MUST have bundled Node):
- *   Resources/runtime/node
+ *   Resources/runtime/node (or node.exe on Windows)
  *   Resources/launch.cjs
  * Development fallback ONLY when NOT packaged (no process.resourcesPath or dev env).
  * Packaged missing Node MUST FAIL - never fall back to process.execPath (Electron recursive backend).
  */
-function resolveLaunchPaths() {
-  const resources = process.resourcesPath || path.join(__dirname, "..");
-  const bundledNode = path.join(resources, "runtime", "node");
-  const bundledLaunch = path.join(resources, "launch.cjs");
+function resolveLaunchPaths(options = {}) {
+  const platform = options.platform || process.platform;
+  const isPackaged =
+    options.resourcesPath !== undefined ? !!options.resourcesPath : !!process.resourcesPath;
+  const resources =
+    (options.resourcesPath !== undefined ? options.resourcesPath : process.resourcesPath) ||
+    path.join(__dirname, "..");
 
-  const isPackaged = !!process.resourcesPath;
+  const nodeBinaryName = platform === "win32" ? "node.exe" : "node";
+  const bundledNode = path.join(resources, "runtime", nodeBinaryName);
+  const bundledLaunch = path.join(resources, "launch.cjs");
 
   if (fs.existsSync(bundledNode) && fs.existsSync(bundledLaunch)) {
     return {
@@ -63,7 +113,7 @@ function resolveLaunchPaths() {
   // Packaged app missing bundled Node - MUST FAIL
   if (isPackaged) {
     throw new Error(
-      "Packaged application missing bundled Node runtime at Resources/runtime/node. Build failed to stage official Node.",
+      `Packaged application missing bundled Node runtime at Resources/runtime/${nodeBinaryName}. Build failed to stage official Node.`,
     );
   }
 
@@ -87,43 +137,88 @@ function parseSumiReady(line) {
 }
 
 /**
- * Builds the native macOS menu template.
+ * Builds the native menu template based on platform:
+ * - macOS: Application menu (Sumi), Edit, View, Window
+ * - Windows / Linux: File, Edit, View, Window, Help
  */
-function buildMenuTemplate(dataDir, getMainWindow) {
+function buildMenuTemplate(dataDir, getMainWindow, platform = process.platform) {
+  const isMac = platform === "darwin";
+
+  const aboutItem = {
+    label: "About Sumi",
+    click: () => {
+      const win = getMainWindow ? getMainWindow() : null;
+      if (dialog) {
+        dialog.showMessageBox(win, {
+          type: "info",
+          title: "Sumi",
+          message: "Sumi",
+          detail:
+            "A local trading journal.\n\nBuilt on LuxAlgo's MIT-licensed Trade Journal, with a Kami-inspired theme (Tw93). Not affiliated with or endorsed by either project.\n\nThird-party license notices are bundled in Contents/Resources/licenses.",
+        });
+      }
+    },
+  };
+
+  const showDataDirItem = {
+    label: "Show Journal Data",
+    click: () => {
+      if (shell) {
+        shell.openPath(dataDir);
+      }
+    },
+  };
+
+  if (isMac) {
+    return [
+      {
+        label: "Sumi",
+        submenu: [
+          aboutItem,
+          showDataDirItem,
+          { type: "separator" },
+          { role: "hide", label: "Hide Sumi" },
+          { role: "hideOthers", label: "Hide Others" },
+          { role: "unhide", label: "Show All" },
+          { type: "separator" },
+          { role: "quit", label: "Quit Sumi" },
+        ],
+      },
+      {
+        label: "Edit",
+        submenu: [
+          { role: "undo" },
+          { role: "redo" },
+          { type: "separator" },
+          { role: "cut" },
+          { role: "copy" },
+          { role: "paste" },
+          { role: "selectAll" },
+        ],
+      },
+      {
+        label: "View",
+        submenu: [
+          { role: "reload" },
+          { role: "forceReload" },
+          { type: "separator" },
+          { role: "resetZoom", label: "Actual Size" },
+          { role: "zoomIn", label: "Zoom In" },
+          { role: "zoomOut", label: "Zoom Out" },
+        ],
+      },
+      {
+        label: "Window",
+        submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "close" }],
+      },
+    ];
+  }
+
+  // Windows and Linux menu template
   return [
     {
-      label: "Sumi",
-      submenu: [
-        {
-          label: "About Sumi",
-          click: () => {
-            const win = getMainWindow ? getMainWindow() : null;
-            if (dialog) {
-              dialog.showMessageBox(win, {
-                type: "info",
-                title: "Sumi",
-                message: "Sumi",
-                detail:
-                  "A local trading journal.\n\nBuilt on LuxAlgo's MIT-licensed Trade Journal, with a Kami-inspired theme (Tw93). Not affiliated with or endorsed by either project.\n\nThird-party license notices are bundled in Contents/Resources/licenses.",
-              });
-            }
-          },
-        },
-        {
-          label: "Show Journal Data",
-          click: () => {
-            if (shell) {
-              shell.openPath(dataDir);
-            }
-          },
-        },
-        { type: "separator" },
-        { role: "hide", label: "Hide Sumi" },
-        { role: "hideOthers", label: "Hide Others" },
-        { role: "unhide", label: "Show All" },
-        { type: "separator" },
-        { role: "quit", label: "Quit Sumi" },
-      ],
+      label: "File",
+      submenu: [showDataDirItem, { type: "separator" }, { role: "quit", label: "Exit" }],
     },
     {
       label: "Edit",
@@ -150,7 +245,11 @@ function buildMenuTemplate(dataDir, getMainWindow) {
     },
     {
       label: "Window",
-      submenu: [{ role: "minimize" }, { role: "zoom" }, { role: "close" }],
+      submenu: [{ role: "minimize" }, { role: "close" }],
+    },
+    {
+      label: "Help",
+      submenu: [aboutItem],
     },
   ];
 }
@@ -176,7 +275,7 @@ function registerIpcHandlers({
   preferencesStore,
   getUpdateService,
   shell: shellInstance,
-  appVersion = "0.2.0",
+  appVersion = "0.3.0",
 }) {
   if (!ipcMainInstance) return;
 
@@ -256,6 +355,92 @@ function registerIpcHandlers({
   });
 }
 
+/**
+ * Gracefully shuts down the backend child process:
+ * - On all platforms: sends parent-owned IPC shutdown message
+ * - On POSIX: sends standard graceful SIGTERM, then bounded SIGKILL fallback
+ * - On Windows: SIGTERM is not graceful (TerminateProcess); uses IPC shutdown
+ *   with bounded taskkill /T /F process-tree cleanup fallback
+ */
+async function stopChildProcess(child, options = {}) {
+  if (!child) return "no_child";
+  if (child.exitCode !== null || child.signalCode !== null || child.killed) {
+    return "already_exited";
+  }
+
+  const platform = options.platform || process.platform;
+  const timeoutMs = options.timeoutMs ?? 3000;
+
+  return new Promise((resolve) => {
+    let timer = null;
+    let resolved = false;
+
+    const onExit = () => {
+      if (resolved) return;
+      resolved = true;
+      if (timer) clearTimeout(timer);
+      resolve("stopped");
+    };
+
+    child.once("exit", onExit);
+
+    // 1. Send parent-owned IPC shutdown message (graceful on all platforms)
+    if (child.connected && typeof child.send === "function") {
+      try {
+        child.send({ type: "sumi:shutdown" });
+      } catch {}
+    }
+
+    // 2. Also close stdin if open
+    if (child.stdin && !child.stdin.destroyed) {
+      try {
+        child.stdin.end();
+      } catch {}
+    }
+
+    // 3. On POSIX platforms, send standard graceful SIGTERM
+    if (platform !== "win32") {
+      try {
+        child.kill("SIGTERM");
+      } catch {
+        if (timer) clearTimeout(timer);
+        resolved = true;
+        return resolve("stopped");
+      }
+    }
+
+    // 4. Bounded fallback after timeoutMs
+    timer = setTimeout(() => {
+      if (child.exitCode === null && child.signalCode === null) {
+        if (platform === "win32") {
+          // On Windows, terminate the entire process tree
+          try {
+            if (typeof options.killProcessTree === "function") {
+              options.killProcessTree(child.pid);
+            } else {
+              execFileSync("taskkill", ["/pid", String(child.pid), "/T", "/F"], {
+                stdio: "ignore",
+              });
+            }
+          } catch {
+            try {
+              child.kill();
+            } catch {}
+          }
+        } else {
+          try {
+            child.kill("SIGKILL");
+          } catch {}
+        }
+      }
+      if (!resolved) {
+        resolved = true;
+        resolve("killed");
+      }
+    }, timeoutMs);
+  });
+}
+
 // --------------------------------------------------------------------------
 // Application Lifecycle Execution (when running inside Electron runtime)
 // --------------------------------------------------------------------------
@@ -293,6 +478,14 @@ if (app && typeof app.whenReady === "function") {
   let updateService = null;
   let isStopping = false;
 
+  async function stopBackendChild() {
+    if (!childProcess || isStopping) return;
+    isStopping = true;
+    const child = childProcess;
+    childProcess = null;
+    await stopChildProcess(child);
+  }
+
   // Attempt to load update service if available from other owner
   try {
     const { createUpdateService } = require("./update-service.cjs");
@@ -301,7 +494,7 @@ if (app && typeof app.whenReady === "function") {
         app,
         getWindow: () => mainWindow,
         beforeInstall: async () => {
-          await stopChildProcess();
+          await stopBackendChild();
         },
       });
     }
@@ -311,46 +504,10 @@ if (app && typeof app.whenReady === "function") {
     }
   }
 
-  // Gracefully shuts down the backend child process with SIGTERM and bounded SIGKILL
-  async function stopChildProcess() {
-    if (!childProcess || isStopping) return;
-    isStopping = true;
-    const child = childProcess;
-    childProcess = null;
-
-    if (child.exitCode !== null || child.killed) {
-      return;
-    }
-
-    await new Promise((resolve) => {
-      let killTimer = null;
-      const onExit = () => {
-        if (killTimer) clearTimeout(killTimer);
-        resolve();
-      };
-      child.once("exit", onExit);
-
-      try {
-        child.kill("SIGTERM");
-      } catch {
-        if (killTimer) clearTimeout(killTimer);
-        return resolve();
-      }
-
-      killTimer = setTimeout(() => {
-        try {
-          if (child.exitCode === null) {
-            child.kill("SIGKILL");
-          }
-        } catch {}
-        resolve();
-      }, 3000);
-    });
-  }
-
   function startChildProcess() {
     const { nodeExecutable, launchScript } = resolveLaunchPaths();
-    const env = buildChildEnv(dataDir);
+    const runtimeDirectory = path.dirname(nodeExecutable);
+    const env = buildChildEnv(dataDir, { runtimeDirectory });
     const logPath = path.join(dataDir, "desktop.log");
 
     let logFd;
@@ -363,7 +520,7 @@ if (app && typeof app.whenReady === "function") {
     const child = spawn(nodeExecutable, [launchScript], {
       cwd: dataDir,
       env,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: ["pipe", "pipe", "pipe", "ipc"],
     });
 
     childProcess = child;
@@ -375,7 +532,7 @@ if (app && typeof app.whenReady === "function") {
         "Sumi could not open",
         "The local journal server did not become ready within 60 seconds. See desktop.log in your journal data folder.",
       );
-      stopChildProcess().finally(() => {
+      stopBackendChild().finally(() => {
         app.quit();
       });
     }, 60_000);
@@ -411,7 +568,7 @@ if (app && typeof app.whenReady === "function") {
     child.stdout.on("data", onData);
     child.stderr.on("data", onData);
 
-    child.once("exit", (code) => {
+    child.once("exit", (code, signal) => {
       clearTimeout(startupTimeout);
       if (logFd !== null) {
         try {
@@ -419,9 +576,10 @@ if (app && typeof app.whenReady === "function") {
         } catch {}
       }
       if (!isStopping) {
+        const exitDetail = code !== null ? `exit ${code}` : `signal ${signal}`;
         dialog.showErrorBox(
           "Sumi could not open",
-          `The local journal server stopped (exit ${code}). Your data is still saved. See desktop.log in your journal data folder.`,
+          `The local journal server stopped (${exitDetail}). Your data is still saved. See desktop.log in your journal data folder.`,
         );
         app.quit();
       }
@@ -477,6 +635,14 @@ if (app && typeof app.whenReady === "function") {
     }
   });
 
+  app.on("activate", () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
   registerIpcHandlers({
     ipcMainInstance: ipcMain,
     getMainWindow: () => mainWindow,
@@ -484,7 +650,7 @@ if (app && typeof app.whenReady === "function") {
     preferencesStore,
     getUpdateService: () => updateService,
     shell,
-    appVersion: app.getVersion() || "0.2.0",
+    appVersion: app.getVersion() || "0.3.0",
   });
 
   app.whenReady().then(() => {
@@ -508,7 +674,7 @@ if (app && typeof app.whenReady === "function") {
         } catch {}
       }
 
-      stopChildProcess().finally(() => {
+      stopBackendChild().finally(() => {
         app.quit();
       });
     }
@@ -526,4 +692,5 @@ module.exports = {
   parseSumiReady,
   buildMenuTemplate,
   registerIpcHandlers,
+  stopChildProcess,
 };

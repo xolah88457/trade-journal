@@ -11,6 +11,12 @@ import {
   loadUpdateConfig,
 } from "./update-service.cjs";
 import {
+  detectLinuxPackageType,
+  isPlatformUpdatable,
+  createElectronUpdaterService,
+  resolveCancellationTokenClass,
+} from "./update-service-platform.cjs";
+import {
   computeKeyFingerprint,
   validateUpdateConfig,
   buildSignCommand,
@@ -949,4 +955,955 @@ test("createUpdateService: nativeUI flag is always true, provider is sparkle", a
     process.env = originalEnv;
     Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
   }
+});
+
+/**
+ * Creates a mock electron-updater instance matching real electron-updater 6.8.11 API.
+ * Methods: setFeedURL, checkForUpdates, downloadUpdate, quitAndInstall, on, off.
+ * Properties: autoDownload, autoInstallOnAppQuit, allowDowngrade, allowPrerelease, publisherName.
+ */
+function createMockElectronUpdater(options = {}) {
+  const listeners = new Map();
+  let feedUrlOptions = null;
+  const calls = [];
+
+  const updater = {
+    autoDownload: true,
+    autoInstallOnAppQuit: true,
+    allowDowngrade: true,
+    allowPrerelease: true,
+    publisherName:
+      options.publisherName !== undefined ? options.publisherName : "LuxAlgo Global, LLC",
+    calls,
+
+    setFeedURL(opts) {
+      feedUrlOptions = opts;
+      calls.push({ method: "setFeedURL", args: opts });
+    },
+
+    getFeedURL() {
+      return feedUrlOptions;
+    },
+
+    on(event, fn) {
+      if (!listeners.has(event)) listeners.set(event, []);
+      listeners.get(event).push(fn);
+      return this;
+    },
+
+    off(event, fn) {
+      calls.push({ method: "off", event });
+      if (listeners.has(event)) {
+        const list = listeners.get(event);
+        const idx = list.indexOf(fn);
+        if (idx !== -1) list.splice(idx, 1);
+      }
+      return this;
+    },
+
+    removeListener(event, fn) {
+      return this.off(event, fn);
+    },
+
+    emit(event, ...args) {
+      const list = listeners.get(event) || [];
+      for (const fn of list) {
+        fn(...args);
+      }
+    },
+
+    async checkForUpdates() {
+      calls.push({ method: "checkForUpdates" });
+      if (options.failCheck) {
+        const err = new Error(options.checkError || "Network timeout reaching GitHub");
+        updater.emit("error", err);
+        throw err;
+      }
+      if (options.updateAvailable) {
+        const updateInfo = {
+          version: options.availableVersion || "0.4.0",
+          files: [
+            {
+              url: "https://github.com/xolah88457/trade-journal/releases/download/electron-v0.4.0/Sumi-Setup-0.4.0.exe",
+              sha512: "abc123sha512hash",
+            },
+          ],
+        };
+        updater.emit("update-available", updateInfo);
+        return { isUpdateAvailable: true, updateInfo };
+      }
+      const updateInfo = { version: options.currentVersion || "0.3.0" };
+      updater.emit("update-not-available", updateInfo);
+      return { isUpdateAvailable: false, updateInfo };
+    },
+
+    async downloadUpdate(cancellationToken) {
+      calls.push({ method: "downloadUpdate", cancellationToken });
+      if (options.failDownload) {
+        const err = new Error(options.downloadError || "Download checksum verification failed");
+        updater.emit("error", err);
+        throw err;
+      }
+      updater.emit("download-progress", { percent: 50, transferred: 500, total: 1000 });
+      updater.emit("download-progress", { percent: 100, transferred: 1000, total: 1000 });
+      const downloadedInfo = { version: options.availableVersion || "0.4.0" };
+      updater.emit("update-downloaded", downloadedInfo);
+      return ["/tmp/downloaded/Sumi-Setup-0.4.0.exe"];
+    },
+
+    quitAndInstall(isSilent, isForceRunAfter) {
+      calls.push({ method: "quitAndInstall", isSilent, isForceRunAfter });
+    },
+  };
+
+  return updater;
+}
+
+function createMockDialog(responses = []) {
+  let callIndex = 0;
+  const calls = [];
+  return {
+    calls,
+    async showMessageBox(parent, dialogOptions) {
+      calls.push({ parent, dialogOptions });
+      const resp = responses[callIndex] !== undefined ? responses[callIndex] : 0;
+      callIndex++;
+      return typeof resp === "number" ? { response: resp } : resp;
+    },
+  };
+}
+
+test("electron-updater (win32): lazy init - does not call network or updater on creation", () => {
+  let factoryCalls = 0;
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => {
+      factoryCalls++;
+      return createMockElectronUpdater();
+    },
+  });
+
+  assert.equal(factoryCalls, 0);
+  const state = service.getState();
+  assert.equal(state.status, "idle");
+  assert.equal(state.provider, "electron-updater");
+  assert.equal(state.nativeUI, true);
+  assert.equal(state.currentVersion, "0.3.0");
+});
+
+test("electron-updater (win32): getState() serialization contains strictly the 7 permitted fields", () => {
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => createMockElectronUpdater(),
+  });
+
+  const state = service.getState();
+  const keys = Object.keys(state).sort();
+  assert.deepEqual(keys, [
+    "availableVersion",
+    "currentVersion",
+    "error",
+    "message",
+    "nativeUI",
+    "provider",
+    "status",
+  ]);
+  assert.equal(state.nativeUI, true);
+  assert.equal(state.provider, "electron-updater");
+});
+
+test("electron-updater (win32): configures canonical fixed GitHub repository and manual flags", async () => {
+  const mockUpdater = createMockElectronUpdater();
+  const mockDialog = createMockDialog([0]);
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  await service.check();
+
+  // Canonical fixed GitHub provider
+  assert.deepEqual(mockUpdater.getFeedURL(), {
+    provider: "github",
+    owner: "xolah88457",
+    repo: "trade-journal",
+  });
+
+  // Strict manual flags
+  assert.equal(mockUpdater.autoDownload, false);
+  assert.equal(mockUpdater.autoInstallOnAppQuit, false);
+  assert.equal(mockUpdater.allowDowngrade, false);
+  assert.equal(mockUpdater.allowPrerelease, false);
+});
+
+test("electron-updater (win32): no-update scenario shows native dialog and returns not-available", async () => {
+  const mockUpdater = createMockElectronUpdater({ updateAvailable: false });
+  const mockDialog = createMockDialog([0]);
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  const state = await service.check();
+
+  assert.equal(state.status, "not-available");
+  assert.equal(state.message, "Sumi is up to date");
+  assert.equal(mockDialog.calls.length, 1);
+  assert.equal(mockDialog.calls[0].dialogOptions.message, "Sumi is up to date");
+});
+
+test("electron-updater (win32): update available but user cancels download (cancel-before-download)", async () => {
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  // Response 1 = Later/Cancel on download dialog
+  const mockDialog = createMockDialog([1]);
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  const state = await service.check();
+
+  assert.equal(state.status, "available");
+  assert.equal(state.availableVersion, "0.4.0");
+  assert.equal(mockDialog.calls.length, 1);
+  assert.ok(mockDialog.calls[0].dialogOptions.message.includes("0.4.0"));
+
+  // downloadUpdate must NOT have been called
+  const downloadCalls = mockUpdater.calls.filter((c) => c.method === "downloadUpdate");
+  assert.equal(downloadCalls.length, 0);
+});
+
+test("electron-updater (win32): download consent -> downloadUpdate, but user postpones install+restart", async () => {
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  // Response 0 = Download on first dialog, 1 = Later on restart dialog
+  const mockDialog = createMockDialog([0, 1]);
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  const state = await service.check();
+
+  assert.equal(state.status, "downloaded");
+  assert.equal(state.availableVersion, "0.4.0");
+  assert.equal(mockDialog.calls.length, 2);
+
+  // downloadUpdate WAS called
+  const downloadCalls = mockUpdater.calls.filter((c) => c.method === "downloadUpdate");
+  assert.equal(downloadCalls.length, 1);
+
+  // quitAndInstall must NOT have been called
+  const installCalls = mockUpdater.calls.filter((c) => c.method === "quitAndInstall");
+  assert.equal(installCalls.length, 0);
+});
+
+test("electron-updater (win32): full consent -> awaits beforeInstall shutdown BEFORE quitAndInstall", async () => {
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  // Response 0 = Download, 0 = Install and Restart
+  const mockDialog = createMockDialog([0, 0]);
+
+  const executionOrder = [];
+  let beforeInstallCalled = false;
+
+  const originalQuit = mockUpdater.quitAndInstall.bind(mockUpdater);
+  mockUpdater.quitAndInstall = (isSilent, isForceRunAfter) => {
+    executionOrder.push("quitAndInstall");
+    originalQuit(isSilent, isForceRunAfter);
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+    beforeInstall: async () => {
+      beforeInstallCalled = true;
+      executionOrder.push("beforeInstall");
+    },
+  });
+
+  const state = await service.check();
+
+  assert.equal(beforeInstallCalled, true);
+  assert.deepEqual(executionOrder, ["beforeInstall", "quitAndInstall"]);
+  assert.equal(state.status, "installing");
+
+  // Verified quitAndInstall called with (false, true) -> non-silent, relaunch after install
+  const installCall = mockUpdater.calls.find((c) => c.method === "quitAndInstall");
+  assert.ok(installCall);
+  assert.equal(installCall.isSilent, false);
+  assert.equal(installCall.isForceRunAfter, true);
+});
+
+test("electron-updater (win32): beforeInstall timeout and errors are bounded, redacted, and non-fatal", async () => {
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  const mockDialog = createMockDialog([0, 0]);
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+    beforeInstall: async () => {
+      throw new Error(
+        "Shutdown hook failed for C:\\Users\\Administrator\\AppData\\Local\\Sumi\\server.js",
+      );
+    },
+  });
+
+  // Does not throw uncaught
+  const state = await service.check();
+  assert.ok(state.error);
+  assert.ok(!state.error.includes("Administrator"));
+  assert.ok(state.error.includes("[path]"));
+
+  // quitAndInstall still invoked
+  const installCall = mockUpdater.calls.find((c) => c.method === "quitAndInstall");
+  assert.ok(installCall);
+});
+
+test("electron-updater (win32): concurrency guard prevents duplicate concurrent checks", async () => {
+  let resolveCheck;
+  const checkGate = new Promise((resolve) => {
+    resolveCheck = resolve;
+  });
+
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  const origCheck = mockUpdater.checkForUpdates.bind(mockUpdater);
+  mockUpdater.checkForUpdates = async () => {
+    await checkGate;
+    return origCheck();
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: createMockDialog([0, 0]),
+  });
+
+  // Start first check
+  const checkPromise1 = service.check();
+  // Call second check while first is pending
+  const checkPromise2 = service.check();
+
+  const state2 = await checkPromise2;
+  assert.equal(state2.status, "checking");
+
+  resolveCheck();
+  await checkPromise1;
+
+  // Only one check call dispatched to updater
+  const checkCalls = mockUpdater.calls.filter((c) => c.method === "checkForUpdates");
+  assert.equal(checkCalls.length, 1);
+});
+
+test("electron-updater (win32): dispose cleans up listeners, cancels token, and resets state", async () => {
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: createMockDialog([1]),
+  });
+
+  await service.check();
+  service.dispose();
+
+  assert.equal(service.getState().status, "idle");
+  const offCalls = mockUpdater.calls.filter((c) => c.method === "off");
+  assert.ok(offCalls.length >= 4);
+});
+
+test("electron-updater (win32): error during check or download is redacted and preserves safe state", async () => {
+  const mockUpdater = createMockElectronUpdater({
+    failCheck: true,
+    checkError:
+      "Connection failed to https://api.github.com/repos?token=secretKey123 /Users/admin/test",
+  });
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: createMockDialog(),
+  });
+
+  const state = await service.check();
+
+  assert.equal(state.status, "error");
+  assert.equal(state.message, "Update check failed");
+  assert.ok(state.error);
+  assert.ok(!state.error.includes("secretKey123"));
+  assert.ok(!state.error.includes("/Users/admin"));
+});
+
+test("electron-updater: code-signature policy preserves publisherName without bypass", () => {
+  const mockUpdater = createMockElectronUpdater({ publisherName: "LuxAlgo Global, LLC" });
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+  });
+
+  // Verify publisherName is NOT overwritten or nullified
+  assert.equal(mockUpdater.publisherName, "LuxAlgo Global, LLC");
+});
+
+test("detectLinuxPackageType & isPlatformUpdatable: detects AppImage, deb, rpm, pacman, and portable", () => {
+  // 1. AppImage
+  assert.equal(
+    detectLinuxPackageType({ env: { APPIMAGE: "/home/user/Sumi.AppImage" } }),
+    "appimage",
+  );
+  assert.deepEqual(
+    isPlatformUpdatable({ platform: "linux", env: { APPIMAGE: "/home/user/Sumi.AppImage" } }),
+    {
+      updatable: true,
+      provider: "electron-updater",
+      packageType: "appimage",
+    },
+  );
+
+  // 2. deb package
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pkg-test-"));
+  try {
+    fs.writeFileSync(path.join(tmpDir, "package-type"), "deb\n");
+    assert.equal(detectLinuxPackageType({ resourcesPath: tmpDir }), "deb");
+    assert.deepEqual(isPlatformUpdatable({ platform: "linux", resourcesPath: tmpDir }), {
+      updatable: true,
+      provider: "electron-updater",
+      packageType: "deb",
+    });
+
+    // 3. rpm package
+    fs.writeFileSync(path.join(tmpDir, "package-type"), "rpm\n");
+    assert.equal(detectLinuxPackageType({ resourcesPath: tmpDir }), "rpm");
+
+    // 4. pacman package
+    fs.writeFileSync(path.join(tmpDir, "package-type"), "pacman\n");
+    assert.equal(detectLinuxPackageType({ resourcesPath: tmpDir }), "pacman");
+
+    // 5. Portable / tarball (missing package-type and no APPIMAGE)
+    fs.unlinkSync(path.join(tmpDir, "package-type"));
+    assert.equal(detectLinuxPackageType({ resourcesPath: tmpDir }), "portable");
+    const portableResult = isPlatformUpdatable({ platform: "linux", resourcesPath: tmpDir });
+    assert.equal(portableResult.updatable, false);
+    assert.equal(portableResult.packageType, "portable");
+    assert.ok(
+      portableResult.message.includes("not supported for portable or tarball installations"),
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("electron-updater (linux): portable Linux is honestly unavailable (no false green)", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-linux-portable-"));
+  let updaterCreated = false;
+  const mockDialog = createMockDialog([0]);
+
+  try {
+    const service = createUpdateService({
+      platform: "linux",
+      resourcesPath: tmpDir,
+      env: {}, // No APPIMAGE
+      app: { getVersion: () => "0.3.0" },
+      updaterFactory: () => {
+        updaterCreated = true;
+        return createMockElectronUpdater();
+      },
+      dialog: mockDialog,
+    });
+
+    const state = await service.check();
+
+    // Honest unavailable state
+    assert.equal(state.status, "unavailable");
+    assert.ok(state.message.includes("not supported for portable or tarball installations"));
+    assert.equal(state.error, null);
+
+    // No network requests or updater creation
+    assert.equal(updaterCreated, false);
+
+    // No false green dialog
+    assert.equal(mockDialog.calls.length, 0);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("electron-updater (linux): deb package updates via polkit DebUpdater", async () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-linux-deb-"));
+  fs.writeFileSync(path.join(tmpDir, "package-type"), "deb\n");
+
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  const mockDialog = createMockDialog([0, 0]);
+  let shutdownDone = false;
+
+  try {
+    const service = createUpdateService({
+      platform: "linux",
+      resourcesPath: tmpDir,
+      env: {},
+      app: { getVersion: () => "0.3.0" },
+      updaterFactory: () => mockUpdater,
+      dialog: mockDialog,
+      beforeInstall: async () => {
+        shutdownDone = true;
+      },
+    });
+
+    const state = await service.check();
+
+    assert.equal(shutdownDone, true);
+    assert.equal(state.status, "installing");
+    const installCall = mockUpdater.calls.find((c) => c.method === "quitAndInstall");
+    assert.ok(installCall);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("resolveCancellationTokenClass & real token interface regression", async () => {
+  const TokenClass = resolveCancellationTokenClass();
+  assert.ok(TokenClass, "CancellationToken class must resolve from electron-updater context");
+
+  const token = new TokenClass();
+  assert.equal(typeof token.createPromise, "function");
+  assert.equal(typeof token.onCancel, "function");
+  assert.equal(typeof token.cancel, "function");
+  assert.equal(typeof token.dispose, "function");
+  assert.equal(token.cancelled, false);
+
+  let onCancelFired = false;
+  token.onCancel(() => {
+    onCancelFired = true;
+  });
+
+  token.cancel();
+  assert.equal(token.cancelled, true);
+  assert.equal(onCancelFired, true);
+
+  // Verify real token passed to downloadUpdate
+  let passedToken = null;
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  const origDownload = mockUpdater.downloadUpdate.bind(mockUpdater);
+  mockUpdater.downloadUpdate = async (tok) => {
+    passedToken = tok;
+    return origDownload(tok);
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: createMockDialog([0, 1]), // Download, then Later
+  });
+
+  await service.check();
+  assert.ok(passedToken, "A CancellationToken instance must be passed to downloadUpdate");
+  assert.equal(typeof passedToken.createPromise, "function");
+  assert.equal(typeof passedToken.onCancel, "function");
+});
+
+test("electron-updater: incomplete SDK rejects safely without crash or false green", async () => {
+  // Missing downloadUpdate and quitAndInstall
+  const incompleteUpdater = {
+    checkForUpdates: async () => ({ isUpdateAvailable: true }),
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => incompleteUpdater,
+  });
+
+  const state = await service.check();
+  assert.equal(state.status, "unavailable");
+  assert.equal(state.error, "Update service is missing required updater methods");
+  assert.notEqual(state.status, "not-available");
+  assert.notEqual(state.status, "downloaded");
+});
+
+test("electron-updater: null checkResult (inactive updater in dev) returns unavailable (no false green)", async () => {
+  const mockUpdater = createMockElectronUpdater();
+  // Simulate AppUpdater returning null when isUpdaterActive() is false
+  mockUpdater.checkForUpdates = async () => null;
+  const mockDialog = createMockDialog([0]);
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  const state = await service.check();
+  assert.equal(state.status, "unavailable");
+  assert.ok(state.message.includes("Update check returned no result"));
+  assert.equal(state.error, null);
+  // Must NOT show up-to-date dialog
+  assert.equal(mockDialog.calls.length, 0);
+});
+
+test("electron-updater: preserves error event state if check result is invalid or null", async () => {
+  const mockUpdater = createMockElectronUpdater();
+  mockUpdater.checkForUpdates = async () => {
+    mockUpdater.emit(
+      "error",
+      new Error("API rate limit exceeded for https://api.github.com/?token=123 /home/user/app"),
+    );
+    return null;
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: createMockDialog(),
+  });
+
+  const state = await service.check();
+  assert.equal(state.status, "error");
+  assert.ok(state.error);
+  assert.ok(!state.error.includes("token=123"));
+  assert.ok(!state.error.includes("/home/user"));
+});
+
+test("electron-updater: dispose during deferred download dialog aborts flow (no prompt / no install)", async () => {
+  let resolveDialog;
+  const deferredDialogPromise = new Promise((resolve) => {
+    resolveDialog = resolve;
+  });
+
+  let dialogShown;
+  const dialogShownPromise = new Promise((resolve) => {
+    dialogShown = resolve;
+  });
+
+  let dialogCalls = 0;
+  const mockDialog = {
+    showMessageBox: async (parent, dialogOptions) => {
+      dialogCalls++;
+      if (dialogCalls === 1) {
+        // First dialog (download consent) is shown to user
+        dialogShown();
+        return deferredDialogPromise;
+      }
+      return { response: 0 };
+    },
+  };
+
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  // Start check
+  const checkPromise = service.check();
+
+  // Wait until user is looking at the download dialog
+  await dialogShownPromise;
+
+  // While user is looking at the dialog, app disposes update service
+  service.dispose();
+
+  // Now resolve the dialog with "Download" (response 0)
+  resolveDialog({ response: 0 });
+  await checkPromise;
+
+  // downloadUpdate must NEVER have been called after disposal
+  const downloadCalls = mockUpdater.calls.filter((c) => c.method === "downloadUpdate");
+  assert.equal(downloadCalls.length, 0);
+
+  // No second dialog (install) was opened
+  assert.equal(dialogCalls, 1);
+
+  // quitAndInstall was never called
+  const installCalls = mockUpdater.calls.filter((c) => c.method === "quitAndInstall");
+  assert.equal(installCalls.length, 0);
+
+  assert.equal(service.getState().status, "idle");
+});
+
+test("electron-updater: dispose during download cancels token and prevents install prompt", async () => {
+  let resolveDownload;
+  const downloadPromise = new Promise((resolve) => {
+    resolveDownload = resolve;
+  });
+
+  let passedToken = null;
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  mockUpdater.downloadUpdate = async (tok) => {
+    passedToken = tok;
+    return downloadPromise;
+  };
+
+  let dialogCalls = 0;
+  const mockDialog = {
+    showMessageBox: async () => {
+      dialogCalls++;
+      return { response: 0 };
+    },
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  // Start check -> user consents to download
+  const checkPromise = service.check();
+
+  // Wait a microtask for download to be reached
+  await new Promise((r) => setImmediate(r));
+  assert.ok(passedToken);
+  assert.equal(passedToken.cancelled, false);
+
+  // While downloading, service is disposed
+  service.dispose();
+  assert.equal(passedToken.cancelled, true);
+
+  // Download resolves after disposal
+  resolveDownload(["/tmp/file.exe"]);
+  await checkPromise;
+
+  // Install dialog (call #2) must NOT have been opened
+  assert.equal(dialogCalls, 1);
+
+  // quitAndInstall must NOT have been called
+  const installCalls = mockUpdater.calls.filter((c) => c.method === "quitAndInstall");
+  assert.equal(installCalls.length, 0);
+
+  assert.equal(service.getState().status, "idle");
+});
+
+test("electron-updater: single-flight guard covers entire flow including dialog awaits", async () => {
+  let resolveDialog;
+  const dialogGate = new Promise((resolve) => {
+    resolveDialog = resolve;
+  });
+
+  let checkCallsCount = 0;
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  const origCheck = mockUpdater.checkForUpdates.bind(mockUpdater);
+  mockUpdater.checkForUpdates = async () => {
+    checkCallsCount++;
+    return origCheck();
+  };
+
+  const mockDialog = {
+    showMessageBox: async () => {
+      // Suspends while user is viewing the download prompt
+      await dialogGate;
+      return { response: 1 }; // Later
+    },
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+
+  // First check runs and halts inside showMessageBox
+  const p1 = service.check();
+  await new Promise((r) => setImmediate(r));
+
+  // Second check triggered while download dialog is still waiting for user response
+  const p2 = service.check();
+  const state2 = await p2;
+
+  // Single-flight guard must intercept second check
+  assert.equal(state2.status, "available");
+  assert.equal(checkCallsCount, 1);
+
+  // Complete first dialog
+  resolveDialog();
+  await p1;
+});
+
+test("createUpdateService (macOS): dispose() during deferred start() cleans up safely without null TypeError", async () => {
+  const originalEnv = { ...process.env };
+  const originalPlatform = process.platform;
+  process.env.SUMI_TEST_MODE = "1";
+  Object.defineProperty(process, "platform", { value: "darwin", configurable: true });
+
+  const { tmpDir, configPath } = createTempConfig();
+
+  let releaseStart;
+  const startGate = new Promise((resolve) => {
+    releaseStart = resolve;
+  });
+  const mockUpdater = createMockUpdater({ startGate });
+
+  const service = createUpdateService({
+    configPath,
+    updaterFactory: () => mockUpdater,
+  });
+
+  try {
+    // Start check, which enters await updater.start()
+    const checkPromise = service.check();
+
+    // While start() is pending, dispose is called
+    service.dispose();
+
+    // Now resolve start()
+    releaseStart();
+    const state = await checkPromise;
+
+    // Must be clean idle, not error or null TypeError
+    assert.equal(state.status, "idle");
+    assert.equal(state.error, null);
+    assert.equal(mockUpdater.checkCalls, 0);
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    process.env = originalEnv;
+    Object.defineProperty(process, "platform", { value: originalPlatform, configurable: true });
+  }
+});
+
+test("electron-updater: re-resolves window and never passes destroyed window to dialog", async () => {
+  let isWindowDestroyed = false;
+  const fakeWindow = {
+    isDestroyed: () => isWindowDestroyed,
+  };
+
+  let passedParent = null;
+  const mockDialog = {
+    showMessageBox: async (parent) => {
+      passedParent = parent;
+      return { response: 0 };
+    },
+  };
+
+  const mockUpdater = createMockElectronUpdater({ updateAvailable: false });
+
+  // 1. Alive window is passed
+  const service1 = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    getWindow: () => fakeWindow,
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+  await service1.check();
+  assert.equal(passedParent, fakeWindow);
+
+  // 2. Destroyed window is caught and undefined is passed instead
+  isWindowDestroyed = true;
+  passedParent = "not-cleared";
+  const service2 = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    getWindow: () => fakeWindow,
+    updaterFactory: () => mockUpdater,
+    dialog: mockDialog,
+  });
+  await service2.check();
+  assert.equal(passedParent, undefined);
+});
+
+test("electron-updater: download-progress at 0% renders numeric 0% progress rather than falsy empty", async () => {
+  let progressListener = null;
+  const mockUpdater = createMockElectronUpdater({
+    updateAvailable: true,
+    availableVersion: "0.4.0",
+  });
+  mockUpdater.on = (event, fn) => {
+    if (event === "download-progress") {
+      progressListener = fn;
+    }
+    return mockUpdater;
+  };
+
+  let finishDownload;
+  const downloadGate = new Promise((resolve) => {
+    finishDownload = resolve;
+  });
+
+  mockUpdater.downloadUpdate = async () => {
+    // Emit 0% progress
+    if (progressListener) {
+      progressListener({ percent: 0, transferred: 0, total: 1000 });
+    }
+    await downloadGate;
+    return ["/tmp/app.exe"];
+  };
+
+  const service = createUpdateService({
+    platform: "win32",
+    app: { getVersion: () => "0.3.0" },
+    updaterFactory: () => mockUpdater,
+    dialog: createMockDialog([0, 1]), // Download, then Later
+  });
+
+  const checkPromise = service.check();
+  await new Promise((r) => setImmediate(r));
+
+  // During download, 0% must be formatted as "Downloading update… (0%)"
+  const state = service.getState();
+  assert.equal(state.status, "downloading");
+  assert.equal(state.message, "Downloading update… (0%)");
+
+  finishDownload();
+  await checkPromise;
 });

@@ -1,7 +1,8 @@
 {
   "provider": "sparkle",
   "feedUrl": "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml",
+  "intelFeedUrl": "https://github.com/xolah88457/trade-journal/releases/latest/download/appcast-x64.xml",
   "publicEdKey": "q3+Fop8Fc4xL7ET/oartsKCy6tBEUNB6+8VZ+WnSgr8=",
   "releaseTagPrefix": "electron-v",
-  "archiveUrlPattern": "https://github.com/xolah88457/trade-journal/releases/download/electron-v{version}/Sumi-{version}-macos-arm64.zip"
+  "archiveUrlPattern": "https://github.com/xolah88457/trade-journal/releases/download/electron-v{version}/Sumi-{version}-macos-{arch}.zip"
 }

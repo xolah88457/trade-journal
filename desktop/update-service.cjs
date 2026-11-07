@@ -55,6 +55,19 @@ function resolveConfigPath(customPath) {
 }
 
 /**
+ * Resolves the fallback version from the root package.json if app.getVersion() is unavailable.
+ */
+function resolveFallbackVersion() {
+  try {
+    const pkg = require("../package.json");
+    if (pkg && typeof pkg.version === "string" && pkg.version.trim()) {
+      return pkg.version.trim();
+    }
+  } catch {}
+  return "0.3.0";
+}
+
+/**
  * Loads and validates update configuration from disk.
  */
 function loadUpdateConfig(resolvedPath) {
@@ -70,7 +83,50 @@ function loadUpdateConfig(resolvedPath) {
 }
 
 /**
- * Creates the Sparkle update service coordinating Electron main process and Sparkle.
+ * Creates the update service coordinating native updaters across macOS (Sparkle),
+ * Windows (electron-updater NSIS), and Linux (electron-updater AppImage/deb).
+ */
+function createUpdateService(options = {}) {
+  const platform = options.platform || process.platform;
+  if (platform === "darwin") {
+    return createSparkleUpdateService(options);
+  }
+  if (platform === "win32" || platform === "linux") {
+    const { createElectronUpdaterService } = require("./update-service-platform.cjs");
+    return createElectronUpdaterService(options);
+  }
+  return {
+    getState: () => ({
+      status: "unavailable",
+      currentVersion:
+        options.app && typeof options.app.getVersion === "function"
+          ? options.app.getVersion()
+          : resolveFallbackVersion(),
+      availableVersion: null,
+      message: "Updates are not supported on this platform",
+      error: null,
+      nativeUI: true,
+      provider: "unsupported",
+    }),
+    check: async () => ({
+      status: "unavailable",
+      currentVersion:
+        options.app && typeof options.app.getVersion === "function"
+          ? options.app.getVersion()
+          : resolveFallbackVersion(),
+      availableVersion: null,
+      message: "Updates are not supported on this platform",
+      error: null,
+      nativeUI: true,
+      provider: "unsupported",
+    }),
+    dispose: () => {},
+  };
+}
+
+/**
+ * Creates the Sparkle update service coordinating Electron main process and Sparkle (macOS).
+
  *
  * Contract (ONLY these three methods — no download/install stubs):
  * - getState() safely serializes only: status, currentVersion, availableVersion, message, error, nativeUI, provider
@@ -96,10 +152,11 @@ function loadUpdateConfig(resolvedPath) {
  * @param {Function} [options.updaterFactory] Factory returning Sparkle updater (for DI/testing)
  * @param {string} [options.configPath] Optional custom config path (test mode only)
  */
-function createUpdateService(options = {}) {
+function createSparkleUpdateService(options = {}) {
   const { app, beforeInstall, updaterFactory, configPath } = options;
 
-  const currentVersion = app && typeof app.getVersion === "function" ? app.getVersion() : "0.2.0";
+  const currentVersion =
+    app && typeof app.getVersion === "function" ? app.getVersion() : resolveFallbackVersion();
 
   let status = "idle";
   let availableVersion = null;
@@ -109,6 +166,8 @@ function createUpdateService(options = {}) {
   let updaterInstance = null;
   let isInitialized = false;
   let isInitializing = false;
+  let isDisposed = false;
+  let currentGeneration = 0;
   const unsubscribeFns = [];
 
   function getState() {
@@ -182,6 +241,8 @@ function createUpdateService(options = {}) {
         return getState();
       }
       isInitializing = true;
+      isDisposed = false;
+      const checkGen = ++currentGeneration;
 
       try {
         if (typeof updaterFactory === "function") {
@@ -207,24 +268,34 @@ function createUpdateService(options = {}) {
           return getState();
         }
 
+        const localUpdater = updaterInstance;
+
         // Wire bounded before-relaunch handler (safe BEFORE start in the pinned SDK:
         // setBeforeRelaunchHandler only applies the native hook once started)
-        if (typeof updaterInstance.setBeforeRelaunchHandler === "function") {
-          updaterInstance.setBeforeRelaunchHandler(async (update) => {
+        if (typeof localUpdater.setBeforeRelaunchHandler === "function") {
+          localUpdater.setBeforeRelaunchHandler(async (update) => {
             if (typeof beforeInstall === "function") {
+              let timeoutId = null;
               try {
                 await Promise.race([
                   Promise.resolve().then(() => beforeInstall(update)),
-                  new Promise((_, reject) =>
-                    setTimeout(
+                  new Promise((_, reject) => {
+                    timeoutId = setTimeout(
                       () => reject(new Error("Pre-relaunch shutdown timed out after 5s")),
                       5000,
-                    ),
-                  ),
+                    );
+                    if (timeoutId && typeof timeoutId.unref === "function") {
+                      timeoutId.unref();
+                    }
+                  }),
                 ]);
               } catch (hookErr) {
                 // Redact error, preserve state, and do not forcibly exit or throw uncaught
                 error = redactError(hookErr.message || String(hookErr));
+              } finally {
+                if (timeoutId) {
+                  clearTimeout(timeoutId);
+                }
               }
             }
           });
@@ -234,11 +305,11 @@ function createUpdateService(options = {}) {
         // Events: state-changed, update-available, update-not-available, update-downloaded,
         // before-install, before-relaunch, cycle-complete, error
         const addListener = (event, fn) => {
-          if (typeof updaterInstance.on === "function") {
-            updaterInstance.on(event, fn);
+          if (typeof localUpdater.on === "function") {
+            localUpdater.on(event, fn);
             unsubscribeFns.push(() => {
               try {
-                updaterInstance.off(event, fn);
+                localUpdater.off(event, fn);
               } catch {}
             });
           }
@@ -300,22 +371,32 @@ function createUpdateService(options = {}) {
         // Start the updater FIRST. The pinned electron-sparkle 0.2.0 dist/index.cjs
         // setAutomatically* setters call requireStarted() and throw
         // UpdaterNotStartedError if start() has not resolved yet.
-        if (typeof updaterInstance.start === "function") {
-          await updaterInstance.start();
+        if (typeof localUpdater.start === "function") {
+          await localUpdater.start();
+        }
+
+        // Check if disposed while await start was pending
+        if (isDisposed || checkGen !== currentGeneration || updaterInstance === null) {
+          isInitializing = false;
+          return getState();
         }
 
         // Disable automatic checks/downloads AFTER start, BEFORE the manual check below —
         // strict manual policy: no automatic network on app start/mount; check() is the
         // only trigger and opens the native Sparkle UI.
-        if (typeof updaterInstance.setAutomaticallyChecksForUpdates === "function") {
-          updaterInstance.setAutomaticallyChecksForUpdates(false);
+        if (typeof localUpdater.setAutomaticallyChecksForUpdates === "function") {
+          localUpdater.setAutomaticallyChecksForUpdates(false);
         }
-        if (typeof updaterInstance.setAutomaticallyDownloadsUpdates === "function") {
-          updaterInstance.setAutomaticallyDownloadsUpdates(false);
+        if (typeof localUpdater.setAutomaticallyDownloadsUpdates === "function") {
+          localUpdater.setAutomaticallyDownloadsUpdates(false);
         }
 
         isInitialized = true;
       } catch (initErr) {
+        if (isDisposed || checkGen !== currentGeneration || updaterInstance === null) {
+          isInitializing = false;
+          return getState();
+        }
         status = "error";
         error = redactError(initErr.message || String(initErr));
         message = "Failed to initialize update service";
@@ -327,6 +408,10 @@ function createUpdateService(options = {}) {
       } finally {
         isInitializing = false;
       }
+    }
+
+    if (isDisposed || updaterInstance === null) {
+      return getState();
     }
 
     // 4. Initiate check via Sparkle native UI (user-driven, no automatic network on start/mount)
@@ -348,6 +433,8 @@ function createUpdateService(options = {}) {
   }
 
   function dispose() {
+    isDisposed = true;
+    currentGeneration++;
     cleanupListeners();
     if (updaterInstance && typeof updaterInstance.setBeforeRelaunchHandler === "function") {
       try {
@@ -374,4 +461,5 @@ module.exports = {
   redactError,
   resolveConfigPath,
   loadUpdateConfig,
+  resolveFallbackVersion,
 };

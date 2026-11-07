@@ -117,6 +117,30 @@ describe("getDesktopInfo", () => {
     });
   });
 
+  it("returns parsed AppInfo with electron-updater provider on Windows/Linux", async () => {
+    const mockInfo = {
+      version: "0.3.0",
+      electronVersion: "45.2.3",
+      platform: "win32",
+      arch: "x64",
+      update: { status: "idle", nativeUI: true, provider: "electron-updater" },
+    };
+    (window as any).sumiDesktop = {
+      preferences: {},
+      savePreferences: () => {},
+      getInfo: vi.fn().mockResolvedValue(mockInfo),
+    };
+
+    const result = await getDesktopInfo();
+    expect(result).toEqual({
+      version: "0.3.0",
+      electronVersion: "45.2.3",
+      platform: "win32",
+      arch: "x64",
+      update: { status: "idle", nativeUI: true, provider: "electron-updater" },
+    });
+  });
+
   it("returns null when bridge returns invalid data (missing version)", async () => {
     (window as any).sumiDesktop = {
       preferences: {},

@@ -6,6 +6,9 @@ import os from "node:os";
 import {
   MAX_PREFERENCES_BYTES,
   realpathExisting,
+  isSameOrDescendant,
+  isStrictDescendant,
+  getDefaultDataDirectory,
   resolveDataDirectory,
   filterJournalPreferences,
   createPreferencesStore,
@@ -13,7 +16,7 @@ import {
 
 test("resolveDataDirectory obeys test mode contract and isolated directory paths", () => {
   const originalEnv = { ...process.env };
-  const defaultDir = path.join(os.homedir(), "Library", "Application Support", "Sumi");
+  const defaultDir = getDefaultDataDirectory();
 
   try {
     // Normal mode
@@ -109,7 +112,7 @@ test("test mode does not fail when the production Sumi dir does not exist yet (f
     assert.equal(resolveDataDirectory(), fs.realpathSync(testDir));
 
     // Once the prod dir exists, it and any descendant (incl. profile dir) are rejected
-    const prodDir = path.join(fakeHome, "Library", "Application Support", "Sumi");
+    const prodDir = getDefaultDataDirectory(process.platform, process.env, fakeHome);
     fs.mkdirSync(path.join(prodDir, "electron"), { recursive: true }); // profile dir
     process.env.JOURNAL_DATA_DIR = prodDir;
     assert.throws(() => resolveDataDirectory(), /rejects the production Sumi data directory/);
@@ -296,6 +299,276 @@ test("migrates UserDefaults in normal mode on first launch if file does not exis
     assert.deepEqual(store.getPreferences(), {
       "journal-theme-v1": "dark",
     });
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("getDefaultDataDirectory resolves canonical platform data paths for Windows, Linux, and macOS", () => {
+  // macOS exact data path ~/Library/Application Support/Sumi
+  const macDir = getDefaultDataDirectory("darwin", {}, "/Users/alice");
+  assert.equal(macDir, "/Users/alice/Library/Application Support/Sumi");
+
+  // Windows with APPDATA env
+  const winDir = getDefaultDataDirectory(
+    "win32",
+    { APPDATA: "C:\\Users\\alice\\AppData\\Roaming" },
+    "C:\\Users\\alice",
+  );
+  assert.equal(winDir, "C:\\Users\\alice\\AppData\\Roaming\\Sumi");
+
+  // Windows without APPDATA env fallback
+  const winFallback = getDefaultDataDirectory("win32", {}, "C:\\Users\\alice");
+  assert.equal(winFallback, "C:\\Users\\alice\\AppData\\Roaming\\Sumi");
+
+  // Linux with XDG_CONFIG_HOME
+  const linuxXdg = getDefaultDataDirectory(
+    "linux",
+    { XDG_CONFIG_HOME: "/home/alice/.custom-config" },
+    "/home/alice",
+  );
+  assert.equal(linuxXdg, "/home/alice/.custom-config/Sumi");
+
+  // Linux default fallback ~/.config/Sumi
+  const linuxDefault = getDefaultDataDirectory("linux", {}, "/home/alice");
+  assert.equal(linuxDefault, "/home/alice/.config/Sumi");
+});
+
+test("UserDefaults migration is strictly macOS-only and never attempted on Windows or Linux", () => {
+  const tmpDirWin = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pref-win-"));
+  const tmpDirLinux = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pref-linux-"));
+
+  try {
+    let defaultsCalledWin = false;
+    const storeWin = createPreferencesStore({
+      dataDir: tmpDirWin,
+      platform: "win32",
+      isTestMode: false,
+      defaultsReader: () => {
+        defaultsCalledWin = true;
+        return JSON.stringify({ "journal-theme-v1": "dark" });
+      },
+    });
+
+    assert.equal(defaultsCalledWin, false, "UserDefaults must never be queried on Windows");
+    assert.deepEqual(storeWin.getPreferences(), {});
+
+    let defaultsCalledLinux = false;
+    const storeLinux = createPreferencesStore({
+      dataDir: tmpDirLinux,
+      platform: "linux",
+      isTestMode: false,
+      defaultsReader: () => {
+        defaultsCalledLinux = true;
+        return JSON.stringify({ "journal-theme-v1": "dark" });
+      },
+    });
+
+    assert.equal(defaultsCalledLinux, false, "UserDefaults must never be queried on Linux");
+    assert.deepEqual(storeLinux.getPreferences(), {});
+  } finally {
+    fs.rmSync(tmpDirWin, { recursive: true, force: true });
+    fs.rmSync(tmpDirLinux, { recursive: true, force: true });
+  }
+});
+
+test("mocked rename-fail preserves original preferences untouched and cleans up temporary file", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pref-fail-"));
+  const initialData = { "journal-theme-v1": "original-dark" };
+
+  try {
+    const store = createPreferencesStore({ dataDir: tmpDir, isTestMode: true });
+    const saved = store.savePreferences(initialData);
+    assert.equal(saved, true);
+    assert.deepEqual(store.getPreferences(), initialData);
+
+    const filePath = store.getFilePath();
+    const originalContent = fs.readFileSync(filePath, "utf8");
+
+    // Mock fs.renameSync to simulate EBUSY / EPERM / EACCES lock failure
+    const origRenameSync = fs.renameSync;
+    let renameAttempts = 0;
+    fs.renameSync = () => {
+      renameAttempts++;
+      const err = new Error("Resource locked by antivirus or indexing");
+      err.code = "EBUSY";
+      throw err;
+    };
+
+    try {
+      // Attempting to overwrite existing preferences with new data
+      const saveResult = store.savePreferences({ "journal-theme-v1": "new-light" });
+      assert.equal(saveResult, false, "savePreferences must return false on write failure");
+
+      // Verify original file is completely untouched
+      assert.equal(
+        fs.readFileSync(filePath, "utf8"),
+        originalContent,
+        "Original preferences file must remain intact and untouched",
+      );
+
+      // Verify in-memory cache preserved original state
+      assert.deepEqual(store.getPreferences(), initialData);
+
+      // Verify no temporary .tmp files left behind
+      const files = fs.readdirSync(tmpDir);
+      const tmpFiles = files.filter((f) => f.includes(".tmp"));
+      assert.equal(tmpFiles.length, 0, "Temporary write file must be cleaned up");
+    } finally {
+      fs.renameSync = origRenameSync;
+    }
+
+    assert.equal(
+      renameAttempts,
+      1,
+      "renameSync must have been attempted exactly once without destructive fallback",
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("isSameOrDescendant and isStrictDescendant handle Windows case-folding, normalized slashes, and sibling prefix isolation", () => {
+  // Case-folding equality on Windows
+  assert.equal(
+    isSameOrDescendant(
+      "C:\\Users\\Alice\\AppData\\Roaming\\Sumi",
+      "c:\\users\\alice\\appdata\\roaming\\sumi",
+      "win32",
+    ),
+    true,
+  );
+  assert.equal(
+    isStrictDescendant(
+      "C:\\Users\\Alice\\AppData\\Roaming\\Sumi",
+      "c:\\users\\alice\\appdata\\roaming\\sumi",
+      "win32",
+    ),
+    false,
+  );
+
+  // Subdirectory containment with case and slash differences
+  assert.equal(
+    isSameOrDescendant(
+      "C:/Users/Alice/AppData/Roaming/Sumi/electron/profile",
+      "c:\\users\\alice\\appdata\\roaming\\sumi",
+      "win32",
+    ),
+    true,
+  );
+  assert.equal(
+    isStrictDescendant(
+      "C:/Users/Alice/AppData/Roaming/Sumi/electron/profile",
+      "c:\\users\\alice\\appdata\\roaming\\sumi",
+      "win32",
+    ),
+    true,
+  );
+
+  // Sibling directory with shared prefix must NOT be considered a descendant
+  assert.equal(
+    isSameOrDescendant(
+      "C:\\Users\\Alice\\AppData\\Roaming\\Sumi-backup",
+      "c:\\users\\alice\\appdata\\roaming\\sumi",
+      "win32",
+    ),
+    false,
+  );
+  assert.equal(
+    isStrictDescendant(
+      "C:\\Users\\Alice\\AppData\\Roaming\\Sumi-backup",
+      "c:\\users\\alice\\appdata\\roaming\\sumi",
+      "win32",
+    ),
+    false,
+  );
+
+  // Root tmpdir is not a strict descendant of itself
+  assert.equal(isStrictDescendant("C:\\Temp", "c:\\temp", "win32"), false);
+  assert.equal(isStrictDescendant("C:\\Temp\\sub", "c:\\temp", "win32"), true);
+});
+
+test("getDefaultDataDirectory ignores relative APPDATA and relative XDG_CONFIG_HOME", () => {
+  // Windows relative APPDATA must be ignored (falls back to <homedir>\AppData\Roaming\Sumi)
+  const winRel = getDefaultDataDirectory(
+    "win32",
+    { APPDATA: "relative\\path" },
+    "C:\\Users\\Alice",
+  );
+  assert.equal(winRel, "C:\\Users\\Alice\\AppData\\Roaming\\Sumi");
+
+  // Windows absolute APPDATA is accepted
+  const winAbs = getDefaultDataDirectory(
+    "win32",
+    { APPDATA: "D:\\Custom\\AppData" },
+    "C:\\Users\\Alice",
+  );
+  assert.equal(winAbs, "D:\\Custom\\AppData\\Sumi");
+
+  // Linux relative XDG_CONFIG_HOME must be ignored (falls back to <homedir>/.config/Sumi)
+  const linuxRel = getDefaultDataDirectory(
+    "linux",
+    { XDG_CONFIG_HOME: "relative/path" },
+    "/home/alice",
+  );
+  assert.equal(linuxRel, "/home/alice/.config/Sumi");
+
+  // Linux absolute XDG_CONFIG_HOME is accepted
+  const linuxAbs = getDefaultDataDirectory(
+    "linux",
+    { XDG_CONFIG_HOME: "/opt/custom/config" },
+    "/home/alice",
+  );
+  assert.equal(linuxAbs, "/opt/custom/config/Sumi");
+});
+
+test("corrupt preferences save aborts if backup copy fails and leaves raw file and corrupted state intact", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-pref-backup-fail-"));
+  const corruptContent = "{ unparseable corrupt raw json content }";
+  const filePath = path.join(tmpDir, "preferences.json");
+  fs.writeFileSync(filePath, corruptContent, "utf8");
+
+  try {
+    const store = createPreferencesStore({ dataDir: tmpDir, isTestMode: true });
+    assert.equal(store.isCorrupted(), true, "Store must detect corrupt file on init");
+
+    // Mock fs.copyFileSync to simulate backup copy failure (e.g. disk full or EACCES)
+    const origCopy = fs.copyFileSync;
+    fs.copyFileSync = () => {
+      const err = new Error("Failed to copy file to backup");
+      err.code = "EACCES";
+      throw err;
+    };
+
+    try {
+      const saveResult = store.savePreferences({ "journal-theme-v1": "dark" });
+      assert.equal(
+        saveResult,
+        false,
+        "savePreferences must abort and return false if backup copy fails",
+      );
+
+      // Corrupted flag must REMAIN true so next save will also attempt to preserve backup
+      assert.equal(
+        store.isCorrupted(),
+        true,
+        "Store must remain in corrupted state when backup fails",
+      );
+
+      // Original raw corrupt file must remain intact and NOT overwritten
+      assert.equal(
+        fs.readFileSync(filePath, "utf8"),
+        corruptContent,
+        "Raw corrupt file must be preserved intact",
+      );
+    } finally {
+      fs.copyFileSync = origCopy;
+    }
+
+    // Now verify that when backup copy succeeds, save proceeds and clears corrupted flag
+    const secondSaveResult = store.savePreferences({ "journal-theme-v1": "dark" });
+    assert.equal(secondSaveResult, true, "savePreferences succeeds once backup succeeds");
+    assert.equal(store.isCorrupted(), false);
   } finally {
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }

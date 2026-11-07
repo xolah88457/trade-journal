@@ -1,25 +1,68 @@
-# Sumi — local macOS trading journal
+# Sumi — local desktop trading journal (macOS, Windows & Linux)
 
-Sumi is an independent desktop application for macOS 14+ (Apple Silicon arm64) built on Electron 45.2.3 and an isolated Node.js 26.13.0 runtime, featuring Tw93's Kami-inspired aesthetic, local SQLite persistence, on-device voice dictation, and native Sparkle 2.9.6 Ed25519-signed updates.
+Sumi is an independent, local-first desktop trading journal for **macOS 14+** (Apple Silicon `arm64` & Intel `x64`), 64-bit **Windows 10/11** (`x64`), and modern 64-bit **Linux** (Ubuntu 22.04+ baseline `x64`). Built on Electron 45.2.3 and an isolated, bundled Node.js 26.13.0 runtime, featuring Tw93's Kami-inspired aesthetic, local SQLite persistence, private on-device voice dictation via `@transcribe-cpp` 0.4.0, and platform-native updates.
 
-**[Desktop build, launch, updates, and data architecture →](desktop/README.md)**
+**[Desktop architecture, platform setup, updates, and data architecture →](desktop/README.md)**
 
-### Desktop Build & Launch
+### Platform Support Matrix (v0.3.0)
+
+| Platform                               | Architectures                          | Packages & Installers                    | In-App Updates                                              |
+| :------------------------------------- | :------------------------------------- | :--------------------------------------- | :---------------------------------------------------------- |
+| **macOS 14+** (Sonoma+)                | Apple Silicon (`arm64`), Intel (`x64`) | `.dmg` installer, `.zip` archive         | Native Sparkle 2.9.6 (Ed25519-signed feeds)                 |
+| **Windows 10/11** (64-bit)             | `x64`                                  | NSIS setup (`.exe`), portable `.zip`     | `electron-updater` 6.8.11 (manual consent dialogs)          |
+| **Linux** (glibc 2.35+, Ubuntu 22.04+) | `x64`                                  | `.deb` (primary), standalone `.AppImage` | `electron-updater` 6.8.11 (standard polkit auth for `.deb`) |
+
+- **Standalone Runtimes**: Bundles its own production backend and official separate Node.js 26.13.0 runtime automatically; end users require neither Node.js, pnpm, Docker, nor an external web browser.
+- **Windows Runtime DLLs**: The Windows build includes app-local Microsoft Visual C++ CRT runtime DLLs (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`); no host Visual C++ Redistributable install is required.
+- **Private Offline Voice**: Powered by `@transcribe-cpp` 0.4.0 across all targets: Metal GPU + CPU on Apple Silicon `arm64`, CPU on Intel macOS, and CPU + optional Vulkan on Windows and Linux (GPU is NOT required; CPU inference works out of the box with standard x64 fallback and accelerated variants; AVX/AVX2 is not generally required). Heavy Parakeet ASR weights (~697 MiB / 731 MB) reside strictly outside the app in user storage or local HuggingFace cache upon explicit user setup/download; only the lightweight Silero VAD model (~1.2 MB) is bundled inside the app.
+
+### Desktop Build, Verification & Launch
+
+From the repository root (`trade-journal-main/`):
 
 ```sh
+# 1. Install dependencies with exact lockfile
 pnpm install --frozen-lockfile
+
+# 2. Build the production backend and desktop bundle
 pnpm desktop:build
+
+# 3. Run automated verification suite (licenses, symlinks, routes, ASR doctor, SQLite persistence)
 pnpm desktop:check
+
+# 4. Launch the built desktop application
 pnpm desktop:open
 ```
 
-To package downloadable release distributions (`.dmg`, `.zip`, `SHA256SUMS.txt`):
+To package platform release artifacts (`.dmg`, `.zip`, `.exe`, `.deb`, `.AppImage`, and `SHA256SUMS.txt`):
 
 ```sh
 pnpm desktop:package
 ```
 
-The resulting application is `dist/Sumi.app`. It bundles its own production backend and official Node runtime; it does not require running `pnpm dev` or opening an external browser. On first launch, if macOS Gatekeeper displays a security notice (since this release is ad-hoc signed without an Apple Developer ID), right-click (control-click) `Sumi.app` in Finder and select **Open**, or visit **System Settings → Privacy & Security → Open Anyway**.
+Inspect built artifact status and checksums:
+
+```sh
+node desktop/release.mjs
+```
+
+### Installation & First-Launch Security Notes
+
+Sumi is distributed independently via GitHub Releases ([`xolah88457/trade-journal`](https://github.com/xolah88457/trade-journal/releases), stable tag `electron-v0.3.0`) without proprietary app store wrappers.
+
+- **macOS**: Ad-hoc signed (`codesign --sign -`) without a paid Apple Developer ID. If Gatekeeper blocks opening on first launch, right-click (control-click) `Sumi.app` in Finder and select **Open**, or visit **System Settings → Privacy & Security** and click **Open Anyway**.
+- **Windows**: Unsigned (no Authenticode certificate). Windows Defender SmartScreen may display an unrecognized application prompt on first launch. Click **More info**, then select **Run anyway**.
+- **Linux**: Install the `.deb` package with `sudo apt install ./Sumi-0.3.0-linux-x64.deb` (or `sudo dpkg -i`). For the `.AppImage`, ensure execute permissions are set (`chmod +x Sumi-*.AppImage`) and system `libfuse2` is available. **Security policy**: Never run Sumi with `--no-sandbox` or disable web security; if unprivileged user namespace or FUSE constraints prevent AppImage execution on your system (such as strict Ubuntu 24.04 AppArmor defaults), install the primary `.deb` package. Portable unpacked Linux tarballs do not self-update.
+
+### User Data & Upgrades
+
+All user databases, encrypted credentials, preferences, and downloaded voice weights live in your platform user directory:
+
+- **macOS**: `~/Library/Application Support/Sumi` (EXACT)
+- **Windows**: `%APPDATA%\Sumi` (e.g. `C:\Users\<User>\AppData\Roaming\Sumi`)
+- **Linux**: `$XDG_CONFIG_HOME/Sumi` (or `~/.config/Sumi` if `$XDG_CONFIG_HOME` is unset)
+
+**Backups**: To take a complete manual backup, quit Sumi completely and copy the whole folder, including the generated `.secret` encryption key. Never erase or merge an existing journal directory. If you are currently running v0.2.0, your active application and existing journal data remain completely untouched until you explicitly install or update to v0.3.0.
 
 The original upstream documentation follows below for feature reference. Sumi is not affiliated with or endorsed by LuxAlgo or Tw93.
 

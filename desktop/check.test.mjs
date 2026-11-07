@@ -2,30 +2,35 @@ import assert from "node:assert/strict";
 import { spawn, execFileSync } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import {
-  verifyElectronPackage,
   checkNoPrivateFiles,
   checkSelfContainedSymlinks,
+  resolvePackageLayout,
+  runNativeAsrDoctor,
+  verifyElectronPackage,
+  verifyPackageForPlatform,
 } from "./check-support.mjs";
 
+const require = createRequire(import.meta.url);
+const { buildChildEnv } = require("./main.cjs");
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const app = join(root, "dist/Sumi.app/Contents");
-const resources = join(app, "Resources");
-const node = join(resources, "runtime/node");
+const layout = resolvePackageLayout(root);
 
 async function start(dataDirectory) {
-  const child = spawn(node, [join(resources, "launch.cjs")], {
+  const env = buildChildEnv(dataDirectory);
+  if (process.platform === "win32") {
+    env.PATH = `${join(layout.resources, "runtime")};${env.PATH || ""}`;
+  }
+
+  const child = spawn(layout.nodeExecutable, [layout.launchScript], {
     cwd: dataDirectory,
-    env: {
-      PATH: "/usr/bin:/bin",
-      HOME: process.env.HOME,
-      TMPDIR: tmpdir(),
-      JOURNAL_DATA_DIR: dataDirectory,
-    },
+    env,
     stdio: ["ignore", "pipe", "pipe"],
   });
   let output = "";
@@ -66,21 +71,28 @@ async function start(dataDirectory) {
   }
 }
 
-test("the app is signed, self-contained, and contains no development journal", (t) => {
-  assert.ok(existsSync(join(app, "MacOS/Sumi")), "Run pnpm desktop:build first.");
-  assert.ok(existsSync(join(resources, "Sumi.icns")), "Application icon Sumi.icns missing.");
-
-  // Detect whether dist/Sumi.app is still the legacy Swift wrapper from earlier builds.
-  // Defer desktop check on old native bundle until the fresh Electron build is created.
-  const linked = execFileSync("otool", ["-L", join(app, "MacOS/Sumi")], { encoding: "utf8" });
-  if (linked.includes("libswiftCore")) {
-    if (t && typeof t.skip === "function") {
-      t.skip("Old native Swift bundle detected in dist/; awaiting fresh Electron desktop:build.");
-      return;
-    }
+test("the app package is verified, structurally compliant, and contains no development journal", (t) => {
+  if (process.platform === "darwin" && existsSync(layout.executable)) {
+    // Detect whether dist/Sumi.app is still the legacy Swift wrapper from earlier builds.
+    try {
+      const linked = execFileSync("otool", ["-L", layout.executable], { encoding: "utf8" });
+      if (linked.includes("libswiftCore")) {
+        if (t && typeof t.skip === "function") {
+          t.skip(
+            "Old native Swift bundle detected in dist/; awaiting fresh Electron desktop:build.",
+          );
+          return;
+        }
+      }
+    } catch {}
   }
 
-  verifyElectronPackage({ app, resources, root });
+  verifyPackageForPlatform({ root });
+});
+
+test("native ASR backend doctor: loads packaged transcribe-cpp and executes Silero VAD silence inference with bundled Node", () => {
+  const result = runNativeAsrDoctor({ root });
+  assert.equal(result.success, true);
 });
 
 test(

@@ -269,3 +269,149 @@ test("resolveLaunchPaths returns bundled Node in packaged app and fails if missi
     // process.execPath is read-only in some environments, don't restore
   }
 });
+
+test("buildChildEnv on Windows whitelists essential system variables and strips secrets", () => {
+  const origEnv = { ...process.env };
+  try {
+    process.env.SystemRoot = "C:\\Windows";
+    process.env.USERPROFILE = "C:\\Users\\alice";
+    process.env.TEMP = "C:\\Users\\alice\\AppData\\Local\\Temp";
+    process.env.NODE_OPTIONS = "--inspect=9229";
+    process.env.OPENAI_API_KEY = "sk-super-secret";
+
+    const dataDir = "C:\\Users\\alice\\AppData\\Roaming\\Sumi";
+    const env = buildChildEnv(dataDir, { platform: "win32" });
+
+    // Essential Windows keys present
+    assert.equal(env.JOURNAL_DATA_DIR, dataDir);
+    assert.equal(env.SystemRoot, "C:\\Windows");
+    assert.equal(env.USERPROFILE, "C:\\Users\\alice");
+    assert.equal(env.TEMP, "C:\\Users\\alice\\AppData\\Local\\Temp");
+    assert.ok(env.PATH);
+
+    // Forbidden keys strictly stripped
+    assert.equal(env.NODE_OPTIONS, undefined);
+    assert.equal(env.OPENAI_API_KEY, undefined);
+  } finally {
+    process.env = origEnv;
+  }
+});
+
+test("buildChildEnv prepends runtimeDirectory with semicolon and handles path spaces on Windows", () => {
+  const origEnv = { ...process.env };
+  try {
+    process.env.SystemRoot = "C:\\Windows";
+    process.env.USERPROFILE = "C:\\Users\\alice";
+    process.env.TEMP = "C:\\Users\\alice\\AppData\\Local\\Temp";
+    process.env.NODE_OPTIONS = "--inspect=9229";
+    process.env.OPENAI_API_KEY = "sk-super-secret";
+
+    const dataDir = "C:\\Users\\alice\\AppData\\Roaming\\Sumi";
+    const runtimeWithSpaces = "C:\\Program Files\\Sumi\\resources\\runtime";
+
+    // 1. Pure Windows with runtimeDirectory containing spaces: must prepend with semicolon
+    const winEnv = buildChildEnv(dataDir, {
+      platform: "win32",
+      runtimeDirectory: runtimeWithSpaces,
+    });
+    assert.ok(
+      winEnv.PATH.startsWith(`${runtimeWithSpaces};`),
+      `Windows PATH must prepend runtimeDirectory with semicolon, got: ${winEnv.PATH}`,
+    );
+    assert.ok(
+      winEnv.PATH.includes("C:\\Windows\\System32"),
+      "Windows PATH must retain standard system path",
+    );
+
+    // 2. POSIX unchanged when runtimeDirectory omitted
+    const posixDefault = buildChildEnv("/tmp/sumi-data", { platform: "darwin" });
+    assert.equal(
+      posixDefault.PATH,
+      process.env.PATH || "/usr/bin:/bin:/usr/sbin:/sbin",
+      "POSIX PATH without runtimeDirectory must remain unchanged",
+    );
+
+    // 3. POSIX prepends with colon when runtimeDirectory provided
+    const posixWithRuntime = buildChildEnv("/tmp/sumi-data", {
+      platform: "darwin",
+      runtimeDirectory: "/opt/Sumi App/runtime",
+    });
+    assert.ok(
+      posixWithRuntime.PATH.startsWith("/opt/Sumi App/runtime:"),
+      "POSIX PATH must prepend runtimeDirectory with colon delimiter",
+    );
+
+    // Whitelist and secret stripping hold
+    assert.equal(winEnv.JOURNAL_DATA_DIR, dataDir);
+    assert.equal(winEnv.NODE_OPTIONS, undefined);
+    assert.equal(winEnv.OPENAI_API_KEY, undefined);
+  } finally {
+    process.env = origEnv;
+  }
+});
+
+test("resolveLaunchPaths resolves node.exe on Windows and node on Unix in packaged apps", () => {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-launch-win-"));
+  const resourcesDir = path.join(tmpDir, "Resources");
+  const runtimeDir = path.join(resourcesDir, "runtime");
+  fs.mkdirSync(runtimeDir, { recursive: true });
+
+  try {
+    const bundledNodeWin = path.join(runtimeDir, "node.exe");
+    const bundledNodeUnix = path.join(runtimeDir, "node");
+    const bundledLaunch = path.join(resourcesDir, "launch.cjs");
+    fs.writeFileSync(bundledNodeWin, "mock node exe");
+    fs.writeFileSync(bundledNodeUnix, "mock node unix");
+    fs.writeFileSync(bundledLaunch, "console.log('launch')");
+
+    // Windows resolves node.exe
+    const winPaths = resolveLaunchPaths({
+      platform: "win32",
+      resourcesPath: resourcesDir,
+    });
+    assert.equal(winPaths.nodeExecutable, bundledNodeWin);
+    assert.equal(winPaths.launchScript, bundledLaunch);
+
+    // Linux resolves node
+    const linuxPaths = resolveLaunchPaths({
+      platform: "linux",
+      resourcesPath: resourcesDir,
+    });
+    assert.equal(linuxPaths.nodeExecutable, bundledNodeUnix);
+    assert.equal(linuxPaths.launchScript, bundledLaunch);
+
+    // Windows missing node.exe throws specific message
+    fs.rmSync(bundledNodeWin);
+    assert.throws(
+      () =>
+        resolveLaunchPaths({
+          platform: "win32",
+          resourcesPath: resourcesDir,
+        }),
+      /Packaged application missing bundled Node runtime at Resources[/\\]runtime[/\\]node\.exe/,
+    );
+  } finally {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
+});
+
+test("buildMenuTemplate adapts for Windows and Linux with File and Help menus", () => {
+  for (const plat of ["win32", "linux"]) {
+    const template = buildMenuTemplate("/tmp/sumi-data", () => null, plat);
+    const labels = template.map((m) => m.label);
+    assert.deepEqual(labels, ["File", "Edit", "View", "Window", "Help"]);
+
+    // File menu has Show Journal Data and Exit
+    const fileMenu = template.find((m) => m.label === "File");
+    const fileLabels = fileMenu.submenu.map((s) => s.label).filter(Boolean);
+    assert.ok(fileLabels.includes("Show Journal Data"));
+    assert.ok(fileLabels.includes("Exit"));
+    const exitItem = fileMenu.submenu.find((s) => s.label === "Exit");
+    assert.equal(exitItem.role, "quit");
+
+    // Help menu has About Sumi
+    const helpMenu = template.find((m) => m.label === "Help");
+    const helpLabels = helpMenu.submenu.map((s) => s.label).filter(Boolean);
+    assert.ok(helpLabels.includes("About Sumi"));
+  }
+});

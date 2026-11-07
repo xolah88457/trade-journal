@@ -1,0 +1,29 @@
+# Ensure text files checkout with LF on all platforms (preventing Windows CRLF test assertion mismatches)
+* text=auto eol=lf
+
+# Explicit binary file rules to prevent line ending conversion on binaries, archives, and model weights
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.zip binary
+*.dmg binary
+*.exe binary
+*.AppImage binary
+*.deb binary
+*.node binary
+*.dylib binary
+*.so binary
+*.dll binary
+*.gguf binary
+*.db binary
+*.sqlite binary
+*.tar.gz binary
+*.tgz binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.eot binary
+*.pdf binary

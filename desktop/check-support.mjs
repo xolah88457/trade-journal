@@ -746,8 +746,86 @@ export function verifyPackageForPlatform({
 }
 
 /**
+ * Reads the PE FILEVERSION of a bundled Windows DLL via PowerShell FileVersionInfo.
+ * Returns a 4-part numeric array, or null when unreadable. `runTool` is injectable for tests.
+ */
+export function readBundledDllFileVersion(filePath, runTool = execFileSync) {
+  try {
+    const psPath = String(filePath).replace(/'/g, "''");
+    const out = runTool(
+      "powershell",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        `$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('${psPath}'); ` +
+          `Write-Output "$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart).$($v.FilePrivatePart)"`,
+      ],
+      { encoding: "utf8" },
+    );
+    const line = String(out).trim().split(/\r?\n/)[0] || "";
+    const m = line.match(/(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?/);
+    return m ? [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4] || 0)] : null;
+  } catch {
+    return null;
+  }
+}
+
+/** First existing bundled copy of a CRT DLL (case-insensitive), mirroring verifyWindowsPackage candidates. */
+export function findBundledCrtDll(layout, dll) {
+  const files = [
+    join(layout.resources, "runtime", dll),
+    join(layout.resources, "server/node_modules/@transcribe-cpp/win32-x64-cpu-vulkan", dll),
+    join(
+      layout.resources,
+      "server/apps/web/node_modules/@transcribe-cpp/win32-x64-cpu-vulkan",
+      dll,
+    ),
+    join(layout.app, dll),
+    join(layout.app, "resources", "runtime", dll),
+  ];
+  for (const p of files) {
+    if (existsSync(p)) return p;
+  }
+  for (const dir of [...new Set(files.map((p) => dirname(p)))]) {
+    try {
+      const match = readdirSync(dir).find((e) => e.toLowerCase() === dll.toLowerCase());
+      if (match) return join(dir, match);
+    } catch {}
+  }
+  return null;
+}
+
+/**
+ * Prints the actual FILEVERSION of each bundled app-local CRT DLL (msvcp140.dll,
+ * vcruntime140.dll, vcruntime140_1.dll) so CI logs show exactly which CRT the
+ * bundled node + transcribe-cpp will load BEFORE any native load. Best-effort:
+ * never throws; unreadable versions are reported as "unknown".
+ */
+export function reportBundledCrtVersions(layout, runTool = execFileSync, log = console.log) {
+  const lines = [];
+  for (const dll of WINDOWS_REQUIRED_CRT_DLLS) {
+    const dllPath = findBundledCrtDll(layout, dll);
+    if (!dllPath) {
+      lines.push(`[ASR Doctor] Bundled CRT ${dll}: NOT FOUND in package`);
+      continue;
+    }
+    const version = readBundledDllFileVersion(dllPath, runTool);
+    lines.push(
+      `[ASR Doctor] Bundled CRT ${dll}: FILEVERSION ${version ? version.join(".") : "unknown"} @ ${dllPath}`,
+    );
+  }
+  for (const line of lines) {
+    try {
+      log(line);
+    } catch {}
+  }
+  return lines;
+}
+
+/**
  * Real Native ASR backend doctor on each platform:
- * Runs the BUNDLED official Node + packaged transcribe-cpp 0.4.0,
+ * Runs the BUNDLED official Node + packaged transcribe-cpp 0.4.1,
  * loads the bundled Silero VAD model, runs silence detection (512 float32 samples),
  * and disposes cleanly.
  *
@@ -778,10 +856,12 @@ export function runNativeAsrDoctor({
 
   const doctorCode = `
 import assert from "node:assert/strict";
-import { TranscribeModel } from "transcribe-cpp";
+import { TranscribeModel, version, libraryPath } from "transcribe-cpp";
 
 async function run() {
   console.log("[ASR Doctor] Starting native ASR backend verification...");
+  const v = version();
+  console.log("[ASR Doctor] transcribe-cpp binding: version=" + v.version + " commit=" + v.commit + " headerHash=" + v.headerHash + " library=" + libraryPath());
   const vadPath = ${JSON.stringify(vadModel)};
   console.log("[ASR Doctor] Loading Silero VAD from: " + vadPath);
   const vad = await TranscribeModel.load(vadPath);
@@ -820,6 +900,10 @@ run().catch((err) => {
     if (platform === "win32") {
       const runtimeDir = join(layout.resources, "runtime");
       env.PATH = `${runtimeDir};${env.PATH || ""}`;
+      // Print actual bundled CRT DLL FILEVERSIONs BEFORE native load so a stale
+      // app-local msvcp140.dll (< 14.40 -> std::mutex ABI crash 0xC0000005 during
+      // transcribe-cpp backend init, transcribe.cpp#210) is visible in CI logs.
+      reportBundledCrtVersions(layout, runTool);
     }
 
     console.log(

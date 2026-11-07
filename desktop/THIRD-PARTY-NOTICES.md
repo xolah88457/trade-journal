@@ -29,7 +29,7 @@ Software runtime libraries are MIT-licensed; speech recognition model weights ar
 
 ### transcribe.cpp
 
-- Package: `transcribe-cpp` (0.4.0) and platform native binaries:
+- Package: `transcribe-cpp` (0.4.1) and platform native binaries:
   - `@transcribe-cpp/darwin-arm64-metal` (macOS Apple Silicon, Metal GPU + CPU)
   - `@transcribe-cpp/darwin-x64-cpu` (macOS Intel x64, CPU)
   - `@transcribe-cpp/win32-x64-cpu-vulkan` (Windows x64, CPU + optional Vulkan)

@@ -1,6 +1,6 @@
 # Sumi — local desktop trading journal (macOS, Windows & Linux)
 
-Sumi is an independent, local-first desktop trading journal for **macOS 14+** (Apple Silicon `arm64` & Intel `x64`), 64-bit **Windows 10/11** (`x64`), and modern 64-bit **Linux** (Ubuntu 22.04+ baseline `x64`). Built on Electron 45.2.3 and an isolated, bundled Node.js 26.13.0 runtime, featuring Tw93's Kami-inspired aesthetic, local SQLite persistence, private on-device voice dictation via `@transcribe-cpp` 0.4.0, and platform-native updates.
+Sumi is an independent, local-first desktop trading journal for **macOS 14+** (Apple Silicon `arm64` & Intel `x64`), 64-bit **Windows 10/11** (`x64`), and modern 64-bit **Linux** (Ubuntu 22.04+ baseline `x64`). Built on Electron 45.2.3 and an isolated, bundled Node.js 26.13.0 runtime, featuring Tw93's Kami-inspired aesthetic, local SQLite persistence, private on-device voice dictation via `@transcribe-cpp` 0.4.1, and platform-native updates.
 
 **[Desktop architecture, platform setup, updates, and data architecture →](desktop/README.md)**
 
@@ -14,7 +14,7 @@ Sumi is an independent, local-first desktop trading journal for **macOS 14+** (A
 
 - **Standalone Runtimes**: Bundles its own production backend and official separate Node.js 26.13.0 runtime automatically; end users require neither Node.js, pnpm, Docker, nor an external web browser.
 - **Windows Runtime DLLs**: The Windows build includes app-local Microsoft Visual C++ CRT runtime DLLs (`msvcp140.dll`, `vcruntime140.dll`, `vcruntime140_1.dll`); no host Visual C++ Redistributable install is required.
-- **Private Offline Voice**: Powered by `@transcribe-cpp` 0.4.0 across all targets: Metal GPU + CPU on Apple Silicon `arm64`, CPU on Intel macOS, and CPU + optional Vulkan on Windows and Linux (GPU is NOT required; CPU inference works out of the box with standard x64 fallback and accelerated variants; AVX/AVX2 is not generally required). Heavy Parakeet ASR weights (~697 MiB / 731 MB) reside strictly outside the app in user storage or local HuggingFace cache upon explicit user setup/download; only the lightweight Silero VAD model (~1.2 MB) is bundled inside the app.
+- **Private Offline Voice**: Powered by `@transcribe-cpp` 0.4.1 across all targets: Metal GPU + CPU on Apple Silicon `arm64`, CPU on Intel macOS, and CPU + optional Vulkan on Windows and Linux (GPU is NOT required; CPU inference works out of the box with standard x64 fallback and accelerated variants; AVX/AVX2 is not generally required). Heavy Parakeet ASR weights (~697 MiB / 731 MB) reside strictly outside the app in user storage or local HuggingFace cache upon explicit user setup/download; only the lightweight Silero VAD model (~1.2 MB) is bundled inside the app.
 
 ### Desktop Build, Verification & Launch
 

@@ -81,12 +81,72 @@ export const SILERO_EXPECTED_SHA256 =
 export const REQUIRED_WIN32_CRT_DLLS = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 /**
- * Resolves the location of app-local Visual C++ 14.x x64 CRT DLLs on Windows.
- * Prefers the official Microsoft Visual C++ Redistributable directory
+ * Minimum trusted Visual C++ 14.x x64 CRT FILEVERSION that may ever be bundled
+ * app-local. transcribe-cpp native artifacts are built with VS 2022 >= 17.10
+ * (msvcp140.dll >= 14.40); an app-local copy older than 14.40 wins over the host's
+ * newer System32 DLL in the loader search order and crashes native backend
+ * enumeration / TranscribeModel.load with a std::mutex ABI access violation
+ * (0xC0000005). See https://github.com/handy-computer/transcribe.cpp/issues/210
+ * (fixed upstream in transcribe-cpp 0.4.1 via PR #212, but old app-local CRT DLLs
+ * must still never be shipped, so the build fails closed below this floor).
+ */
+export const MIN_WIN32_CRT_FILEVERSION = [14, 40, 0, 0];
+
+/** Numeric comparison of 4-part file versions: >0 if a>b, <0 if a<b, 0 if equal. */
+export function compareFileVersions(a, b) {
+  const len = Math.max(a.length, b.length);
+  for (let i = 0; i < len; i++) {
+    const x = Number(a[i] || 0);
+    const y = Number(b[i] || 0);
+    if (x !== y) return x - y;
+  }
+  return 0;
+}
+
+/** Formats a 4-part version array as "14.40.0.0". */
+export function formatFileVersion(version) {
+  return (version || []).map(Number).join(".");
+}
+
+/** Parses a "14.44.35111.0"-style version string into a 4-part numeric array (null if unparseable). */
+export function parseFileVersionString(str) {
+  if (typeof str !== "string") return null;
+  const m = str.match(/(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?/);
+  if (!m) return null;
+  return [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4] || 0)];
+}
+
+/**
+ * Reads the PE FILEVERSION of a Windows DLL via PowerShell FileVersionInfo.
+ * Returns a 4-part numeric array. Throws when the version cannot be read;
+ * `runTool` is injectable for tests.
+ */
+export function readDllFileVersion(filePath, runTool = execFileSync) {
+  const psPath = String(filePath).replace(/'/g, "''");
+  const out = runTool(
+    "powershell",
+    [
+      "-NoProfile",
+      "-NonInteractive",
+      "-Command",
+      `$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('${psPath}'); ` +
+        `Write-Output "$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart).$($v.FilePrivatePart)"`,
+    ],
+    { encoding: "utf8" },
+  );
+  const version = parseFileVersionString(String(out).trim().split(/\r?\n/)[0]);
+  if (!version) {
+    throw new Error(`Could not read FILEVERSION of ${filePath} (powershell output: ${out})`);
+  }
+  return version;
+}
+
+/**
+ * Collects candidate directories holding app-local Visual C++ 14.x x64 CRT DLLs
+ * on Windows. Prefers the official Microsoft Visual C++ Redistributable directory
  * (via vswhere or VCToolsRedistDir), or falls back to system32 if necessary.
  */
-export function resolveWindowsCrtDlls(options = {}) {
-  const env = options.env || process.env;
+export function collectWindowsCrtCandidateDirs(env = process.env) {
   const candidates = [];
 
   // 1. Explicit environment override
@@ -174,27 +234,161 @@ export function resolveWindowsCrtDlls(options = {}) {
     candidates.push(sys32);
   }
 
-  // Search candidates for the required DLLs
+  return candidates;
+}
+
+/** Finds a DLL inside a directory case-insensitively; returns the full path or null. */
+function findDllInDir(dir, dll) {
+  const direct = join(dir, dll);
+  if (existsSync(direct)) return direct;
+  try {
+    const match = readdirSync(dir).find((e) => e.toLowerCase() === dll.toLowerCase());
+    if (match) return join(dir, match);
+  } catch {}
+  return null;
+}
+
+/**
+ * Selects the app-local Windows CRT DLLs to bundle, VERIFYING each candidate's PE
+ * FILEVERSION. Per DLL the NEWEST candidate >= MIN_WIN32_CRT_FILEVERSION wins
+ * (numeric descending, not discovery order). Fails closed: if any required DLL
+ * has no qualifying candidate, nothing is resolved — an old or partial app-local
+ * set must never ship, because an app-local msvcp140.dll below the floor overrides
+ * the host's newer System32 copy and crashes transcribe-cpp native init (0xC0000005).
+ *
+ * Returns { resolved, missing, rejected, floor }.
+ * options.readFileVersion (injectable for tests) maps a DLL path to a 4-part version.
+ */
+export function selectWindowsCrtDlls(options = {}) {
+  const env = options.env || process.env;
+  const readFileVersion = options.readFileVersion || readDllFileVersion;
+  const candidates = collectWindowsCrtCandidateDirs(env);
+
   const resolved = {};
+  const missing = [];
+  const rejected = [];
+
   for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+    const found = [];
     for (const dir of candidates) {
-      const fullPath = join(dir, dll);
-      if (existsSync(fullPath)) {
-        resolved[dll] = fullPath;
-        break;
-      }
+      const fullPath = findDllInDir(dir, dll);
+      if (!fullPath) continue;
+      let version = null;
       try {
-        const entries = readdirSync(dir);
-        const match = entries.find((e) => e.toLowerCase() === dll.toLowerCase());
-        if (match) {
-          resolved[dll] = join(dir, match);
-          break;
-        }
-      } catch {}
+        const v = readFileVersion(fullPath);
+        version = Array.isArray(v) ? v.map(Number) : parseFileVersionString(v);
+      } catch {
+        version = null;
+      }
+      if (version && version.length >= 3) {
+        found.push({
+          path: fullPath,
+          version: [version[0], version[1], version[2], version[3] || 0],
+        });
+      } else {
+        rejected.push({ dll, path: fullPath, version: "unknown", reason: "unreadable-version" });
+      }
+    }
+
+    const eligible = found
+      .filter((c) => compareFileVersions(c.version, MIN_WIN32_CRT_FILEVERSION) >= 0)
+      .sort((a, b) => compareFileVersions(b.version, a.version)); // numeric descending: newest first
+    if (eligible.length > 0) {
+      resolved[dll] = eligible[0].path;
+      for (const c of eligible.slice(1)) {
+        rejected.push({
+          dll,
+          path: c.path,
+          version: formatFileVersion(c.version),
+          reason: "superseded",
+        });
+      }
+    } else {
+      missing.push(dll);
+    }
+    for (const c of found) {
+      if (!eligible.includes(c)) {
+        rejected.push({
+          dll,
+          path: c.path,
+          version: formatFileVersion(c.version),
+          reason: "below-floor",
+        });
+      }
     }
   }
 
-  return resolved;
+  // Fail closed: all-or-nothing — never bundle an old (< floor) or partial CRT set.
+  if (missing.length > 0) {
+    return { resolved: {}, missing, rejected, floor: MIN_WIN32_CRT_FILEVERSION.slice() };
+  }
+  return { resolved, missing, rejected, floor: MIN_WIN32_CRT_FILEVERSION.slice() };
+}
+
+/**
+ * Resolves the app-local Visual C++ 14.x x64 CRT DLLs to bundle on Windows:
+ * the newest FILEVERSION >= MIN_WIN32_CRT_FILEVERSION per DLL, or {} when any
+ * required DLL lacks a trusted candidate (fail closed, never old/partial).
+ */
+export function resolveWindowsCrtDlls(options = {}) {
+  return selectWindowsCrtDlls(options).resolved;
+}
+
+/**
+ * Bundles the required Microsoft Visual C++ 14.x x64 CRT runtime DLLs into
+ * the app resources and transcribe artifact directories on Windows.
+ * Fails closed: throws if any required DLL is missing or below MIN_WIN32_CRT_FILEVERSION,
+ * ensuring an old or incomplete CRT is never bundled into the distribution.
+ */
+export function bundleWindowsCrt(resources, nativeTuple, options = {}) {
+  const crtFloor = formatFileVersion(MIN_WIN32_CRT_FILEVERSION);
+  console.log(
+    `Locating and bundling Microsoft Visual C++ x64 CRT runtime DLLs (FILEVERSION >= ${crtFloor})...`,
+  );
+  const crtSelection = selectWindowsCrtDlls(options);
+  const crtDlls = crtSelection.resolved;
+  const missingDlls = REQUIRED_WIN32_CRT_DLLS.filter((dll) => !crtDlls[dll]);
+  if (missingDlls.length > 0) {
+    const rejectedNote =
+      crtSelection.rejected.length > 0
+        ? ` Rejected candidates: ${crtSelection.rejected
+            .map((r) => `${r.dll} ${r.version} (${r.reason}) at ${r.path}`)
+            .join("; ")}.`
+        : "";
+    throw new Error(
+      `Cannot build Windows distribution: missing app-local VC++ CRT DLLs with FILEVERSION >= ${crtFloor}: ${missingDlls.join(", ")}.${rejectedNote} CRT bundling is fail-closed: old or partial sets are never shipped because an app-local msvcp140.dll below ${crtFloor} overrides the host System32 copy and crashes transcribe-cpp native init (0xC0000005).`,
+    );
+  }
+
+  for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+    console.log(`Bundling app-local CRT ${dll} from ${crtDlls[dll]}`);
+  }
+
+  const crtTargets = [join(resources, "runtime")];
+  if (nativeTuple) {
+    crtTargets.push(
+      join(resources, "server/node_modules", `@transcribe-cpp/${nativeTuple}`),
+      join(resources, "server/apps/web/node_modules", `@transcribe-cpp/${nativeTuple}`),
+    );
+  }
+
+  for (const targetDir of crtTargets) {
+    mkdirSync(targetDir, { recursive: true });
+    for (const [dllName, dllPath] of Object.entries(crtDlls)) {
+      cpSync(dllPath, join(targetDir, dllName));
+    }
+  }
+
+  const licensesDir = join(resources, "licenses");
+  mkdirSync(licensesDir, { recursive: true });
+  writeFileSync(
+    join(licensesDir, "Microsoft-Visual-CPP-Redist-Notice.txt"),
+    "Microsoft Visual C++ Runtime (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll)\n" +
+      "Redistributed under Visual Studio 2015-2022 Redistributable License Terms for local application runtime.\n",
+    "utf8",
+  );
+
+  return crtDlls;
 }
 
 /**
@@ -1696,36 +1890,7 @@ export async function build(options = {}) {
     // On Windows: bundle licensed app-local Visual C++ 14.x x64 CRT DLLs
     // (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll) into runtime and transcribe artifact dirs
     if (platform === "win32") {
-      console.log("Locating and bundling Microsoft Visual C++ x64 CRT runtime DLLs...");
-      const crtDlls = resolveWindowsCrtDlls();
-      const missingDlls = REQUIRED_WIN32_CRT_DLLS.filter((dll) => !crtDlls[dll]);
-      if (missingDlls.length > 0) {
-        console.warn(
-          `Notice: Could not locate app-local VC++ CRT DLLs: ${missingDlls.join(", ")}. User systems without VC++ Redistributable may require them for offline dictation.`,
-        );
-      }
-
-      const crtTargets = [join(resources, "runtime")];
-      if (nativeTuple) {
-        crtTargets.push(
-          join(resources, "server/node_modules", `@transcribe-cpp/${nativeTuple}`),
-          join(resources, "server/apps/web/node_modules", `@transcribe-cpp/${nativeTuple}`),
-        );
-      }
-
-      for (const targetDir of crtTargets) {
-        mkdirSync(targetDir, { recursive: true });
-        for (const [dllName, dllPath] of Object.entries(crtDlls)) {
-          cpSync(dllPath, join(targetDir, dllName));
-        }
-      }
-
-      writeFileSync(
-        join(resources, "licenses", "Microsoft-Visual-CPP-Redist-Notice.txt"),
-        "Microsoft Visual C++ Runtime (MSVCP140.dll, VCRUNTIME140.dll, VCRUNTIME140_1.dll)\n" +
-          "Redistributed under Visual Studio 2015-2022 Redistributable License Terms for local application runtime.\n",
-        "utf8",
-      );
+      bundleWindowsCrt(resources, nativeTuple, options.crtOptions || options);
     }
   }
 

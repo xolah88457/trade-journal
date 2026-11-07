@@ -196,7 +196,7 @@ To open this directory directly on macOS, choose **Sumi → Show Journal Data** 
 
 ## Private Offline Voice Dictation
 
-Sumi includes private, on-device voice dictation powered by `@transcribe-cpp` 0.4.0 across all target platforms:
+Sumi includes private, on-device voice dictation powered by `@transcribe-cpp` 0.4.1 across all target platforms:
 
 - **macOS Apple Silicon (`arm64`)**: Native Metal GPU + CPU acceleration (`@transcribe-cpp/darwin-arm64-metal`).
 - **macOS Intel (`x64`)**: Native CPU acceleration (`@transcribe-cpp/darwin-x64-cpu`).

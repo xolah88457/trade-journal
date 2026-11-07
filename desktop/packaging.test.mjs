@@ -26,6 +26,7 @@ import {
   PINNED_ELECTRON_CHECKSUMS,
   REQUIRED_DESKTOP_SCRIPTS,
   REQUIRED_WIN32_CRT_DLLS,
+  MIN_WIN32_CRT_FILEVERSION,
   SILERO_EXPECTED_SHA256,
   SUPPORTED_PLATFORMS,
   assertFrameworkSymlinksConfined,
@@ -37,10 +38,14 @@ import {
   buildHelperInfoPlist,
   buildInfoPlist,
   bundlePackageWithRuntimeDeps,
+  bundleWindowsCrt,
   checkRequiredScripts,
   cleanPrivateFiles,
+  collectWindowsCrtCandidateDirs,
+  compareFileVersions,
   copyStandaloneForWindows,
   findOwningPackageJson,
+  formatFileVersion,
   generateAppUpdateYaml,
   getElectronArchiveName,
   getKoffiPackageName,
@@ -50,16 +55,25 @@ import {
   getNodeBinaryRelativePath,
   getPnpmCommand,
   isPathContained,
+  parseFileVersionString,
   parseShaSums,
+  readDllFileVersion,
   resolveKoffiNativeDir,
   resolveKoffiPackageDir,
   resolveMacFeedUrl,
   resolvePackage,
   resolveUpdateConfig,
   resolveWindowsCrtDlls,
+  selectWindowsCrtDlls,
   validateFeedUrl,
   validatePublicEdKey,
 } from "./build.mjs";
+
+import {
+  findBundledCrtDll,
+  readBundledDllFileVersion,
+  reportBundledCrtVersions,
+} from "./check-support.mjs";
 
 import {
   DEBIAN_MAINTAINER,
@@ -875,6 +889,7 @@ test("REQUIRED_WIN32_CRT_DLLS defines required app-local runtime libraries and r
     "vcruntime140.dll",
     "vcruntime140_1.dll",
   ]);
+  assert.deepEqual(MIN_WIN32_CRT_FILEVERSION, [14, 40, 0, 0]);
 
   const mockRedist = mkdtempSync(join(tmpdir(), "vc-redist-mock-"));
   try {
@@ -884,12 +899,263 @@ test("REQUIRED_WIN32_CRT_DLLS defines required app-local runtime libraries and r
 
     const resolved = resolveWindowsCrtDlls({
       env: { VC_REDIST_X64_DIR: mockRedist },
+      readFileVersion: () => [14, 44, 35111, 0],
     });
     assert.equal(resolved["msvcp140.dll"], join(mockRedist, "msvcp140.dll"));
     assert.equal(resolved["vcruntime140.dll"], join(mockRedist, "vcruntime140.dll"));
     assert.equal(resolved["vcruntime140_1.dll"], join(mockRedist, "vcruntime140_1.dll"));
   } finally {
     rmSync(mockRedist, { recursive: true, force: true });
+  }
+});
+
+test("compareFileVersions and parseFileVersionString order 4-part versions numerically", () => {
+  assert.ok(compareFileVersions([14, 44, 0, 0], [14, 40, 33810, 0]) > 0);
+  assert.ok(compareFileVersions([14, 40, 0, 0], [14, 39, 99999, 9]) > 0);
+  assert.ok(compareFileVersions([14, 40, 0, 1], [14, 40, 0, 0]) > 0);
+  assert.ok(compareFileVersions([14, 40], [14, 40, 0, 0]) === 0);
+  assert.equal(compareFileVersions([14, 40, 0, 0], [14, 40, 0, 0]), 0);
+  assert.deepEqual(parseFileVersionString("14.44.35111.0\r\n"), [14, 44, 35111, 0]);
+  assert.deepEqual(parseFileVersionString("14.40.33810"), [14, 40, 33810, 0]);
+  assert.equal(parseFileVersionString("not-a-version"), null);
+  assert.equal(parseFileVersionString(undefined), null);
+  assert.equal(formatFileVersion([14, 40, 0, 0]), "14.40.0.0");
+});
+
+test("readDllFileVersion parses PowerShell FileVersionInfo output via injectable runTool", () => {
+  const mockTool = (cmd, args) => {
+    assert.equal(cmd, "powershell");
+    assert.ok(args.join(" ").includes("FileVersionInfo"));
+    return "14.44.35111.0\r\n";
+  };
+  assert.deepEqual(readDllFileVersion("C:\\x\\msvcp140.dll", mockTool), [14, 44, 35111, 0]);
+  assert.throws(
+    () => readDllFileVersion("C:\\x\\msvcp140.dll", () => "garbage"),
+    /Could not read FILEVERSION/,
+  );
+});
+
+test("resolveWindowsCrtDlls picks the NEWEST FILEVERSION across candidate dirs, not discovery order", () => {
+  const oldDir = mkdtempSync(join(tmpdir(), "crt-old-"));
+  const sysRoot = mkdtempSync(join(tmpdir(), "crt-sysroot-"));
+  const sys32 = join(sysRoot, "System32");
+  try {
+    mkdirSync(sys32, { recursive: true });
+    const versions = new Map();
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      writeFileSync(join(oldDir, dll), "old");
+      // Deliberately uppercase in System32 to also exercise case-insensitive matching
+      writeFileSync(join(sys32, dll.toUpperCase()), "new");
+      versions.set(join(oldDir, dll).toLowerCase(), [14, 29, 27139, 5]); // below floor, listed FIRST
+      versions.set(join(sys32, dll.toUpperCase()).toLowerCase(), [14, 44, 35111, 0]); // newest
+    }
+    const readFileVersion = (p) => {
+      const v = versions.get(p.toLowerCase());
+      if (!v) throw new Error("no version for " + p);
+      return v;
+    };
+    const env = { VC_REDIST_X64_DIR: oldDir, SystemRoot: sysRoot };
+    const resolved = resolveWindowsCrtDlls({ env, readFileVersion });
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      // Newest (System32) wins even though the older VC_REDIST_X64_DIR is listed first
+      assert.equal(resolved[dll]?.toLowerCase(), join(sys32, dll).toLowerCase());
+      assert.notEqual(resolved[dll]?.toLowerCase(), join(oldDir, dll).toLowerCase());
+    }
+
+    // Numeric descending within a single VCToolsRedistDir tree: 14.43 beats 14.40
+    const vcTools = mkdtempSync(join(tmpdir(), "crt-vctools-"));
+    const x64 = join(vcTools, "x64");
+    mkdirSync(join(x64, "Microsoft.VC143.CRT"), { recursive: true });
+    mkdirSync(join(x64, "Microsoft.VC142.CRT"), { recursive: true });
+    const v143 = join(x64, "Microsoft.VC143.CRT");
+    const v142 = join(x64, "Microsoft.VC142.CRT");
+    const versions2 = new Map();
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      writeFileSync(join(v142, dll), "140");
+      writeFileSync(join(v143, dll), "143");
+      versions2.set(join(v142, dll), [14, 40, 33810, 0]);
+      versions2.set(join(v143, dll), [14, 43, 32605, 0]);
+    }
+    const resolved2 = resolveWindowsCrtDlls({
+      env: { VCToolsRedistDir: vcTools, SystemRoot: mkdtempSync(join(tmpdir(), "crt-empty-")) },
+      readFileVersion: (p) => versions2.get(p),
+    });
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      assert.equal(resolved2[dll], join(v143, dll));
+    }
+    rmSync(vcTools, { recursive: true, force: true });
+  } finally {
+    rmSync(oldDir, { recursive: true, force: true });
+    rmSync(sysRoot, { recursive: true, force: true });
+  }
+});
+
+test("resolveWindowsCrtDlls fails closed when only below-floor CRT candidates exist (never bundles old)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crt-oldonly-"));
+  try {
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      writeFileSync(join(dir, dll), "old");
+    }
+    const env = { VC_REDIST_X64_DIR: dir };
+    const readFileVersion = () => [14, 29, 27139, 5]; // msvcp140 < 14.40: std::mutex ABI crash risk
+    const sel = selectWindowsCrtDlls({ env, readFileVersion });
+    assert.deepEqual(sel.resolved, {});
+    assert.deepEqual([...sel.missing].sort(), [...REQUIRED_WIN32_CRT_DLLS].sort());
+    assert.equal(sel.rejected.length, REQUIRED_WIN32_CRT_DLLS.length);
+    assert.ok(sel.rejected.every((r) => r.reason === "below-floor"));
+    assert.ok(sel.rejected.every((r) => r.version === "14.29.27139.5"));
+    assert.deepEqual(resolveWindowsCrtDlls({ env, readFileVersion }), {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("resolveWindowsCrtDlls fails closed on a partial set (one DLL only available below floor)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crt-partial-"));
+  try {
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      writeFileSync(join(dir, dll), "x");
+    }
+    const env = { VC_REDIST_X64_DIR: dir };
+    const readFileVersion = (p) =>
+      p.toLowerCase().includes("msvcp140") ? [14, 44, 0, 0] : [14, 38, 0, 0];
+    const sel = selectWindowsCrtDlls({ env, readFileVersion });
+    assert.deepEqual(sel.resolved, {}); // no partial bundle
+    assert.deepEqual([...sel.missing].sort(), ["vcruntime140.dll", "vcruntime140_1.dll"]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("CRT floor boundary: exactly 14.40.0.0 accepted, 14.39.x rejected", () => {
+  const dir = mkdtempSync(join(tmpdir(), "crt-floor-"));
+  try {
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      writeFileSync(join(dir, dll), "x");
+    }
+    const env = { VC_REDIST_X64_DIR: dir };
+    const at = resolveWindowsCrtDlls({ env, readFileVersion: () => [14, 40, 0, 0] });
+    assert.equal(at["msvcp140.dll"], join(dir, "msvcp140.dll"));
+    assert.deepEqual(resolveWindowsCrtDlls({ env, readFileVersion: () => [14, 39, 99999, 0] }), {});
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("bundleWindowsCrt fails closed with throw before copy/swap when required DLLs missing or below floor", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "crt-bundle-fail-"));
+  const oldDir = mkdtempSync(join(tmpdir(), "crt-bundle-old-"));
+  try {
+    const resources = join(tmp, "resources");
+    mkdirSync(resources, { recursive: true });
+
+    // Candidate directory contains DLLs below the 14.40 floor
+    for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+      writeFileSync(join(oldDir, dll), "old-dll-bytes");
+    }
+
+    const env = { VC_REDIST_X64_DIR: oldDir };
+    const readFileVersion = () => [14, 29, 27139, 5]; // msvcp140 < 14.40: std::mutex ABI crash risk
+
+    // Must throw fail-closed BEFORE any copy or staging occurs
+    assert.throws(
+      () => bundleWindowsCrt(resources, "win32-x64-msvc", { env, readFileVersion }),
+      /Cannot build Windows distribution: missing app-local VC\+\+ CRT DLLs with FILEVERSION >= 14\.40\.0\.0/,
+    );
+
+    // Verify nothing was copied to resources/runtime or resources/licenses
+    assert.equal(existsSync(join(resources, "runtime")), false);
+    assert.equal(existsSync(join(resources, "licenses")), false);
+    assert.equal(existsSync(join(resources, "server")), false);
+
+    // With qualifying DLLs (>= 14.40.0.0), bundling succeeds and copies all artifacts
+    const validDir = mkdtempSync(join(tmpdir(), "crt-bundle-valid-"));
+    try {
+      for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+        writeFileSync(join(validDir, dll), `valid-${dll}`);
+      }
+      const validEnv = { VC_REDIST_X64_DIR: validDir };
+      const validReadFileVersion = () => [14, 44, 35111, 0];
+
+      const bundled = bundleWindowsCrt(resources, "win32-x64-msvc", {
+        env: validEnv,
+        readFileVersion: validReadFileVersion,
+      });
+
+      assert.deepEqual(Object.keys(bundled).sort(), [...REQUIRED_WIN32_CRT_DLLS].sort());
+      for (const dll of REQUIRED_WIN32_CRT_DLLS) {
+        assert.ok(existsSync(join(resources, "runtime", dll)));
+        assert.ok(
+          existsSync(join(resources, "server/node_modules/@transcribe-cpp/win32-x64-msvc", dll)),
+        );
+        assert.ok(
+          existsSync(
+            join(resources, "server/apps/web/node_modules/@transcribe-cpp/win32-x64-msvc", dll),
+          ),
+        );
+      }
+      assert.ok(existsSync(join(resources, "licenses", "Microsoft-Visual-CPP-Redist-Notice.txt")));
+    } finally {
+      rmSync(validDir, { recursive: true, force: true });
+    }
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
+    rmSync(oldDir, { recursive: true, force: true });
+  }
+});
+
+test("check-support doctor helpers print actual bundled CRT DLL FILEVERSIONs before native load", () => {
+  const tmp = mkdtempSync(join(tmpdir(), "doctor-crt-"));
+  try {
+    const resources = join(tmp, "resources");
+    const app = join(tmp, "app");
+    mkdirSync(join(resources, "runtime"), { recursive: true });
+    mkdirSync(app, { recursive: true });
+    for (const dll of ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"]) {
+      writeFileSync(join(resources, "runtime", dll), "fake-crt");
+    }
+    const layout = { resources, app };
+
+    const mockTool = (cmd, args) => {
+      assert.equal(cmd, "powershell");
+      const script = args[args.length - 1];
+      if (script.includes("msvcp140")) return "14.44.35111.0\n";
+      return "14.40.33810.0\n";
+    };
+    assert.deepEqual(
+      readBundledDllFileVersion(join(resources, "runtime", "msvcp140.dll"), mockTool),
+      [14, 44, 35111, 0],
+    );
+    assert.equal(
+      readBundledDllFileVersion(join(resources, "runtime", "msvcp140.dll"), () => {
+        throw new Error("no powershell");
+      }),
+      null,
+    );
+    // Case-insensitive lookup of the bundled DLL
+    assert.equal(
+      findBundledCrtDll(layout, "MSVCP140.DLL")?.toLowerCase(),
+      join(resources, "runtime", "msvcp140.dll").toLowerCase(),
+    );
+    assert.equal(
+      findBundledCrtDll(layout, "vcruntime140_1.dll"),
+      join(resources, "runtime", "vcruntime140_1.dll"),
+    );
+
+    const lines = [];
+    const out = reportBundledCrtVersions(layout, mockTool, (l) => lines.push(l));
+    assert.equal(out.length, 3);
+    assert.equal(lines.length, 3);
+    assert.match(lines[0], /Bundled CRT msvcp140\.dll: FILEVERSION 14\.44\.35111\.0 @ /);
+    assert.match(lines[1], /Bundled CRT vcruntime140\.dll: FILEVERSION 14\.40\.33810\.0 @ /);
+    assert.match(lines[2], /Bundled CRT vcruntime140_1\.dll: FILEVERSION 14\.40\.33810\.0 @ /);
+
+    // Missing DLL is reported, never throws
+    rmSync(join(resources, "runtime", "vcruntime140_1.dll"));
+    const lines2 = reportBundledCrtVersions(layout, mockTool, () => {});
+    assert.match(lines2[2], /vcruntime140_1\.dll: NOT FOUND in package/);
+  } finally {
+    rmSync(tmp, { recursive: true, force: true });
   }
 });
 

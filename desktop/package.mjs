@@ -24,6 +24,7 @@ import {
   REQUIRED_DESKTOP_SCRIPTS,
   REQUIRED_WIN32_CRT_DLLS,
   generateAppUpdateYaml,
+  isPathContained,
 } from "./build.mjs";
 
 export const GITHUB_PUBLISH_CONFIG = Object.freeze([
@@ -92,13 +93,12 @@ export function checkNoPrivateFiles(directory) {
 
 export function checkSelfContainedSymlinks(directory, basePrefix) {
   if (!existsSync(directory)) return;
-  const canonicalBase = basePrefix.endsWith("/") ? basePrefix.slice(0, -1) : basePrefix;
-  const prefix = canonicalBase + "/";
+  const canonicalBase = realpathSync(basePrefix);
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const path = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       const real = realpathSync(path);
-      if (real !== canonicalBase && !real.startsWith(prefix)) {
+      if (!isPathContained(canonicalBase, real)) {
         throw new Error(`Symlink escapes application bundle: ${path} -> ${real}`);
       }
     } else if (entry.isDirectory()) {

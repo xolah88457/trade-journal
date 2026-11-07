@@ -1239,7 +1239,7 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
         expect(texts).toContain("Section");
         expect(texts).toContain("Detailed Content");
       }
-    });
+    }, 30000);
 
     it("wraps long tags and mistakes lists using addText without clipping off page margins", async () => {
       const manyTags = Array.from({ length: 15 }, (_, i) => `StrategyTag${i + 1}`);

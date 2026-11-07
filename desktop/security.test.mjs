@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import path from "node:path";
 import {
   validateOrigin,
   isTrustedSender,
@@ -534,13 +535,15 @@ test("setupSecurityHandlers will-download validates blob origin and cancels untr
     setPermissionCheckHandler() {},
   };
 
+  const expectedPath = path.join("/tmp/sumi-dl-test", "file.bin");
+
   setupSecurityHandlers({
     mainWindow: { webContents: mockWebContents },
     expectedOrigin: "http://127.0.0.1:4000",
     session: mockSession,
     isTestMode: true,
     downloadDir: "/tmp/sumi-dl-test",
-    dialog: { showSaveDialogSync: () => "/tmp/sumi-dl-test/file.bin" },
+    dialog: { showSaveDialogSync: () => expectedPath },
   });
   assert.ok(downloadHandler);
 
@@ -554,9 +557,9 @@ test("setupSecurityHandlers will-download validates blob origin and cancels untr
   downloadHandler({}, makeItem("https://evil.com/malware.zip"));
 
   assert.deepEqual(downloads, [
-    "save:blob:http://127.0.0.1:4000/abc->/tmp/sumi-dl-test/file.bin",
+    `save:blob:http://127.0.0.1:4000/abc->${expectedPath}`,
     "cancel:blob:https://evil.com/abc",
-    "save:http://127.0.0.1:4000/api/attachments/1->/tmp/sumi-dl-test/file.bin",
+    `save:http://127.0.0.1:4000/api/attachments/1->${expectedPath}`,
     "cancel:https://evil.com/malware.zip",
   ]);
 });

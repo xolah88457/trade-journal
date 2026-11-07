@@ -15,7 +15,7 @@ import {
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import { basename, dirname, join, resolve } from "node:path";
+import path, { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ELECTRON_VERSION = "45.2.3";
@@ -315,16 +315,27 @@ export function checkRequiredScripts(desktopDir) {
   }
 }
 
+/**
+ * Checks whether targetPath is strictly inside baseDir (or equals baseDir).
+ * Fully platform-aware: handles Windows backslashes, drive roots, UNC paths, and case-insensitivity.
+ */
+export function isPathContained(baseDir, targetPath, platform = process.platform) {
+  const normBase = platform === "win32" ? baseDir.toLowerCase() : baseDir;
+  const normTarget = platform === "win32" ? targetPath.toLowerCase() : targetPath;
+  const pathMod = platform === "win32" ? path.win32 : path.posix;
+  const rel = pathMod.relative(normBase, normTarget);
+  return rel === "" || (!rel.startsWith("..") && !pathMod.isAbsolute(rel));
+}
+
 export function assertFrameworkSymlinksConfined(frameworkPath) {
   if (!existsSync(frameworkPath)) return;
   const realBase = realpathSync(frameworkPath);
-  const prefix = realBase + "/";
   function check(dir) {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const p = join(dir, entry.name);
       if (entry.isSymbolicLink()) {
         const real = realpathSync(p);
-        if (real !== realBase && !real.startsWith(prefix)) {
+        if (!isPathContained(realBase, real)) {
           throw new Error(`Framework symlink escapes bundle: ${p} -> ${real}`);
         }
       } else if (entry.isDirectory()) {
@@ -646,35 +657,42 @@ export function getKoffiPackageName(platform = process.platform, arch = process.
 }
 
 /**
- * Resolves the installed @koromix native directory for Koffi from actual installed metadata.
+ * Resolves the installed @koromix/koffi-${platform}-${arch} package directory from installed metadata.
  */
-export function resolveKoffiNativeDir(root, platform = process.platform, arch = process.arch) {
+export function resolveKoffiPackageDir(root, platform = process.platform, arch = process.arch) {
   const normArch = arch === "arm64" ? "arm64" : "x64";
-  const pkgName = `@koromix/koffi-${platform}-${normArch}`;
+  const pkgName = `koffi-${platform}-${normArch}`;
 
   // 1. Try resolving via Node's createRequire from apps/web or root
   for (const start of [join(root, "apps/web/package.json"), join(root, "package.json")]) {
     if (existsSync(start)) {
       try {
         const req = createRequire(start);
-        const resolvedPath = req.resolve(`${pkgName}/package.json`);
-        const koromixDir = dirname(dirname(resolvedPath));
-        if (existsSync(koromixDir)) {
-          return koromixDir;
+        const resolvedPath = req.resolve(`@koromix/${pkgName}/package.json`);
+        const pkgDir = dirname(resolvedPath);
+        if (existsSync(pkgDir)) {
+          return pkgDir;
         }
       } catch {
-        // Continue to search pnpm store
+        try {
+          const req = createRequire(start);
+          const entry = req.resolve(`@koromix/${pkgName}`);
+          const found = findOwningPackageJson(entry);
+          if (found && existsSync(found.pkgDir)) {
+            return found.pkgDir;
+          }
+        } catch {}
       }
     }
   }
 
-  // 2. Scan node_modules/.pnpm for @koromix directory matching the target package
+  // 2. Scan node_modules/.pnpm for the package directory matching the target package
   const pnpmDir = join(root, "node_modules/.pnpm");
   if (existsSync(pnpmDir)) {
-    const pattern = `@koromix+koffi-${platform}-${normArch}@`;
+    const pattern = `@koromix+${pkgName}@`;
     for (const entry of readdirSync(pnpmDir)) {
       if (entry.startsWith(pattern)) {
-        const candidate = join(pnpmDir, entry, "node_modules/@koromix");
+        const candidate = join(pnpmDir, entry, "node_modules/@koromix", pkgName);
         if (existsSync(candidate)) {
           return candidate;
         }
@@ -683,6 +701,45 @@ export function resolveKoffiNativeDir(root, platform = process.platform, arch = 
   }
 
   return null;
+}
+
+/**
+ * Resolves the installed @koromix native directory for Koffi from actual installed metadata.
+ */
+export function resolveKoffiNativeDir(root, platform = process.platform, arch = process.arch) {
+  const pkgDir = resolveKoffiPackageDir(root, platform, arch);
+  return pkgDir ? dirname(pkgDir) : null;
+}
+
+/**
+ * Asserts that the Koffi native binary payload (.node) exists in the staged server bundle.
+ */
+export function assertKoffiPayload(serverDir, platform = process.platform, arch = process.arch) {
+  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const binarySubpath = `${platform}_${normArch}/koffi.node`;
+  const pkgSubpath = `@koromix/koffi-${platform}-${normArch}`;
+
+  const candidates = [
+    join(serverDir, "node_modules", pkgSubpath, binarySubpath),
+    join(serverDir, "apps/web/node_modules", pkgSubpath, binarySubpath),
+  ];
+
+  const pnpmDir = join(serverDir, "node_modules/.pnpm");
+  if (existsSync(pnpmDir)) {
+    for (const entry of readdirSync(pnpmDir)) {
+      if (entry.includes(`koffi-${platform}-${normArch}`)) {
+        candidates.push(join(pnpmDir, entry, "node_modules", pkgSubpath, binarySubpath));
+      }
+    }
+  }
+
+  const existing = candidates.filter((c) => existsSync(c));
+  if (existing.length === 0) {
+    throw new Error(
+      `Koffi native binary payload missing: ${binarySubpath} not found under ${pkgSubpath} in ${serverDir}`,
+    );
+  }
+  return existing;
 }
 
 /**
@@ -884,16 +941,16 @@ export function getPnpmCommand(args = [], env = process.env, platform = process.
  * Verifies that symlinks within a directory do not escape the application bundle.
  */
 export function assertSelfContained(directory, serverBase) {
-  const serverPrefix = serverBase.endsWith("/") ? serverBase : serverBase + "/";
+  const canonicalBase = realpathSync(serverBase);
   for (const entry of readdirSync(directory, { withFileTypes: true })) {
     const p = join(directory, entry.name);
     if (entry.isSymbolicLink()) {
       const target = realpathSync(p);
-      if (target !== serverBase && !target.startsWith(serverPrefix)) {
+      if (!isPathContained(canonicalBase, target)) {
         throw new Error(`Symlink escapes application bundle: ${p} -> ${target}`);
       }
     } else if (entry.isDirectory()) {
-      assertSelfContained(p, serverBase);
+      assertSelfContained(p, canonicalBase);
     }
   }
 }
@@ -1242,17 +1299,31 @@ export async function build(options = {}) {
     }
 
     // Package Koffi native module from actual installed metadata
-    const koffiNative = resolveKoffiNativeDir(root, platform, normArch);
-    if (koffiNative && existsSync(koffiNative)) {
-      for (const nm of [
-        join(resources, "server/node_modules/@koromix"),
-        join(resources, "server/apps/web/node_modules/@koromix"),
-      ]) {
-        if (!existsSync(nm)) {
-          mkdirSync(dirname(nm), { recursive: true });
-          cpSync(koffiNative, nm, { recursive: true, dereference: true });
+    const koffiPkgDir = resolveKoffiPackageDir(root, platform, normArch);
+    if (koffiPkgDir && existsSync(koffiPkgDir)) {
+      const pkgSubpath = `@koromix/koffi-${platform}-${normArch}`;
+      const koffiTargets = [
+        join(resources, "server/node_modules", pkgSubpath),
+        join(resources, "server/apps/web/node_modules", pkgSubpath),
+      ];
+
+      // Also ensure all matching package paths in .pnpm have the full native payload
+      const pnpmServer = join(resources, "server/node_modules/.pnpm");
+      if (existsSync(pnpmServer)) {
+        for (const entry of readdirSync(pnpmServer)) {
+          if (entry.includes(`koffi-${platform}-${normArch}`) || entry.startsWith("koffi@")) {
+            koffiTargets.push(join(pnpmServer, entry, "node_modules", pkgSubpath));
+          }
         }
       }
+
+      for (const targetPkgDir of koffiTargets) {
+        mkdirSync(targetPkgDir, { recursive: true });
+        cpSync(koffiPkgDir, targetPkgDir, { recursive: true, dereference: true });
+      }
+
+      // Assert that the native binary exists in the staged server bundle
+      assertKoffiPayload(join(resources, "server"), platform, normArch);
     }
   }
 

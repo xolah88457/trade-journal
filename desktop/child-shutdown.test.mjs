@@ -11,14 +11,15 @@ import { stopChildProcess } from "./main.cjs";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 test("graceful child shutdown sends SIGTERM and bounds with SIGKILL", async () => {
-  // Spawn a child process that signals readiness then traps SIGTERM
+  const isWin = process.platform === "win32";
+  // Spawn a child process that signals readiness then traps SIGTERM / ignores IPC
   const child = spawn(
     process.execPath,
     [
       "-e",
       'process.on("SIGTERM", () => {}); process.stdout.write("ready\\n"); setInterval(() => {}, 1000);',
     ],
-    { stdio: ["ignore", "pipe", "ignore"] },
+    { stdio: ["ignore", "pipe", "ignore", isWin ? "ipc" : "ignore"] },
   );
 
   // Wait until child has attached its SIGTERM handler
@@ -30,15 +31,23 @@ test("graceful child shutdown sends SIGTERM and bounds with SIGKILL", async () =
   assert.equal(child.signalCode, null);
 
   const start = Date.now();
-  const result1 = await stopChildProcess(child, { timeoutMs: 300, platform: "darwin" });
+  const result1 = await stopChildProcess(child, {
+    timeoutMs: 300,
+    platform: process.platform,
+    ...(isWin ? { killProcessTree: () => child.kill("SIGKILL") } : {}),
+  });
   const elapsed = Date.now() - start;
 
   assert.equal(result1, "killed");
-  // Killed by SIGKILL within bounded timeout (~300ms)
+  // Killed by bounded watchdog within timeout (~300ms)
   assert.ok(elapsed >= 250 && elapsed < 2000);
 
   // Calling stop again guarded against double shutdown
-  const result2 = await stopChildProcess(child, { timeoutMs: 300, platform: "darwin" });
+  const result2 = await stopChildProcess(child, {
+    timeoutMs: 300,
+    platform: process.platform,
+    ...(isWin ? { killProcessTree: () => child.kill("SIGKILL") } : {}),
+  });
   assert.equal(result2, "already_exited");
 });
 
@@ -253,9 +262,12 @@ test("SUMI_SERVER_PATH override is ignored in production (SUMI_TEST_MODE !== 1)"
 
     // Must exit with error because fixed bundled server is missing in dev checkout
     assert.equal(code, 1);
+    const expectedServerSubpath = path.join("server", "apps", "web", "server.js");
     assert.ok(
-      stderr.includes("server/apps/web/server.js"),
-      "Must fail attempting to load official fixed bundled server",
+      stderr.includes(expectedServerSubpath) ||
+        stderr.includes("server/apps/web/server.js") ||
+        stderr.includes("server\\apps\\web\\server.js"),
+      `Must fail attempting to load official fixed bundled server, got: ${stderr}`,
     );
     // Unauthorized server must NEVER have been executed
     assert.equal(fs.existsSync(markerPath), false, "Unauthorized server must NOT execute");

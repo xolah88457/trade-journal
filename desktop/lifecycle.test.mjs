@@ -250,11 +250,17 @@ test("resolveLaunchPaths returns bundled Node in packaged app and fails if missi
     const runtimeDir = path.join(resourcesDir, "runtime");
     fs.mkdirSync(runtimeDir, { recursive: true });
 
-    // Test 1: Packaged app WITH bundled Node -> returns bundled paths
-    const bundledNode = path.join(runtimeDir, "node");
+    // Test 1: Packaged app WITH bundled Node -> returns bundled paths matching host OS binary name
+    const nodeName = process.platform === "win32" ? "node.exe" : "node";
+    const bundledNode = path.join(runtimeDir, nodeName);
     const bundledLaunch = path.join(resourcesDir, "launch.cjs");
-    fs.writeFileSync(bundledNode, "#! /bin/sh\necho mock node");
-    fs.chmodSync(bundledNode, 0o755);
+    fs.writeFileSync(
+      bundledNode,
+      process.platform === "win32" ? "mock node exe" : "#! /bin/sh\necho mock node",
+    );
+    try {
+      fs.chmodSync(bundledNode, 0o755);
+    } catch {}
     fs.writeFileSync(bundledLaunch, "console.log('launch')");
 
     process.resourcesPath = resourcesDir;

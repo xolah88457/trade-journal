@@ -29,6 +29,7 @@ import {
   SILERO_EXPECTED_SHA256,
   SUPPORTED_PLATFORMS,
   assertFrameworkSymlinksConfined,
+  assertKoffiPayload,
   assertSelfContained,
   augmentStandaloneDependencies,
   buildEntitlementsXml,
@@ -47,8 +48,10 @@ import {
   getNodeArchiveName,
   getNodeBinaryRelativePath,
   getPnpmCommand,
+  isPathContained,
   parseShaSums,
   resolveKoffiNativeDir,
+  resolveKoffiPackageDir,
   resolveMacFeedUrl,
   resolvePackage,
   resolveUpdateConfig,
@@ -1466,4 +1469,95 @@ test("canonical resources/app-update.yml is staged on non-Mac with fork coordina
   assert.equal(parsed.repo, "trade-journal");
   assert.equal(parsed.provider, "github");
   assert.equal(parsed.updaterCacheDirName, "sumi-updater");
+});
+
+test("isPathContained checks cross-platform confinement, handles Windows backslashes, and rejects UNC and cross-drive escapes", () => {
+  // Unix boundaries
+  assert.equal(isPathContained("/app/base", "/app/base/sub/file", "darwin"), true);
+  assert.equal(isPathContained("/app/base", "/app/base", "darwin"), true);
+  assert.equal(isPathContained("/app/base", "/app/outside", "darwin"), false);
+  assert.equal(isPathContained("/app/base", "/app/base/../outside", "darwin"), false);
+
+  // Linux boundaries
+  assert.equal(isPathContained("/opt/sumi", "/opt/sumi/resources/app", "linux"), true);
+  assert.equal(isPathContained("/opt/sumi", "/etc/passwd", "linux"), false);
+
+  // Windows backslash and case-insensitivity
+  assert.equal(
+    isPathContained("C:\\bundle", "C:\\bundle\\Versions\\A\\Test", "win32"),
+    true,
+    "Valid Windows child path with backslashes must be contained",
+  );
+  assert.equal(
+    isPathContained("C:\\bundle", "c:\\bundle\\sub\\file", "win32"),
+    true,
+    "Windows case differences must be recognized as contained",
+  );
+  assert.equal(isPathContained("C:\\bundle", "C:\\bundle", "win32"), true);
+
+  // Windows escaping paths
+  assert.equal(
+    isPathContained("C:\\bundle", "C:\\outside\\file", "win32"),
+    false,
+    "Sibling outside path must escape",
+  );
+  assert.equal(
+    isPathContained("C:\\bundle", "C:\\bundle\\..\\outside", "win32"),
+    false,
+    "Parent traversal must escape",
+  );
+
+  // Windows cross-drive and UNC paths
+  assert.equal(
+    isPathContained("C:\\bundle", "D:\\bundle\\file", "win32"),
+    false,
+    "Cross-drive path must escape",
+  );
+  assert.equal(
+    isPathContained("C:\\bundle", "\\\\server\\share\\file", "win32"),
+    false,
+    "UNC path must escape",
+  );
+});
+
+test("resolveKoffiPackageDir and assertKoffiPayload verify complete native binary payload", () => {
+  const pkgDir = resolveKoffiPackageDir(root, process.platform, process.arch);
+  assert.ok(pkgDir, "Koffi package directory must resolve on host");
+  assert.ok(
+    existsSync(join(pkgDir, "package.json")),
+    "package.json must exist in Koffi package dir",
+  );
+  assert.ok(existsSync(join(pkgDir, "index.js")), "index.js must exist in Koffi package dir");
+
+  const normArch = process.arch === "arm64" ? "arm64" : "x64";
+  const binarySubpath = `${process.platform}_${normArch}/koffi.node`;
+  assert.ok(
+    existsSync(join(pkgDir, binarySubpath)),
+    `Native binary payload must exist at ${join(pkgDir, binarySubpath)}`,
+  );
+
+  // Test assertKoffiPayload with mock directory
+  const mockServer = mkdtempSync(join(tmpdir(), "mock-server-koffi-"));
+  try {
+    // Missing payload throws
+    assert.throws(
+      () => assertKoffiPayload(mockServer, process.platform, process.arch),
+      /Koffi native binary payload missing/,
+    );
+
+    // Provide payload
+    const pkgDest = join(
+      mockServer,
+      "node_modules",
+      `@koromix/koffi-${process.platform}-${normArch}`,
+    );
+    mkdirSync(join(pkgDest, `${process.platform}_${normArch}`), { recursive: true });
+    writeFileSync(join(pkgDest, binarySubpath), "dummy node binary");
+
+    // Assertion succeeds
+    const found = assertKoffiPayload(mockServer, process.platform, process.arch);
+    assert.ok(found.length > 0);
+  } finally {
+    rmSync(mockServer, { recursive: true, force: true });
+  }
 });

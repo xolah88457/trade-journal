@@ -1,5 +1,6 @@
 {
   "name": "trade-journal-monorepo",
+  "version": "0.2.0",
   "private": true,
   "description": "The open-source trade journal. Broker sync, deep analytics, daily journaling, and AI-native reflection. Self-hosted, free forever.",
   "license": "MIT",
@@ -19,6 +20,7 @@
     "desktop:build": "node desktop/build.mjs",
     "desktop:open": "open dist/Sumi.app",
     "desktop:check": "node --test desktop/check.test.mjs",
+    "desktop:package": "node desktop/package.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "pnpm -r --parallel typecheck",
@@ -30,6 +32,15 @@
     "prettier": "^3.6.0",
     "tsup": "^8.5.1",
     "typescript": "^5.9.0",
-    "vitest": "^3.2.0"
+    "vitest": "^3.2.0",
+    "electron-sparkle": "0.2.0"
+  },
+  "pnpm": {
+    "autoInstallPeers": false,
+    "peerDependencyRules": {
+      "ignoreMissing": [
+        "electron"
+      ]
+    }
   }
 }

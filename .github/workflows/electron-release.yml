@@ -1,0 +1,247 @@
+name: Release Electron Desktop App
+
+on:
+  push:
+    tags:
+      - "electron-v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag to build and publish (must match electron-v<semver>, e.g. electron-v0.2.0)"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: electron-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release-macos-arm64:
+    name: Build & Publish macOS Apple Silicon (arm64) Release
+    # Verified GitHub-hosted Apple Silicon ARM64 runner label from official runner-images documentation
+    runs-on: macos-15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Strict ARM64 Architecture Guard
+        run: |
+          RUNNER_ARCH="$(uname -m)"
+          echo "Detected runner architecture: $RUNNER_ARCH"
+          if [ "$RUNNER_ARCH" != "arm64" ]; then
+            echo "::error::Strict ARM64 guard failed: expected arm64 runner, got $RUNNER_ARCH"
+            exit 1
+          fi
+
+      - name: Validate Tag, Root Version, and Branch Ancestry
+        id: validate
+        run: |
+          # 1. Determine release tag
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG_NAME="${{ inputs.tag }}"
+          else
+            TAG_NAME="${GITHUB_REF#refs/tags/}"
+          fi
+          echo "Evaluating release tag: $TAG_NAME"
+
+          # 2. Strict tag format verification: electron-v<semver>
+          if ! echo "$TAG_NAME" | grep -Eq '^electron-v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Tag '$TAG_NAME' does not match required format 'electron-v<semver>' (e.g. electron-v0.2.0)"
+            exit 1
+          fi
+
+          # 3. Version parity check with root package.json single source of truth
+          TAG_VERSION="${TAG_NAME#electron-v}"
+          ROOT_VERSION=$(node -e 'console.log(JSON.parse(require("node:fs").readFileSync("package.json", "utf8")).version)')
+          echo "Tag version: $TAG_VERSION | Root package.json version: $ROOT_VERSION"
+          if [ "$TAG_VERSION" != "$ROOT_VERSION" ]; then
+            echo "::error::Version mismatch: tag specifies $TAG_VERSION but package.json specifies $ROOT_VERSION"
+            exit 1
+          fi
+
+          # 4. Strict branch ancestry check against origin/electron
+          git fetch origin electron || true
+          COMMIT_SHA="${{ github.sha }}"
+          echo "Verifying ancestry for commit SHA: $COMMIT_SHA"
+
+          if git merge-base --is-ancestor "$COMMIT_SHA" origin/electron; then
+            echo "Ancestry verified: $COMMIT_SHA is an ancestor of origin/electron"
+          elif git merge-base --is-ancestor origin/electron "$COMMIT_SHA"; then
+            echo "Ancestry verified: $COMMIT_SHA descends from origin/electron"
+          else
+            echo "::error::Commit $COMMIT_SHA is neither ancestor nor descendant of origin/electron branch"
+            exit 1
+          fi
+
+          echo "tag_name=$TAG_NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$TAG_VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Setup pnpm (pinned 11.0.8)
+        uses: pnpm/action-setup@v6
+        with:
+          version: 11.0.8
+
+      - name: Setup Node.js (pinned 26.13.0)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 26.13.0
+          cache: pnpm
+
+      - name: Install dependencies (frozen)
+        run: pnpm install --frozen-lockfile
+
+      - name: Updater tooling syntax + owned unit tests (node:test, synthetic fixtures only — no keys, no network)
+        run: |
+          node --check desktop/update-tools.mjs
+          node --check desktop/update-service.cjs
+          node --test desktop/update-service.test.mjs desktop/update-tools.test.mjs
+
+      - name: TypeScript typecheck
+        run: pnpm typecheck
+
+      - name: Run test suite
+        run: pnpm test
+
+      - name: Build Electron desktop app
+        run: pnpm desktop:build
+
+      - name: Run desktop check & native Sparkle doctor
+        run: |
+          pnpm desktop:check
+          if [ -f "desktop/sparkle-doctor.mjs" ]; then
+            node desktop/sparkle-doctor.mjs
+          elif [ -f "desktop/doctor.mjs" ]; then
+            node desktop/doctor.mjs
+          fi
+
+      - name: Package desktop distribution (ZIP, DMG, SHA256SUMS)
+        run: pnpm desktop:package
+
+      - name: Sign Release Archive and Generate Sparkle Appcast
+        env:
+          SPARKLE_PRIVATE_KEY: ${{ secrets.SPARKLE_PRIVATE_KEY }}
+          VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          # The SPARKLE_PRIVATE_KEY secret is never echoed or logged.
+          if [ -z "$SPARKLE_PRIVATE_KEY" ]; then
+            echo "::warning::SPARKLE_PRIVATE_KEY secret is not configured; updates will not be signed with Ed25519."
+            exit 1
+          fi
+
+          # Sign ZIP and generate appcast.xml (ZIP only, no DMG duplicate in feed)
+          echo "Running desktop/update-tools.mjs release command..."
+          node desktop/update-tools.mjs release \
+            --version="$VERSION" \
+            --dist-dir="dist"
+
+      - name: Strict Release Artifacts Guard
+        env:
+          VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          echo "Validating explicit release artifacts for version: $VERSION"
+
+          REQUIRED_ASSETS=(
+            "dist/Sumi-${VERSION}-macos-arm64.zip"
+            "dist/Sumi-${VERSION}-macos-arm64.dmg"
+            "dist/SHA256SUMS.txt"
+            "dist/appcast.xml"
+          )
+
+          for asset in "${REQUIRED_ASSETS[@]}"; do
+            if [ ! -f "$asset" ]; then
+              echo "::error::Required release artifact missing: $asset"
+              exit 1
+            fi
+            if [ ! -s "$asset" ]; then
+              echo "::error::Release artifact is empty (0 bytes): $asset"
+              exit 1
+            fi
+            echo "Verified asset: $asset ($(ls -lh "$asset" | awk '{print $5}'))"
+          done
+
+          # Checksum contents verification
+          if ! grep -q "Sumi-${VERSION}-macos-arm64.zip" dist/SHA256SUMS.txt; then
+            echo "::error::dist/SHA256SUMS.txt missing checksum entry for Sumi-${VERSION}-macos-arm64.zip"
+            exit 1
+          fi
+          if ! grep -q "Sumi-${VERSION}-macos-arm64.dmg" dist/SHA256SUMS.txt; then
+            echo "::error::dist/SHA256SUMS.txt missing checksum entry for Sumi-${VERSION}-macos-arm64.dmg"
+            exit 1
+          fi
+
+          # Appcast XML sanity check
+          if ! grep -q "<rss" dist/appcast.xml || ! grep -q "<channel>" dist/appcast.xml; then
+            echo "::error::dist/appcast.xml does not appear to be a valid Sparkle RSS feed"
+            exit 1
+          fi
+
+          # Leak prevention: Ensure no user data, private keys, or databases reside in dist
+          for forbidden in "journal.db" ".secret" ".env" "private.key"; do
+            if find dist/ -name "$forbidden" | grep -q .; then
+              echo "::error::Forbidden file matching pattern '$forbidden' found in dist/ directory!"
+              exit 1
+            fi
+          done
+
+          # GGUF/ASR weights: allow ONLY the fixed, checksum-gated MIT Silero VAD model that is
+          # intentionally bundled in the app (same name+size+SHA256 gate principle as the desktop
+          # checksum checks). Any other GGUF/ASR weight anywhere under dist/ is rejected.
+          ALLOWED_GGUF_NAME="silero-vad-v6.2-F32.gguf"
+          ALLOWED_GGUF_SIZE="1241056"
+          ALLOWED_GGUF_SHA256="0d871a800c420fdd5d1b17a3aea4296d1c39608f0ff4a9295eb76457eb1c88e6"
+          while IFS= read -r -d '' gguf; do
+            base="$(basename "$gguf")"
+            size="$(stat -f %z "$gguf")"
+            sha="$(shasum -a 256 "$gguf" | awk '{print $1}')"
+            if [ "$base" != "$ALLOWED_GGUF_NAME" ] || [ "$size" != "$ALLOWED_GGUF_SIZE" ] || [ "$sha" != "$ALLOWED_GGUF_SHA256" ]; then
+              echo "::error::Unexpected GGUF/ASR weight in dist: $gguf (name=$base size=$size)"
+              exit 1
+            fi
+            echo "Verified allowed bundled model: $gguf (size=$size sha256=$sha)"
+          done < <(find dist/ -name "*.gguf" -print0)
+          echo "All release artifacts verified strictly and successfully."
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG_NAME: ${{ steps.validate.outputs.tag_name }}
+          VERSION: ${{ steps.validate.outputs.version }}
+        run: |
+          cat << 'EOF' > release-notes.md
+          ## Sumi macOS (Apple Silicon arm64) v${{ steps.validate.outputs.version }}
+
+          Independent desktop release of Sumi for macOS 14+ (Apple Silicon arm64).
+
+          ### Downloads & Checksums
+          - **ZIP Archive**: `Sumi-${{ steps.validate.outputs.version }}-macos-arm64.zip`
+          - **DMG Installer**: `Sumi-${{ steps.validate.outputs.version }}-macos-arm64.dmg`
+          - **Checksums**: `SHA256SUMS.txt`
+          - **Sparkle Update Feed**: `appcast.xml`
+
+          ### Initial Launch Instructions (Gatekeeper)
+          This build is ad-hoc signed without an Apple Developer ID. When opening for the first time:
+          1. In Finder, **Right-Click (Control-Click)** on `Sumi.app` and choose **Open**.
+          2. Click **Open** in the confirmation dialog.
+          3. Alternatively, open **System Settings → Privacy & Security** and select **Open Anyway**.
+          *(Managed corporate Macs with strict MDM profiles may block ad-hoc binaries.)*
+
+          ### Native In-App Updates (Sparkle 2.9.6)
+          - Updates are authenticated via Ed25519 signatures and installed atomically via native Sparkle 2.9.6.
+          - Stable release feed: `https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml`
+          - *Update testing note*: Feed signing and updater state handling are covered by local unit tests only. End-to-end Ed25519 verification and atomic replacement by the native Sparkle installer have NOT yet been validated in production; the first real upgrade transition (from v0.2.0 to a future version) is pending validation on a subsequent release.
+          EOF
+
+          # Upload ONLY the explicit release assets (least privilege, avoiding any cache/source leakage)
+          gh release create "$TAG_NAME" \
+            "dist/Sumi-${VERSION}-macos-arm64.zip" \
+            "dist/Sumi-${VERSION}-macos-arm64.dmg" \
+            "dist/SHA256SUMS.txt" \
+            "dist/appcast.xml" \
+            --title "Sumi v${VERSION} (macOS arm64)" \
+            --notes-file release-notes.md \
+            --latest

@@ -6,6 +6,7 @@ import { PrivacyProvider } from "@/components/privacy";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { ThemeProvider } from "@/components/theme";
 import { THEME_INIT_SCRIPT } from "@/lib/theme";
+import { DESKTOP_PREFERENCES_BOOTSTRAP_SCRIPT } from "@/lib/desktop-preferences";
 
 export const metadata: Metadata = {
   title: "Sumi — Trading Journal",
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
   return (
     <html lang="en" suppressHydrationWarning>
       <head>
+        <script dangerouslySetInnerHTML={{ __html: DESKTOP_PREFERENCES_BOOTSTRAP_SCRIPT }} />
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className="min-h-screen font-sans antialiased">

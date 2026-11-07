@@ -1,8 +1,11 @@
-import { ExternalLink } from "lucide-react";
+"use client";
+
+import { AlertCircle, CheckCircle2, ExternalLink, Loader2, RefreshCw } from "lucide-react";
 import { SumiMark } from "@/components/sumi-mark";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { useDesktopInfo } from "@/lib/desktop-info";
 
 export const SOURCE_REPO_URL = "https://github.com/xolah88457/trade-journal";
 
@@ -122,6 +125,9 @@ SOFTWARE.`,
 ] as const;
 
 export function AboutSettings() {
+  const { isDesktop, info, isLoading, isChecking, error, checkCompletionKey, checkForUpdates } =
+    useDesktopInfo();
+
   return (
     <div className="space-y-6">
       <Card>
@@ -201,6 +207,125 @@ export function AboutSettings() {
             </Button>
             <span className="text-xs text-muted-foreground font-mono">{SOURCE_REPO_URL}</span>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Application updates</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          {!isDesktop ? (
+            <div className="rounded-lg border border-border/70 bg-muted/30 p-3.5 text-xs text-muted-foreground">
+              <p className="font-medium text-foreground">Web browser mode</p>
+              <p className="mt-1 leading-relaxed">
+                Running in a web browser. Native desktop features, local shell integration, and
+                automatic software updates are active only in the Sumi desktop application.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+                <div className="space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-sm font-semibold text-foreground">Sumi Desktop</span>
+                    {info?.version && (
+                      <Badge variant="outline" className="font-mono text-[11px]">
+                        v{info.version}
+                      </Badge>
+                    )}
+                  </div>
+                  {info && (
+                    <p className="font-mono text-xs text-muted-foreground">
+                      Version {info.version} &bull; Electron {info.electronVersion || "unknown"}{" "}
+                      &bull; {info.platform} ({info.arch})
+                    </p>
+                  )}
+                  {isLoading && !info && (
+                    <p className="text-xs text-muted-foreground">Reading desktop runtime info…</p>
+                  )}
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={checkForUpdates}
+                    disabled={isChecking}
+                    aria-busy={isChecking}
+                    className="gap-1.5"
+                  >
+                    {isChecking ? (
+                      <>
+                        <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                        <span>Checking for updates…</span>
+                      </>
+                    ) : (
+                      <>
+                        <RefreshCw className="size-3.5" aria-hidden="true" />
+                        <span>Check for updates…</span>
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+
+              <p className="text-xs text-muted-foreground leading-relaxed">
+                Opens the update window to download, install, and restart Sumi. Save your work
+                first.
+              </p>
+
+              {error && (
+                <div
+                  role="alert"
+                  className="flex items-start justify-between gap-2 rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-xs text-destructive"
+                >
+                  <div className="flex items-center gap-2">
+                    <AlertCircle className="size-4 shrink-0" aria-hidden="true" />
+                    <span>{error}</span>
+                  </div>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={checkForUpdates}
+                    disabled={isChecking}
+                    className="h-6 px-2 text-xs hover:bg-destructive/20 text-destructive hover:text-destructive"
+                  >
+                    Retry
+                  </Button>
+                </div>
+              )}
+
+              {!error && info?.update?.status === "available" && (
+                <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs text-foreground">
+                  <CheckCircle2
+                    className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+                    aria-hidden="true"
+                  />
+                  <span>
+                    Update available
+                    {info.update.availableVersion ? `: v${info.update.availableVersion}` : ""}.{" "}
+                    {info.update.message ||
+                      "Native updater window will guide download and restart."}
+                  </span>
+                </div>
+              )}
+
+              {!error &&
+                checkCompletionKey > 0 &&
+                (!info?.update ||
+                  info.update.status === "not-available" ||
+                  info.update.status === "idle") && (
+                  <div className="flex items-center gap-2 rounded-lg border border-border/70 bg-muted/40 p-3 text-xs text-muted-foreground">
+                    <CheckCircle2
+                      className="size-4 shrink-0 text-emerald-600 dark:text-emerald-400"
+                      aria-hidden="true"
+                    />
+                    <span>Sumi is up to date (version {info?.version || "0.2.0"}).</span>
+                  </div>
+                )}
+            </div>
+          )}
         </CardContent>
       </Card>
 

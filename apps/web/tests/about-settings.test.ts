@@ -159,3 +159,277 @@ describe("SettingsPage integration", () => {
     expect(activeSection?.hidden).toBe(false);
   });
 });
+
+describe("AboutSettings update functionality", () => {
+  function setupDesktopBridge(info: any, checkForUpdatesImpl: any) {
+    delete (window as any).sumiDesktop;
+    (window as any).sumiDesktop = {
+      preferences: {},
+      savePreferences: () => {},
+      getInfo: vi.fn().mockResolvedValue(info),
+      checkForUpdates: checkForUpdatesImpl,
+    };
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete (window as any).sumiDesktop;
+  });
+
+  it("shows desktop version, electron version, platform, arch when bridge available", async () => {
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      vi.fn().mockResolvedValue({ status: "idle", nativeUI: true, provider: "sparkle" }),
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("v0.2.0");
+    expect(text).toContain("Electron 45.2.3");
+    expect(text).toContain("darwin (arm64)");
+    expect(text).not.toContain("Web browser mode");
+  });
+
+  it("shows web browser mode when bridge absent", async () => {
+    delete (window as any).sumiDesktop;
+
+    await act(async () => root.render(createElement(AboutSettings)));
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Web browser mode");
+    expect(text).toContain("Running in a web browser");
+    expect(text).not.toContain("Sumi Desktop");
+  });
+
+  it("shows unknown electron version when not provided", async () => {
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "", platform: "darwin", arch: "arm64" },
+      vi.fn().mockResolvedValue({ status: "idle", nativeUI: true, provider: "sparkle" }),
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Electron unknown");
+  });
+
+  it("check for updates button triggers native Sparkle check", async () => {
+    const checkMock = vi.fn().mockResolvedValue({
+      status: "available",
+      currentVersion: "0.2.0",
+      availableVersion: "0.2.1",
+      message: "Update 0.2.1 available",
+      nativeUI: true,
+      provider: "sparkle",
+    });
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const button = container.querySelector<HTMLButtonElement>("button");
+    expect(button).not.toBeNull();
+
+    await act(async () => button?.click());
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    expect(checkMock).toHaveBeenCalledTimes(1);
+    const text = container.textContent ?? "";
+    expect(text).toContain("Update available");
+    expect(text).toContain("0.2.1");
+  });
+
+  it("shows error state with retry button when check fails", async () => {
+    const checkMock = vi.fn().mockRejectedValue(new Error("Network error"));
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const button = container.querySelector<HTMLButtonElement>("button");
+    await act(async () => button?.click());
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Network error");
+    expect(text).toContain("Retry");
+  });
+
+  it("disables button and shows loading state during check (repeated click guard)", async () => {
+    let resolveCheck: (value: any) => void;
+    const checkPromise = new Promise((resolve) => {
+      resolveCheck = resolve;
+    });
+    const checkMock = vi.fn().mockReturnValue(checkPromise);
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const button = container.querySelector<HTMLButtonElement>("button");
+    expect(button).not.toBeNull();
+    expect(button?.disabled).toBe(false);
+
+    // First click starts check
+    await act(async () => button?.click());
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    // Button should be disabled during check
+    expect(button?.disabled).toBe(true);
+    expect(button?.getAttribute("aria-busy")).toBe("true");
+    expect(button?.textContent).toContain("Checking for updates");
+
+    // Second click should be ignored (guard)
+    checkMock.mockClear();
+    await act(async () => button?.click());
+    expect(checkMock).not.toHaveBeenCalled();
+
+    // Resolve check
+    await act(async () => {
+      resolveCheck!({ status: "not-available", nativeUI: true, provider: "sparkle" });
+      await vi.runAllTimersAsync();
+    });
+
+    // Button re-enabled after check
+    expect(button?.disabled).toBe(false);
+    expect(button?.textContent).toContain("Check for updates");
+  });
+
+  it("preserves About & licenses legal content during update interactions", async () => {
+    const checkMock = vi.fn().mockResolvedValue({
+      status: "available",
+      currentVersion: "0.2.0",
+      availableVersion: "0.2.1",
+      message: "Update available",
+      nativeUI: true,
+      provider: "sparkle",
+    });
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    // Verify legal sections exist before update check
+    expect(container.textContent).toContain("Core open-source licenses");
+    expect(container.textContent).toContain("Voice engine & model notices");
+    expect(container.textContent).toContain("Bundled third-party notices");
+    expect(container.textContent).toContain("Independence & No-Affiliation Notice");
+    expect(container.querySelectorAll("details").length).toBeGreaterThanOrEqual(4);
+
+    // Trigger update check
+    const button = container.querySelector<HTMLButtonElement>("button");
+    await act(async () => button?.click());
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    // Verify legal sections still exist after update check
+    expect(container.textContent).toContain("Core open-source licenses");
+    expect(container.textContent).toContain("Voice engine & model notices");
+    expect(container.textContent).toContain("Bundled third-party notices");
+    expect(container.textContent).toContain("Independence & No-Affiliation Notice");
+    expect(container.querySelectorAll("details").length).toBeGreaterThanOrEqual(4);
+  });
+
+  it("shows up-to-date message after check completes with not-available", async () => {
+    const checkMock = vi.fn().mockResolvedValue({
+      status: "not-available",
+      nativeUI: true,
+      provider: "sparkle",
+    });
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const button = container.querySelector<HTMLButtonElement>("button");
+    await act(async () => button?.click());
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Sumi is up to date");
+    expect(text).toContain("0.2.0");
+  });
+
+  it("does not show false 'installed verified' or programmatic download button", async () => {
+    const checkMock = vi.fn().mockResolvedValue({
+      status: "available",
+      currentVersion: "0.2.0",
+      availableVersion: "0.2.1",
+      message: "Update available",
+      nativeUI: true,
+      provider: "sparkle",
+    });
+    setupDesktopBridge(
+      { version: "0.2.0", electronVersion: "45.2.3", platform: "darwin", arch: "arm64" },
+      checkMock,
+    );
+
+    await act(async () => root.render(createElement(AboutSettings)));
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const button = container.querySelector<HTMLButtonElement>("button");
+    await act(async () => button?.click());
+    await act(async () => {
+      await vi.runAllTimersAsync();
+    });
+
+    const text = container.textContent ?? "";
+    // Should NOT show false "installed verified" message
+    expect(text).not.toContain("installed verified");
+    expect(text).not.toContain("installed and verified");
+    // Should NOT show programmatic download button (only Check for updates which opens native UI)
+    expect(text).not.toContain("Download");
+    expect(text).not.toContain("Install");
+    // Should show native UI message (Sparkle owns download/install/restart)
+    expect(text).toContain(
+      "Opens the update window to download, install, and restart Sumi. Save your work first.",
+    );
+  });
+});

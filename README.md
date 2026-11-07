@@ -1,14 +1,27 @@
 # Sumi — local macOS trading journal
 
-This checkout is an independent desktop adaptation of LuxAlgo's Trade Journal with a Kami-inspired theme. **[Desktop build, launch, and data instructions →](desktop/README.md)**
+Sumi is an independent desktop application for macOS 14+ (Apple Silicon arm64) built on Electron 45.2.3 and an isolated Node.js 26.13.0 runtime, featuring Tw93's Kami-inspired aesthetic, local SQLite persistence, on-device voice dictation, and native Sparkle 2.9.6 Ed25519-signed updates.
+
+**[Desktop build, launch, updates, and data architecture →](desktop/README.md)**
+
+### Desktop Build & Launch
 
 ```sh
 pnpm install --frozen-lockfile
 pnpm desktop:build
+pnpm desktop:check
 pnpm desktop:open
 ```
 
-The application is created at `dist/Sumi.app`. It bundles its own backend and Node runtime; you do not need to run `pnpm dev` or open a browser to use it. The original upstream documentation follows below for feature reference. Sumi is not affiliated with or endorsed by LuxAlgo or Tw93.
+To package downloadable release distributions (`.dmg`, `.zip`, `SHA256SUMS.txt`):
+
+```sh
+pnpm desktop:package
+```
+
+The resulting application is `dist/Sumi.app`. It bundles its own production backend and official Node runtime; it does not require running `pnpm dev` or opening an external browser. On first launch, if macOS Gatekeeper displays a security notice (since this release is ad-hoc signed without an Apple Developer ID), right-click (control-click) `Sumi.app` in Finder and select **Open**, or visit **System Settings → Privacy & Security → Open Anyway**.
+
+The original upstream documentation follows below for feature reference. Sumi is not affiliated with or endorsed by LuxAlgo or Tw93.
 
 ---
 

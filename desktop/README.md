@@ -1,83 +1,191 @@
-# Sumi for macOS
+# Sumi for macOS (Electron Desktop)
 
-Sumi keeps LuxAlgo's journal screens, importers, analytics, SQLite storage, and optional integrations. The interface adapts Kami's parchment, ivory, warm charcoal, navy, and editorial typography. The original repositories remain separate: the journal is the application base; Kami is a visual reference, not a second backend.
+Sumi is a local-first trading journal combining LuxAlgo's journal screens, automated broker sync, statement importers, analytics, SQLite persistence, and on-device voice dictation, styled with Tw93's Kami-inspired aesthetic.
 
-## Build and open
+This branch (`electron`) transitions Sumi to a modern Electron architecture (Electron v45.2.3) hosting the full Next.js standalone application backed by an isolated, official Node.js runtime and native Apple Silicon acceleration.
 
-Requirements for building: macOS 13 or newer, Node 22 or newer, pnpm (this repository pins 11.0.8), and Apple's Command Line Tools (`xcode-select --install` if not installed). Internet access is required to install dependencies and download the official Node runtime during the build.
+- **Target Architecture**: macOS 14.0+ on Apple Silicon (`arm64`). _(Intel x86_64 and Windows are not yet supported)._
+- **Version Truth**: Single source of truth is root `package.json` (`v0.2.0`).
+- **Updates**: Native Sparkle 2.9.6 updater with independent Ed25519 signature verification.
+- **Code Signing**: Unsigned / ad-hoc signed for local and open-source distribution without Apple Developer ID or App Store dependencies.
 
-From `trade-journal-main/`:
+---
+
+## Quickstart: Build, Check, and Open
+
+### Requirements
+
+- **Operating System**: macOS 14.0 (Sonoma) or newer on Apple Silicon (`arm64`).
+- **Node.js**: Pinned to official Node **v26.13.0** (matches process ABI).
+- **Package Manager**: Pinned **pnpm 11.0.8** (`packageManager` in `package.json`).
+- **Apple Command Line Tools**: `xcode-select --install` (for `codesign`, `iconutil`, `sips`, and `xcrun`).
+- **Internet Access**: Required during initial build to download verified official Electron and Node archives.
+
+From the repository root (`trade-journal-main/`):
 
 ```sh
+# 1. Install dependencies with exact lockfile
 pnpm install --frozen-lockfile
+
+# 2. Build the production web application and package dist/Sumi.app
 pnpm desktop:build
+
+# 3. Run automated verification suite (bundle integrity, signing, routes, SQLite persistence)
 pnpm desktop:check
+
+# 4. Open the built application
 pnpm desktop:open
 ```
 
-The result is `dist/Sumi.app`. Double-click it in Finder, or copy it into your Applications folder. Once built, the app needs neither your development checkout nor a separately installed Node, pnpm, Docker, or browser. Quit Sumi before rebuilding or replacing the app. This build targets the Mac architecture it is built on (Apple Silicon on this machine); it is not a universal binary.
+The application is output to `dist/Sumi.app`. Once built, Sumi is completely self-contained: it requires neither an active terminal, nor a separately installed Node, pnpm, Docker, or external browser.
 
-The app is ad-hoc signed for local use, not Apple-notarized. A downloaded or shared copy may trigger Gatekeeper; use Finder's **Open** or **System Settings → Privacy & Security → Open Anyway** only if you trust your build. Public distribution requires your own Developer ID signing and notarization.
+---
 
-## Where your data lives
+## Architecture & Runtime Design
+
+```text
+dist/Sumi.app/
+  Contents/
+    MacOS/Sumi                    # Renamed official Electron 45.2.3 launcher binary
+    Frameworks/
+      Electron Framework.framework # Electron engine with hardened entitlements
+      Sparkle.framework           # Native Sparkle 2.9.6 framework for atomic updates
+      Electron Helper*.app        # Sandboxed GPU, Plugin, and Renderer helpers
+    Resources/
+      Sumi.icns                   # Native app icon generated from desktop/Icon.swift
+      app/                        # Electron main entrypoint, preload, security, preferences
+      server/                     # Next.js standalone production server bundle
+      runtime/node                # Standalone official Node 26.13.0 binary (ABI preserved)
+      launch.cjs                  # Ephemeral loopback port launcher & lifecycle supervisor
+      licenses/                   # Upstream MIT, Node, Electron, Chromium, Sparkle licenses
+```
+
+### 1. Pinned Runtimes & ABI Stability
+
+- **Electron 45.2.3**: Downloaded and verified against official Electron SHA256 checksums.
+- **Node.js 26.13.0 Runtime**: The Next.js backend runs under an official, standalone Node.js 26.13.0 binary packaged into `Contents/Resources/runtime/node`.
+- **Zero Electron Rebuild for Native Modules**: `better-sqlite3`, `koffi`, and `transcribe-cpp` execute entirely within the bundled Node runtime. Because the bundled Node version matches the development build host (`v26.13.0`), native C++/Metal modules preserve exact Node ABI compatibility without needing `electron-rebuild`.
+
+### 2. Process & Network Security Isolation
+
+- **Ephemeral Loopback Binding**: The backend server binds strictly to an OS-assigned ephemeral port on `127.0.0.1`.
+- **Environment Whitelisting**: The child backend process is spawned with an explicit whitelist: `PATH`, `HOME`, `TMPDIR`, `LANG`, and `JOURNAL_DATA_DIR`. It strictly **does not inherit** terminal environment variables, `NODE_OPTIONS`, or API keys (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`). All API credentials must be entered securely in **Settings → AI**.
+- **MainFrame IPC Validation**: Electron IPC handlers (`main.cjs`) strictly enforce origin checks and sender frame validation against the active loopback origin.
+- **External Navigation Safeguard**: Any non-loopback URLs or external markdown links open in the user's default external web browser, never inside the Electron window.
+
+---
+
+## Where Your Data Lives & Swift Migration
+
+### Application Support Folder
+
+All user data resides in your user library:
 
 ```text
 ~/Library/Application Support/Sumi/
-  journal.db       SQLite journal
-  .secret          generated encryption key (when credentials are saved)
-  desktop.log      backend startup and error log, replaced each launch
+  journal.db          # Primary SQLite database (trades, accounts, notes, playbooks)
+  journal.db-wal      # SQLite write-ahead log
+  .secret             # Generated cryptographic key for encrypted credentials at rest
+  desktop.log         # Backend startup, route, and diagnostic log (rotated per launch)
+  preferences.json    # Desktop window, theme, and sidebar preferences (mode 0o600)
+  electron/           # Chromium profile, cache, and Local Storage (mode 0o700)
+  voice/              # On-device Parakeet ASR model weights (if downloaded)
 ```
 
-Use **Sumi → Show Journal Data** to open this folder. Back up the **entire folder while the application is quit**, including hidden `.secret` and any attachments/subdirectories. The database alone is not a complete backup if you use encrypted credentials or attachments. Rebuilding/replacing the `.app` does not replace your journal.
+To open this directory directly, choose **Sumi → Show Journal Data** from the native application menu bar.
 
-A fresh desktop install starts a new journal. Existing browser/Docker journals are **not automatically moved or overwritten**. To migrate one, quit both applications, back up both folders, then copy the full existing data directory (including hidden files and attachment folders) into the Sumi data folder. Do not merge two databases. If the previous journal used `JOURNAL_SECRET`, clear/re-enter its integration credentials after migration: the desktop app uses the generated `.secret` file rather than shell environment keys.
+### Preservation from Swift Versions
 
-Theme, privacy, sidebar, and dashboard preferences are saved in macOS preferences and restored across launches, even though the loopback port changes. Existing browser appearance preferences are not imported. New installs use the light parchment theme; the sidebar appearance control switches to warm charcoal.
+- **No Database Overwriting**: The `journal.db` SQLite database, attachments, and `.secret` key are preserved directly from prior Swift builds. No automatic database format conversion or duplicate copying is performed.
+- **One-Time Preferences Migration**: On initial launch, if `preferences.json` is not present, Sumi imports existing desktop appearance and sidebar preferences prefixed with `journal-*` from macOS `UserDefaults` (`local.sumi.journal` `journalPreferences`). Non-journal preferences and non-string values are strictly filtered out, and preferences are written atomically with mode `0o600` under a 64KB aggregate bound.
+- **Isolated Chromium Storage**: Chromium session data and local storage reside in `~/Library/Application Support/Sumi/electron/` to ensure full isolation from system-wide browser sessions.
 
-## Local and online behavior
+---
 
-- A native Cocoa window embeds Apple's WebKit. There is no browser tab and no Electron/Chromium dependency.
-- A bundled Node process serves the full Next.js app on an OS-assigned port bound **only to `127.0.0.1`**. Quitting Sumi shuts down that process. As with other localhost tools, other processes running as your user can access this local service; it is not a hardened multi-user server.
-- SQLite and attachments stay on this Mac. No journal or environment files are included in the `.app` build.
-- Manual entry, journaling, local analytics, and file imports work without broker/AI subscriptions.
-- Broker sync, remote market data, and remote AI require a network connection and your own provider configuration. Enter credentials in Settings; Finder apps do not inherit your terminal's API-key environment variables.
-- **Local on-device voice dictation**: Sumi integrates an on-device local voice runtime powered by Parakeet Unified EN 0.6B ASR and Silero VAD (transcribe.cpp bindings on Metal GPU / CPU). Voice dictation is honest batch dictation: speech is captured locally and transcribed upon clicking Stop (no live per-word cloud streaming requirement). A lightweight Silero VAD gate filters out silence before ASR and detects natural pauses so the heavier ASR engine remains idle during silence. For long notes up to 5 minutes, audio is segmented into bounded ~30s chunks at pauses and transcribed sequentially with cancellation support.
-- **Native microphone permissions**: Microphone capture is controlled by WebKit `WKUIDelegate` media capture permissions (strictly granted only to the local main frame loopback origin and denying camera capture). macOS system-level microphone permission is enforced via `NSMicrophoneUsageDescription`.
-- **Model storage & privacy**: ASR model weights are stored outside `Sumi.app` in user storage (`~/Library/Application Support/Sumi/voice`) or reused read-only from your existing local HuggingFace cache. The lightweight Silero VAD asset (1.2 MB, MIT license) is bundled self-contained inside the application. Dictation audio is ephemeral in memory; the voice backend does not log or store audio recordings or standalone transcript artifacts. Inserted text placed into editor fields follows normal journal note persistence when saved by the user.
-- **AI reflection & personal instructions**: Optional remote AI features (Ask Journal, Daily Recap, and Trade Critique) can be configured in **Settings → AI**. You can define personal trading instructions (up to 2,000 characters) grounded in your journal data. Reflection requests require explicit user confirmation through a context preview dialog showing the exact prompt, provider, and sanitized endpoint before any external call is dispatched; modifications to instructions or scopes require clicking Refresh to prevent prompt drift. Local voice dictation operates completely independently of remote AI features and requires no API keys or network access.
-- Native file pickers handle imports; exports use a macOS Save dialog. External website links open in your default browser, not inside the journal.
-- No auto-updater, cloud sync, Windows/Linux wrapper, or automatic data migration is included.
+## Native In-App Updates (Sparkle 2.9.6)
 
-## Manual trades & screenshots
+Sumi includes native, in-app updates using the **Sparkle 2.9.6** framework via `electron-sparkle` (0.2.0).
 
-- **Arbitrary text symbols & non-live prices**: Enter any text symbol/ticker (e.g., stocks, crypto, forex, futures) and historical or custom execution prices. No live feeds or broker connections are required.
-- **Local defaults & actionable errors**: Forms default to device-local timestamps, default quantity of 1, fee of 0, and automatically pre-select your first manual account. Clear validation errors highlight invalid fields without silent disablement. Submitting a new manual trade form won't silently merge with an existing open trade for the same account and symbol; close the open trade first or select a different account.
-- **Plans vs fills**: Target prices (Stop loss and Take profit) are stored as trade plans, not simulated fills. They define planned risk and targets without affecting portfolio accounting until an actual exit fill occurs.
-- **Selectable outcomes**: For manual trades, select between keeping the position **Open**, hitting **Stop loss**, hitting **Take profit**, or exiting at **Break even**. Selecting a hit target visually greys out the unhit target while retaining both prices. Break-even exits record an exit at exact entry price (0 gross P&L before fees) without falsifying net transaction fees.
-- **Per-trade screenshot gallery**: Upload trade screenshots and charts directly on the trade detail page (up to 8 MB per file; PNG, JPEG, and WebP supported). Attachments and existing PDF docs remain accessible locally.
-- **No embedded LuxAlgo live chart**: The trade detail view uses local performance graphics and attachment galleries; it does not embed external LuxAlgo live streaming charts.
-- **Persistent storage**: All manual trades, plans, executions, notes, and metadata are saved locally to your existing `journal.db` database.
+- **Independent Ed25519 Cryptographic Signatures**: Update archives are signed using Ed25519 cryptographic keys. The public key (`SUPublicEDKey`) is configured in `desktop/update-config.json` and bundled in `Info.plist`. The private signing key (`SPARKLE_PRIVATE_KEY`) is stored strictly as a private GitHub Actions secret and is never stored in the repository, artifacts, or build logs.
+- **Update Feed**: Stable release feed is hosted at:
+  ```text
+  https://github.com/xolah88457/trade-journal/releases/latest/download/appcast.xml
+  ```
+- **In-App Flow**: Check for updates directly in **Settings** or via the application menu. Sparkle downloads updates in the background, validates the Ed25519 signature against `SUPublicEDKey`, terminates the backend server cleanly, applies an atomic binary replacement, and restarts the app.
+- **Testing Verification Notice**: Cryptographic feed generation and local atomic installation mechanisms are validated via automated checks; seamless in-place production upgrades from v0.2.0 to future releases will be established and confirmed on subsequent version releases.
 
-## Daily reports & review exports
+---
 
-- **Daily PDF & PNG export actions**: Generate a complete or selectively chosen pages daily review as a paginated PDF, preview individual page PNGs, or download selected pages as a single image or multi-PNG ZIP archive.
-- **Scoped to active filters**: Exports reflect closed trades strictly scoped by the selected date, journal timezone, and active account filter.
-- **Notes, images & critique history**: Daily reports incorporate your day reflection notes, trade execution summaries, full-size trade screenshot images, and saved historical AI critiques. Non-image attachments (such as PDF documents) are listed by filename only.
-- **Saved critiques only**: Only saved AI critique reviews are included; ephemeral or unsaved critiques from prior sessions cannot be recovered during export.
-- **Entirely local generation**: Report and document rendering happens completely on-device using local canvas and vector layout engines. Exporting never triggers remote AI requests or network calls.
-- **Privacy mode protection**: When Privacy mode is enabled, financial report and review exports are blocked to prevent inadvertent disclosure of sensitive figures.
-- **About & licenses in Settings**: Project origins, upstream attribution (LuxAlgo Trade Journal and Kami), source repository link, and discoverable offline MIT licenses can be viewed anytime under **Settings → About & licenses**.
+## Code Signing & First-Launch Gatekeeper Notice
 
-## Checks
+Sumi is ad-hoc signed (`codesign --sign -`) with Apple Hardened Runtime entitlements:
+
+- `com.apple.security.cs.allow-jit` (V8 execution)
+- `com.apple.security.cs.allow-unsigned-executable-memory`
+- `com.apple.security.device.audio-input` (local microphone capture for voice dictation)
+
+### Bypassing Gatekeeper on First Launch
+
+Because this open-source build is distributed independently without a paid Apple Developer ID certificate:
+
+1. In Finder, **Right-Click (Control-Click)** on `Sumi.app` and choose **Open**.
+2. Click **Open** in the macOS confirmation dialog.
+3. Alternatively, open **System Settings → Privacy & Security**, scroll down to the security section, and click **Open Anyway**.
+
+> **Note on Managed Macs**: Managed Macs governed by corporate Mobile Device Management (MDM) profiles that require strict Developer ID notarization may reject ad-hoc signed applications.
+
+---
+
+## Packaging & Releases
+
+Packaging for distribution produces compressed archives, a disk image, and cryptographic checksums:
 
 ```sh
-pnpm test                # journal/core/importer tests
-pnpm typecheck           # TypeScript checks
-pnpm desktop:check       # built bundle, signing, clean packaging, routes, SQLite restart persistence
+# Package release artifacts
+pnpm desktop:package
 ```
 
-Desktop checks create and remove a separate temporary journal. They never use your real Sumi data. Rebuild after source changes before running them. The bundled official Node binary is checksum-verified and matches the build-time Node version, so the `better-sqlite3` native module uses the correct ABI without relying on Homebrew dynamic libraries.
+Outputs in `dist/`:
 
-## Attribution
+- `dist/Sumi-0.2.0-macos-arm64.zip`: Standalone zip archive for Sparkle updates.
+- `dist/Sumi-0.2.0-macos-arm64.dmg`: Drag-to-install disk image for users.
+- `dist/SHA256SUMS.txt`: SHA256 checksums of the release artifacts.
+- `dist/appcast.xml`: Sparkle 2.9.6 XML feed generated via `desktop/update-tools.mjs`.
 
-LuxAlgo's MIT license and trademark policy are retained. Sumi uses an independent name and mark. Kami's MIT license is retained in `Kami-LICENSE.txt`. The built app includes upstream, Node, and dependency notices in `Contents/Resources/licenses/`; see `THIRD-PARTY-NOTICES.md`. No remotely hosted Kami fonts or logos are used.
+### GitHub Release Workflow
+
+Releases are automated via `.github/workflows/electron-release.yml`:
+
+- **Triggers**: Executed **only** on tags matching `electron-v*` (e.g. `electron-v0.2.0`) or via manual `workflow_dispatch` specifying a valid tag.
+- **Branch Ancestry & Version Verification**: The workflow enforces that the release commit is an ancestor or direct descendant of `origin/electron` and verifies that the tag version matches `package.json`.
+- **Runner**: Executes on GitHub-hosted Apple Silicon ARM64 runners (`macos-15`) with a strict `uname -m == arm64` guard.
+- **Artifact Isolation**: Publishes strictly `Sumi-*.zip`, `Sumi-*.dmg`, `SHA256SUMS.txt`, and `appcast.xml`. Development caches, private keys, database files, and model weights are strictly prevented from entering the release.
+
+---
+
+## Automated Verification & Checks
+
+Run the complete test suite before cutting releases or committing changes:
+
+```sh
+# Run core unit and integration tests
+pnpm test
+
+# Run TypeScript checks across all workspaces
+pnpm typecheck
+
+# Run Electron desktop check (verifies signing, symlinks, routes, and SQLite restart persistence)
+pnpm desktop:check
+```
+
+The desktop verification tests launch a temporary Sumi backend in a clean temporary directory (`/tmp/sumi-check-*`), query all key API routes, test account creation and SQLite restarts, and ensure that no sensitive credentials, `.env` files, or heavy ASR model weights are bundled into the application.
+
+---
+
+## Features & Local Operations
+
+- **Local-First Trading Journal**: Manual trade entries, plan targets, screenshot galleries, and daily reports are persisted directly to `journal.db`.
+- **Local On-Device Voice Dictation**: Speech is captured via microphone and transcribed locally on Metal GPU / CPU using Parakeet Unified EN 0.6B and Silero VAD (transcribe-cpp bindings). Heavy weights (~731 MB) reside in user storage (`~/Library/Application Support/Sumi/voice`), while the lightweight Silero VAD model (1.2 MB) is bundled self-contained in the app.
+- **Daily Review Exports**: Generates paginated daily review PDFs and PNG archives rendered 100% locally on-device.
+- **AI Reflection**: Optional remote AI reflection (Ask Journal, Daily Recap, Trade Critique) with context preview dialogs. Configurable in **Settings → AI**.
+- **Offline Attribution & Licenses**: View upstream MIT licenses, Node, Electron, Chromium, and dependency licenses anytime in **Settings → About & licenses**.

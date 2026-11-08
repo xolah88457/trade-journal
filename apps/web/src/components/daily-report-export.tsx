@@ -26,7 +26,7 @@ import {
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { usePrivacy } from "@/components/privacy";
-import type { DailyReport } from "@/lib/daily-report-types";
+import type { DailyReport, TradeReport } from "@/lib/daily-report-types";
 import type { ExportFile } from "@/lib/export-review";
 import type {
   DailyReportPage,
@@ -42,24 +42,46 @@ interface DailyReportRenderModule {
     report: DailyReport,
     options?: PrepareReportOptions,
   ): Promise<PreparedDailyReport>;
+  prepareTradeReport?(
+    report: TradeReport,
+    options?: PrepareReportOptions,
+  ): Promise<PreparedDailyReport>;
 }
 
-export interface DailyReportExportProps {
+/** What is being exported: a whole journal day, or one trade. */
+export type ReportSource =
+  | { kind: "day"; date: string; query?: string; note?: string }
+  | { kind: "trade"; tradeKey: string };
+
+export interface ReportExportProps {
+  source: ReportSource;
+  /** Awaited when export starts, e.g. to flush unsaved edits the server report would miss. */
+  beforeExport?: () => Promise<unknown> | void;
+  className?: string;
+  loadRenderer?: () => Promise<DailyReportRenderModule>;
+}
+
+export type DailyReportExportProps = {
   date: string;
   query?: string;
   note?: string;
   className?: string;
   loadRenderer?: () => Promise<DailyReportRenderModule>;
+};
+
+export function DailyReportExport({ date, query, note, ...rest }: DailyReportExportProps) {
+  return <ReportExport source={{ kind: "day", date, query, note }} {...rest} />;
 }
 
-export function DailyReportExport({
-  date,
-  query = "",
-  note,
-  className,
-  loadRenderer,
-}: DailyReportExportProps) {
-  // Always enforce privacy guard for daily financial reports
+export function ReportExport({ source, beforeExport, className, loadRenderer }: ReportExportProps) {
+  const isTrade = source.kind === "trade";
+  const query = source.kind === "day" ? (source.query ?? "") : "";
+  const note = source.kind === "day" ? source.note : undefined;
+  // Identity of what is exported; changing it closes any open preview
+  const sourceId =
+    source.kind === "day" ? `day:${source.date}?${query}` : `trade:${source.tradeKey}`;
+  const sourceLabel = source.kind === "day" ? source.date : source.tradeKey;
+  // Always enforce privacy guard for financial reports
   const concealed = usePrivacy();
 
   const [open, setOpen] = useState(false);
@@ -69,7 +91,7 @@ export function DailyReportExport({
   const [downloadError, setDownloadError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
 
-  const [report, setReport] = useState<DailyReport | null>(null);
+  const [report, setReport] = useState<DailyReport | TradeReport | null>(null);
   const [prepared, setPrepared] = useState<PreparedDailyReport | null>(null);
   const [thumbnails, setThumbnails] = useState<Record<string, string>>({});
   const [thumbnailErrors, setThumbnailErrors] = useState<Record<string, string>>({});
@@ -149,7 +171,7 @@ export function DailyReportExport({
     if (open) {
       handleClose();
     }
-  }, [date, query, handleClose]);
+  }, [sourceId, handleClose]);
 
   // Cleanup on unmount: immediately revokes thumbnails and disposes prepared report
   useEffect(() => {
@@ -206,28 +228,33 @@ export function DailyReportExport({
       const capturedNote = noteSnapshotRef.current;
 
       try {
+        await beforeExport?.();
+        if (leaseRef.current !== lease || controller.signal.aborted) return;
         const cleanQuery = query.replace(/^\?/, "");
-        const exportUrl = cleanQuery
-          ? `/api/journal/${encodeURIComponent(date)}/export?${cleanQuery}`
-          : `/api/journal/${encodeURIComponent(date)}/export`;
+        const exportUrl =
+          source.kind === "trade"
+            ? `/api/trades/${encodeURIComponent(source.tradeKey)}/report`
+            : cleanQuery
+              ? `/api/journal/${encodeURIComponent(source.date)}/export?${cleanQuery}`
+              : `/api/journal/${encodeURIComponent(source.date)}/export`;
 
         const res = await fetch(exportUrl, { signal: controller.signal });
         if (leaseRef.current !== lease || controller.signal.aborted) return;
 
         if (!res.ok) {
           throw new Error(
-            `Failed to load export data for ${date} (${res.status} ${res.statusText})`,
+            `Failed to load export data for ${sourceLabel} (${res.status} ${res.statusText})`,
           );
         }
 
-        const data = (await res.json()) as DailyReport;
+        const data = (await res.json()) as DailyReport | TradeReport;
         if (leaseRef.current !== lease || controller.signal.aborted) return;
 
         // Client-side note override ONLY:
         // If capturedNote is a string (even an intentional empty string draft ""),
         // override data.note. When it differs from server note, set noteUpdatedAt = null.
         // If capturedNote is undefined (no draft/unloaded editor), preserve DB note intact!
-        if (typeof capturedNote === "string") {
+        if ("note" in data && typeof capturedNote === "string") {
           if (capturedNote !== data.note) {
             data.note = capturedNote;
             data.noteUpdatedAt = null;
@@ -240,9 +267,10 @@ export function DailyReportExport({
           : await import("@/lib/daily-report-render");
         if (leaseRef.current !== lease || controller.signal.aborted) return;
 
-        const prep = await renderModule.prepareDailyReport(data, {
-          signal: controller.signal,
-        });
+        const prep =
+          "trade" in data
+            ? await renderModule.prepareTradeReport!(data, { signal: controller.signal })
+            : await renderModule.prepareDailyReport(data, { signal: controller.signal });
         if (leaseRef.current !== lease || controller.signal.aborted || concealed) {
           prep.dispose();
           return;
@@ -288,7 +316,7 @@ export function DailyReportExport({
         setLoading(false);
       }
     },
-    [concealed, cleanup, date, query, loadRenderer],
+    [concealed, cleanup, sourceId, loadRenderer, beforeExport],
   );
 
   const togglePageSelection = (id: string) => {
@@ -386,7 +414,7 @@ export function DailyReportExport({
   const totalPages = prepared?.pages.length ?? 0;
   const currentPage = prepared?.pages[activePageIndex] ?? null;
   const selectedCount = selectedPageIds.size;
-  const closedTradesCount = report?.trades?.length ?? 0;
+  const closedTradesCount = report ? ("trade" in report ? 1 : report.trades.length) : 0;
 
   return (
     <div className={cn("space-y-2", className)}>
@@ -437,10 +465,12 @@ export function DailyReportExport({
               <div className="flex flex-wrap items-center justify-between gap-3 pr-6">
                 <div>
                   <DialogTitle className="text-lg font-semibold tracking-tight">
-                    Daily journal report
+                    {isTrade ? "Trade report" : "Daily journal report"}
                   </DialogTitle>
                   <DialogDescription className="text-xs text-muted-foreground">
-                    Complete day overview, trade breakdown, and chart screenshots
+                    {isTrade
+                      ? "Trade summary, executions, notes, and chart screenshots"
+                      : "Complete day overview, trade breakdown, and chart screenshots"}
                   </DialogDescription>
                 </div>
 
@@ -465,10 +495,12 @@ export function DailyReportExport({
               {report && (
                 <div className="flex flex-wrap items-center gap-2 pt-1 text-xs">
                   <Badge variant="outline" className="font-mono">
-                    {report.date}
+                    {"trade" in report ? report.trade.symbol : report.date}
                   </Badge>
                   <Badge variant="secondary">
-                    {report.scope?.label || (query ? `Filters: ${query}` : "All accounts")}
+                    {"trade" in report
+                      ? report.trade.accountName
+                      : report.scope?.label || (query ? `Filters: ${query}` : "All accounts")}
                   </Badge>
                   <span className="text-muted-foreground">
                     {closedTradesCount} {closedTradesCount === 1 ? "trade" : "trades"} ·{" "}
@@ -484,7 +516,9 @@ export function DailyReportExport({
             {loading && (
               <div className="flex flex-col items-center justify-center py-12 text-center">
                 <Loader2 className="mb-3 size-8 animate-spin text-primary" />
-                <p className="text-sm font-medium">Preparing daily report...</p>
+                <p className="text-sm font-medium">
+                  Preparing {isTrade ? "trade" : "daily"} report...
+                </p>
                 <p className="mb-4 text-xs text-muted-foreground">
                   Collecting trade metrics, executions, notes, and chart captures
                 </p>
@@ -728,9 +762,18 @@ export function DailyReportExport({
                       <Info className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
                       <div className="space-y-1">
                         <p>
-                          <strong>Day note disclosure:</strong> Day notes are shared across
-                          accounts. Written reflections and chart captures may contain private
-                          trading information.
+                          {isTrade ? (
+                            <>
+                              <strong>Private content:</strong> Trade notes, AI reviews and chart
+                              captures may contain private trading information.
+                            </>
+                          ) : (
+                            <>
+                              <strong>Day note disclosure:</strong> Day notes are shared across
+                              accounts. Written reflections and chart captures may contain private
+                              trading information.
+                            </>
+                          )}
                         </p>
                         <p>
                           <strong>PDF attachments:</strong> Attached PDF documents are listed by
@@ -755,7 +798,7 @@ export function DailyReportExport({
                         {selectedCount === 0
                           ? "Select at least 1 page to export"
                           : selectedCount === totalPages
-                            ? `Exports complete PDF with overview and all trades (${totalPages} ${totalPages === 1 ? "page" : "pages"})`
+                            ? `Exports complete PDF with ${isTrade ? "all trade pages" : "overview and all trades"} (${totalPages} ${totalPages === 1 ? "page" : "pages"})`
                             : `${selectedCount} ${selectedCount === 1 ? "page" : "pages"} selected · PDF document`}
                       </span>
                     ) : (

@@ -6,7 +6,11 @@ import { resolve } from "node:path";
 import { Blob as NodeBlob } from "node:buffer";
 import { PDFDocument } from "pdf-lib";
 import { unzipSync, unzlibSync } from "fflate";
-import { prepareDailyReport, type DailyReportPage } from "../src/lib/daily-report-render";
+import {
+  prepareDailyReport,
+  prepareTradeReport,
+  type DailyReportPage,
+} from "../src/lib/daily-report-render";
 import {
   PAGE_WIDTH,
   PAGE_HEIGHT,
@@ -1335,5 +1339,67 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
         expect(page.title).not.toMatch(/\(Continued\)\s*\(Continued\)/);
       }
     });
+  });
+});
+
+describe("Trade report export (single trade, same design as the daily trade pages)", () => {
+  const tradeReport = () => ({
+    exportedAt: "2026-09-02T16:45:00.000Z",
+    timeZone: "America/New_York",
+    trade: createMockReport().trades[0]!,
+  });
+
+  it("lays out one trade page plus its screenshot page, without an overview page", async () => {
+    const prepared = await prepareTradeReport(tradeReport(), { imageLoader: async () => TEST_PNG });
+    const kinds = prepared.pages.map((p) => p.kind);
+    expect(kinds[0]).toBe("trade");
+    expect(kinds.at(-1)).toBe("screenshot");
+    expect(kinds).not.toContain("daily");
+    expect(prepared.pages.every((p) => p.tradeKey === "trade-es-1")).toBe(true);
+    expect(prepared.pages[0]!.title).toBe("Trade ES (LOSS)");
+
+    const layouts = (prepared as any).pageLayouts;
+    const texts = layouts[0].items.filter((i: any) => i.type === "text").map((i: any) => i.text);
+    expect(texts).toContain("ES");
+    expect(texts).toContain("-$250.00");
+    expect(texts.some((t: string) => t.startsWith("Sumi · Trade report · ES · 2026-09-02"))).toBe(
+      true,
+    );
+    expect(texts.some((t: string) => t.includes("Daily report"))).toBe(false);
+    prepared.dispose();
+  });
+
+  it("names downloads <date>-<symbol>-<direction>-trade-report and zips multiple pages", async () => {
+    const prepared = await prepareTradeReport(tradeReport(), { imageLoader: async () => TEST_PNG });
+    const pdf = await prepared.buildPdf();
+    expect(pdf.filename).toBe("2026-09-02-es-long-trade-report.pdf");
+    const doc = await PDFDocument.load(new Uint8Array(await pdf.blob.arrayBuffer()));
+    expect(doc.getPageCount()).toBe(prepared.pages.length);
+    expect(doc.getTitle()).toBe("Trade Report · ES · 2026-09-02");
+
+    const zip = await prepared.buildPngDownload(prepared.pages.map((p) => p.id));
+    expect(zip.filename).toBe("2026-09-02-es-long-trade-report.zip");
+    const single = await prepared.buildPngDownload([prepared.pages[0]!.id]);
+    expect(single.filename).toBe("2026-09-02-es-long-trade-report.png");
+    prepared.dispose();
+  });
+
+  it("renders an open trade without a closing time or exit", async () => {
+    const report = tradeReport();
+    Object.assign(report.trade, {
+      status: "open",
+      closedAt: null,
+      avgExit: null,
+      durationMs: null,
+      attachments: [],
+    });
+    const prepared = await prepareTradeReport(report);
+    expect(prepared.pages.every((p) => p.kind === "trade")).toBe(true);
+    const texts = (prepared as any).pageLayouts[0].items
+      .filter((i: any) => i.type === "text")
+      .map((i: any) => i.text);
+    expect(texts).toContain("OPEN");
+    expect(texts.some((t: string) => t.includes("– open"))).toBe(true);
+    prepared.dispose();
   });
 });

@@ -33,7 +33,7 @@ import {
 import { TradeOutcomeControls } from "@/components/trade-outcome-controls";
 import { TradeCritiqueSection } from "@/components/ai-critique";
 import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
-import { ReviewExport } from "@/components/review-export";
+import { ReportExport } from "@/components/daily-report-export";
 import { RuleChecklist } from "@/components/rule-checklist";
 import { useAutosave } from "@/lib/use-autosave";
 import { postJson, useApi } from "@/lib/use-api";
@@ -433,22 +433,7 @@ function AnnotationsCard({
               Save now
             </Button>
           </div>
-          <ReviewExport
-            containsFinancialData
-            document={{
-              title: `${trade.symbol} · ${trade.direction} review`,
-              subtitle: `${trade.openedAt} · ${trade.currency}`,
-              lines: [
-                `Status: ${trade.status} | Quantity: ${trade.quantity}`,
-                `Entry: ${trade.avgEntry} | Exit: ${trade.avgExit ?? "Open"}`,
-                `Net P&L: ${trade.netPnl.toFixed(2)} | Fees: ${trade.fees.toFixed(2)}`,
-                `Stop: ${stopLoss || "Unspecified"} | Target: ${profitTarget || "Unspecified"}`,
-                `Tags: ${tags || "None"} | Mistakes: ${mistakes || "None"}`,
-                "",
-                notes,
-              ],
-            }}
-          />
+          <ReportExport source={{ kind: "trade", tradeKey: trade.key }} beforeExport={flush} />
         </div>
       </CardContent>
     </Card>

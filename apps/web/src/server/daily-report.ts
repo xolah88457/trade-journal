@@ -28,7 +28,7 @@ import { listExecutions } from "@/server/executions";
 import { nowIso } from "@/server/ids";
 import { savedEstimates } from "@/server/market-data/estimates";
 import { getTimeZone } from "@/server/settings";
-import { queryTrades, type TradeRow } from "@/server/trades-query";
+import { getTradeByKey, queryTrades, rowToTrade, type TradeRow } from "@/server/trades-query";
 import { RequestError, requireValue } from "@/server/api";
 import { listTradeAiReviews } from "@/server/ai-review-history";
 import type {
@@ -40,6 +40,7 @@ import type {
   ReportExecution,
   ReportExcursions,
   ReportPlaybook,
+  TradeReport,
 } from "@/lib/daily-report-types";
 
 export function isValidCalendarDate(date: string): boolean {
@@ -181,6 +182,154 @@ function parseJsonArray(value: string | null | undefined): string[] {
   }
 }
 
+interface TradeReportContext {
+  accountMap: Map<string, typeof accounts.$inferSelect>;
+  playbookMap: Map<string, typeof playbooks.$inferSelect>;
+  /** accountId -> executionId -> fill */
+  fillsByAccount: Map<string, Map<string, typeof executions.$inferSelect>>;
+  cachedExcursions: ReturnType<typeof savedEstimates>;
+}
+
+/** Shared by the day report and the single-trade report. */
+async function buildReportTrade(
+  trade: AnnotatedTrade,
+  row: TradeRow,
+  { accountMap, playbookMap, fillsByAccount, cachedExcursions }: TradeReportContext,
+): Promise<DailyReportTrade> {
+  const acc = accountMap.get(trade.accountId);
+  const accountName = acc?.name ?? "";
+  const currency = acc?.currency ?? "USD";
+
+  // Playbook checklist
+  let playbook: ReportPlaybook | null = null;
+  if (row.playbookId) {
+    const book = playbookMap.get(row.playbookId);
+    if (book) {
+      const rules = [...new Set(parseJsonArray(book.rulesJson))];
+      const checks = db
+        .select()
+        .from(tradeRuleChecks)
+        .where(
+          and(eq(tradeRuleChecks.tradeKey, trade.key), eq(tradeRuleChecks.playbookId, book.id)),
+        )
+        .all();
+      playbook = {
+        id: book.id,
+        name: book.name,
+        description: book.description,
+        rules: rules.map((rule) => ({
+          rule,
+          followed: checks.find((c) => c.rule === rule)?.followed ?? null,
+        })),
+      };
+    }
+  }
+
+  // Executions for this trade (from preloaded map)
+  const accountFills = fillsByAccount.get(trade.accountId);
+  const fills = trade.executionIds
+    .map((id) => accountFills?.get(id))
+    .filter((f): f is typeof executions.$inferSelect => Boolean(f));
+  fills.sort((a, b) => a.executedAt.localeCompare(b.executedAt) || a.id.localeCompare(b.id));
+  const executionsReport: ReportExecution[] = fills.map((f) => ({
+    id: f.id,
+    executedAt: f.executedAt,
+    side: f.side as "buy" | "sell",
+    quantity: f.quantity,
+    price: f.price,
+    fee: f.fee,
+    source: f.source,
+  }));
+
+  // Running PnL over all realized exits + fees
+  const tradeFillsTimes = new Map(fills.map((f) => [f.id, f.executedAt]));
+  const runningPnl = computeTradeRunningPnl(trade, tradeFillsTimes);
+
+  // Trade attachments (metadata only)
+  const tradeAttachments: ReportAttachment[] = db
+    .select({
+      id: attachments.id,
+      name: attachments.name,
+      mime: attachments.mime,
+      size: attachments.size,
+      createdAt: attachments.createdAt,
+    })
+    .from(attachments)
+    .where(and(eq(attachments.ownerType, "trade"), eq(attachments.ownerId, trade.key)))
+    .orderBy(asc(attachments.createdAt), asc(attachments.id))
+    .all();
+
+  // AI reviews from helper
+  const rawAiReviews = await listTradeAiReviews(trade.key);
+  const aiReviews = (rawAiReviews ?? []).map((r) => ({
+    id: r.id,
+    createdAt: r.createdAt,
+    content: r.content,
+    provider: r.provider,
+    model: r.model,
+  }));
+
+  // Cached excursions
+  const cached = cachedExcursions.get(trade.key);
+  const excursions: ReportExcursions | null = cached
+    ? {
+        mae: cached.estimate.mae,
+        mfe: cached.estimate.mfe,
+        sampledBars: cached.estimate.sampledBars,
+        resolution: cached.resolution,
+        provider: cached.provider,
+        fetchedAt: cached.fetchedAt,
+      }
+    : null;
+
+  const stopLoss = trade.annotations?.stopLoss ?? null;
+  const profitTarget = trade.annotations?.profitTarget ?? null;
+  const targetHit = hitTradeTarget(trade.status, trade.avgExit, stopLoss, profitTarget);
+  const contractMultiplier =
+    trade.contractMultiplier ??
+    (["futures", "option", "forex", "cfd"].includes(trade.assetClass ?? "") ? null : 1);
+
+  return {
+    key: trade.key,
+    symbol: trade.symbol,
+    accountId: trade.accountId,
+    accountName,
+    currency,
+    assetClass: trade.assetClass ?? null,
+    direction: trade.direction,
+    status: trade.status,
+    openedAt: trade.openedAt,
+    closedAt: trade.closedAt ?? null,
+    durationMs: trade.durationMs ?? null,
+    quantity: trade.quantity,
+    openQuantity: trade.openQuantity,
+    contractMultiplier,
+    avgEntry: trade.avgEntry,
+    grossPnl: trade.grossPnl,
+    fees: trade.fees,
+    netPnl: trade.netPnl,
+    avgExit: trade.avgExit ?? null,
+    netReturnOnEntry: netReturnOnEntry(trade),
+    riskAmount: tradeRisk(trade),
+    plannedR: plannedR(trade),
+    realizedR: tradeR(trade),
+    stopLoss,
+    profitTarget,
+    targetHit,
+    rating: trade.annotations?.rating ?? null,
+    reviewedAt: row.reviewedAt ?? null,
+    tags: trade.annotations?.tags ?? [],
+    mistakes: trade.annotations?.mistakes ?? [],
+    notes: row.notes ?? "",
+    playbook,
+    executions: executionsReport,
+    runningPnl,
+    attachments: tradeAttachments,
+    aiReviews,
+    excursions,
+  };
+}
+
 export async function getDailyReport(
   date: string,
   filters: AnalysisFilters = {},
@@ -288,140 +437,10 @@ export async function getDailyReport(
   const cachedExcursions = savedEstimates(dayTrades);
 
   // Build each visible trade
+  const ctx: TradeReportContext = { accountMap, playbookMap, fillsByAccount, cachedExcursions };
   const reportTrades: DailyReportTrade[] = [];
   for (const { trade, row } of dayTradePairs) {
-    const acc = accountMap.get(trade.accountId);
-    const accountName = acc?.name ?? "";
-    const currency = acc?.currency ?? "USD";
-
-    // Playbook checklist
-    let playbook: ReportPlaybook | null = null;
-    if (row.playbookId) {
-      const book = playbookMap.get(row.playbookId);
-      if (book) {
-        const rules = [...new Set(parseJsonArray(book.rulesJson))];
-        const checks = db
-          .select()
-          .from(tradeRuleChecks)
-          .where(
-            and(eq(tradeRuleChecks.tradeKey, trade.key), eq(tradeRuleChecks.playbookId, book.id)),
-          )
-          .all();
-        playbook = {
-          id: book.id,
-          name: book.name,
-          description: book.description,
-          rules: rules.map((rule) => ({
-            rule,
-            followed: checks.find((c) => c.rule === rule)?.followed ?? null,
-          })),
-        };
-      }
-    }
-
-    // Executions for this trade (from preloaded map)
-    const accountFills = fillsByAccount.get(trade.accountId);
-    const fills = trade.executionIds
-      .map((id) => accountFills?.get(id))
-      .filter((f): f is typeof executions.$inferSelect => Boolean(f));
-    fills.sort((a, b) => a.executedAt.localeCompare(b.executedAt) || a.id.localeCompare(b.id));
-    const executionsReport: ReportExecution[] = fills.map((f) => ({
-      id: f.id,
-      executedAt: f.executedAt,
-      side: f.side as "buy" | "sell",
-      quantity: f.quantity,
-      price: f.price,
-      fee: f.fee,
-      source: f.source,
-    }));
-
-    // Running PnL over all realized exits + fees
-    const tradeFillsTimes = new Map(fills.map((f) => [f.id, f.executedAt]));
-    const runningPnl = computeTradeRunningPnl(trade, tradeFillsTimes);
-
-    // Trade attachments (metadata only)
-    const tradeAttachments: ReportAttachment[] = db
-      .select({
-        id: attachments.id,
-        name: attachments.name,
-        mime: attachments.mime,
-        size: attachments.size,
-        createdAt: attachments.createdAt,
-      })
-      .from(attachments)
-      .where(and(eq(attachments.ownerType, "trade"), eq(attachments.ownerId, trade.key)))
-      .orderBy(asc(attachments.createdAt), asc(attachments.id))
-      .all();
-
-    // AI reviews from helper
-    const rawAiReviews = await listTradeAiReviews(trade.key);
-    const aiReviews = (rawAiReviews ?? []).map((r) => ({
-      id: r.id,
-      createdAt: r.createdAt,
-      content: r.content,
-      provider: r.provider,
-      model: r.model,
-    }));
-
-    // Cached excursions
-    const cached = cachedExcursions.get(trade.key);
-    const excursions: ReportExcursions | null = cached
-      ? {
-          mae: cached.estimate.mae,
-          mfe: cached.estimate.mfe,
-          sampledBars: cached.estimate.sampledBars,
-          resolution: cached.resolution,
-          provider: cached.provider,
-          fetchedAt: cached.fetchedAt,
-        }
-      : null;
-
-    const stopLoss = trade.annotations?.stopLoss ?? null;
-    const profitTarget = trade.annotations?.profitTarget ?? null;
-    const targetHit = hitTradeTarget(trade.status, trade.avgExit, stopLoss, profitTarget);
-    const contractMultiplier =
-      trade.contractMultiplier ??
-      (["futures", "option", "forex", "cfd"].includes(trade.assetClass ?? "") ? null : 1);
-
-    reportTrades.push({
-      key: trade.key,
-      symbol: trade.symbol,
-      accountId: trade.accountId,
-      accountName,
-      currency,
-      assetClass: trade.assetClass ?? null,
-      direction: trade.direction,
-      status: trade.status,
-      openedAt: trade.openedAt,
-      closedAt: trade.closedAt ?? null,
-      durationMs: trade.durationMs ?? null,
-      quantity: trade.quantity,
-      openQuantity: trade.openQuantity,
-      contractMultiplier,
-      avgEntry: trade.avgEntry,
-      grossPnl: trade.grossPnl,
-      fees: trade.fees,
-      netPnl: trade.netPnl,
-      avgExit: trade.avgExit ?? null,
-      netReturnOnEntry: netReturnOnEntry(trade),
-      riskAmount: tradeRisk(trade),
-      plannedR: plannedR(trade),
-      realizedR: tradeR(trade),
-      stopLoss,
-      profitTarget,
-      targetHit,
-      rating: trade.annotations?.rating ?? null,
-      reviewedAt: row.reviewedAt ?? null,
-      tags: trade.annotations?.tags ?? [],
-      mistakes: trade.annotations?.mistakes ?? [],
-      notes: row.notes ?? "",
-      playbook,
-      executions: executionsReport,
-      runningPnl,
-      attachments: tradeAttachments,
-      aiReviews,
-      excursions,
-    });
+    reportTrades.push(await buildReportTrade(trade, row, ctx));
   }
 
   return {
@@ -436,5 +455,36 @@ export async function getDailyReport(
     noteUpdatedAt,
     attachments: dayAttachments,
     trades: reportTrades,
+  };
+}
+
+/** Single-trade report: works for open trades too (the day report only lists closed ones). */
+export async function getTradeReport(key: string): Promise<TradeReport> {
+  const row = getTradeByKey(key);
+  if (!row) throw new RequestError("Trade not found");
+  const trade = rowToTrade(row);
+  const fills = listExecutions(row.accountId, trade.executionIds);
+  const ctx: TradeReportContext = {
+    accountMap: new Map(
+      db
+        .select()
+        .from(accounts)
+        .all()
+        .map((a) => [a.id, a]),
+    ),
+    playbookMap: new Map(
+      db
+        .select()
+        .from(playbooks)
+        .all()
+        .map((p) => [p.id, p]),
+    ),
+    fillsByAccount: new Map([[row.accountId, new Map(fills.map((f) => [f.id, f]))]]),
+    cachedExcursions: savedEstimates([trade]),
+  };
+  return {
+    exportedAt: nowIso(),
+    timeZone: getTimeZone(),
+    trade: await buildReportTrade(trade, row, ctx),
   };
 }

@@ -112,3 +112,10 @@ export interface DailyReport {
   attachments: ReportAttachment[];
   trades: DailyReportTrade[];
 }
+
+/** Single-trade export: the same trade shape as a day report, without the day context. */
+export interface TradeReport {
+  exportedAt: string;
+  timeZone: string;
+  trade: DailyReportTrade;
+}

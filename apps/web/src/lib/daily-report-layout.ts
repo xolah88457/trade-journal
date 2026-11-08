@@ -1,4 +1,9 @@
-import type { DailyReport, DailyReportTrade, ReportAttachment } from "./daily-report-types";
+import type {
+  DailyReport,
+  DailyReportTrade,
+  ReportAttachment,
+  TradeReport,
+} from "./daily-report-types";
 
 export const PAGE_WIDTH = 595.28; // Logical A4 points (72 pt / inch)
 export const PAGE_HEIGHT = 841.89;
@@ -1045,8 +1050,11 @@ class PageLayoutBuilder {
     const x0 = this.x0;
     const w = this.w;
 
-    // Inline emphasis is not rendered; drop the markers instead of printing them.
-    for (const block of parseMarkdown(markdownText.replace(/\*\*(.+?)\*\*/g, "$1"))) {
+    // Inline emphasis markers are not rendered; drop them instead of printing them.
+    const plain = markdownText
+      .replace(/\*\*(.+?)\*\*/g, "$1")
+      .replace(/(?<![*\w])\*(?=\S)(.+?)(?<=\S)\*(?![*\w])/g, "$1");
+    for (const block of parseMarkdown(plain)) {
       if (block.type === "divider") {
         this.ensureSpace(14);
         this.hline(this.y + 6);
@@ -1153,13 +1161,13 @@ class PageLayoutBuilder {
     }
   }
 
-  finalizeFooters(date: string, exported: string): void {
+  finalizeFooters(left: string, exported: string): void {
     const total = this.pages.length;
     const y = PAGE_HEIGHT - 34;
     this.pages.forEach((page, idx) => {
       this.page = page;
       this.hline(y - 8, MARGIN_LEFT, MARGIN_LEFT + USABLE_WIDTH);
-      this.text(MARGIN_LEFT, y, `Sumi · Daily report · ${date}`, SIZE.caption, COLORS.textMuted);
+      this.text(MARGIN_LEFT, y, left, SIZE.caption, COLORS.textMuted);
       this.text(PAGE_WIDTH / 2, y, exported, SIZE.caption, COLORS.textMuted, {
         align: "center",
         maxWidth: 260,
@@ -1445,11 +1453,10 @@ function addOverview(b: PageLayoutBuilder, report: DailyReport) {
 
 function addTradePage(
   b: PageLayoutBuilder,
-  report: DailyReport,
+  tz: string,
   trade: DailyReportTrade,
   images: Map<string, NormalizedImage>,
 ) {
-  const tz = report.timeZone;
   const cur = trade.currency;
   const money = (n: number | null | undefined, signed = false) => formatMoney(n, cur, { signed });
   const price = priceFormatter(trade);
@@ -1709,10 +1716,30 @@ export function buildReportLayout(
     );
   }
 
-  for (const trade of report.trades) addTradePage(b, report, trade, normalizedImages);
+  for (const trade of report.trades) addTradePage(b, report.timeZone, trade, normalizedImages);
 
   b.finalizeFooters(
-    report.date,
+    `Sumi · Daily report · ${report.date}`,
+    `Exported ${formatStamp(report.exportedAt, report.timeZone)} (${report.timeZone})`,
+  );
+  return b.pages;
+}
+
+/** Date (YYYY-MM-DD, report time zone) a single-trade report is filed under. */
+export function tradeReportDate({ trade, timeZone }: TradeReport): string {
+  return zoned(trade.closedAt ?? trade.openedAt, timeZone)?.date ?? "trade";
+}
+
+/** Single-trade export: the same trade page(s) as the day report, without the overview. */
+export function buildTradeReportLayout(
+  report: TradeReport,
+  normalizedImages: Map<string, NormalizedImage>,
+  measure: MeasureFn = defaultMeasure,
+): ReportPageLayout[] {
+  const b = new PageLayoutBuilder(memoizeMeasure(measure), report.timeZone);
+  addTradePage(b, report.timeZone, report.trade, normalizedImages);
+  b.finalizeFooters(
+    `Sumi · Trade report · ${report.trade.symbol} · ${tradeReportDate(report)}`,
     `Exported ${formatStamp(report.exportedAt, report.timeZone)} (${report.timeZone})`,
   );
   return b.pages;

@@ -11,6 +11,7 @@ import {
 } from "pdf-lib";
 import type {
   DailyReport,
+  TradeReport,
   DailyReportTrade,
   ReportAttachment,
   ReportExecution,
@@ -24,8 +25,10 @@ import {
   PAGE_HEIGHT,
   COLORS,
   buildReportLayout,
+  buildTradeReportLayout,
   defaultMeasure,
   slugify,
+  tradeReportDate,
   type LayoutItem,
   type ReportPageLayout,
   type NormalizedImage,
@@ -347,22 +350,30 @@ async function renderTextToPng(
 // Prepared Daily Report Implementation
 // ---------------------------------------------------------------------------
 
+/** Titles and filenames that differ between the day report and the single-trade report. */
+interface ReportNaming {
+  pdfTitle: string;
+  pdfName: string;
+  zipName: string;
+  singlePngName(pageNum: number, page: DailyReportPage): string;
+}
+
 class PreparedDailyReportImpl implements PreparedDailyReport {
   pages: DailyReportPage[];
   private pageLayouts: ReportPageLayout[];
-  private report: DailyReport;
+  private naming: ReportNaming;
   private normalizedImages: Map<string, NormalizedImage>;
   private abortController: AbortController;
   private fontBytes: Uint8Array;
 
   constructor(
-    report: DailyReport,
+    naming: ReportNaming,
     pageLayouts: ReportPageLayout[],
     normalizedImages: Map<string, NormalizedImage>,
     abortController: AbortController,
     fontBytes: Uint8Array,
   ) {
-    this.report = report;
+    this.naming = naming;
     this.pageLayouts = pageLayouts;
     this.normalizedImages = normalizedImages;
     this.abortController = abortController;
@@ -526,7 +537,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
 
     const pdfDoc = await PDFDocument.create();
     pdfDoc.registerFontkit(fontkit);
-    pdfDoc.setTitle(`Daily Report · ${this.report.date}`);
+    pdfDoc.setTitle(this.naming.pdfTitle);
     pdfDoc.setCreator("Sumi");
 
     const font = await pdfDoc.embedFont(this.fontBytes, { subset: true });
@@ -625,7 +636,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
     const pdfBytes = await pdfDoc.save();
     return {
       blob: new Blob([pdfBytes as unknown as BlobPart], { type: "application/pdf" }),
-      filename: `${this.report.date}-daily-report.pdf`,
+      filename: this.naming.pdfName,
     };
   }
 
@@ -726,7 +737,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
       const page = selected[0]!;
       const pageNum = this.pages.indexOf(page) + 1;
       const blob = await this.renderPage(page.id, 2);
-      const filename = `${this.report.date}-daily-report-${String(pageNum).padStart(2, "0")}-${slugify(page.title)}.png`;
+      const filename = this.naming.singlePngName(pageNum, page);
       return { blob, filename };
     }
 
@@ -743,7 +754,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
     // PNG data is already deflated, so store entries instead of recompressing them.
     const zipBytes = zipSync(entries, { level: 0 });
     const zipBlob = new Blob([zipBytes as unknown as BlobPart], { type: "application/zip" });
-    const filename = `${this.report.date}-daily-report.zip`;
+    const filename = this.naming.zipName;
     return { blob: zipBlob, filename };
   }
 
@@ -757,8 +768,11 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
 // Main Public Function: prepareDailyReport
 // ---------------------------------------------------------------------------
 
-export async function prepareDailyReport(
-  report: DailyReport,
+/** Fetch images, load the font and measure text once, then hand the shared inputs to a layout. */
+async function prepareReport(
+  attachments: ReportAttachment[],
+  naming: ReportNaming,
+  buildLayout: (images: Map<string, NormalizedImage>, measure: MeasureFn) => ReportPageLayout[],
   options?: PrepareReportOptions,
 ): Promise<PreparedDailyReport> {
   const abortController = new AbortController();
@@ -766,16 +780,8 @@ export async function prepareDailyReport(
     options.signal.addEventListener("abort", () => abortController.abort());
   }
 
-  // 1. Gather all attachments
-  const allAttachments: ReportAttachment[] = [
-    ...(report.attachments || []),
-    ...(report.trades?.flatMap((t) => t.attachments || []) || []),
-  ];
+  const normalizedImages = await fetchAllScreenshots(attachments, options);
 
-  // 2. Fetch and normalize screenshot images with bounded concurrency
-  const normalizedImages = await fetchAllScreenshots(allAttachments, options);
-
-  // 3. Load font bytes, register FontFace for Canvas, and prepare fontkit layout measurement
   const fontBytes = await loadFontBytes(
     (res) =>
       `Could not load PDF font /fonts/NotoSans-Regular.ttf (${res.status} ${res.statusText})`,
@@ -796,14 +802,49 @@ export async function prepareDailyReport(
     measure = defaultMeasure;
   }
 
-  // 4. Deterministically compute shared layout representation
-  const pageLayouts = buildReportLayout(report, normalizedImages, measure);
-
   return new PreparedDailyReportImpl(
-    report,
-    pageLayouts,
+    naming,
+    buildLayout(normalizedImages, measure),
     normalizedImages,
     abortController,
     fontBytes,
+  );
+}
+
+export function prepareDailyReport(
+  report: DailyReport,
+  options?: PrepareReportOptions,
+): Promise<PreparedDailyReport> {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return prepareReport(
+    [...(report.attachments || []), ...(report.trades?.flatMap((t) => t.attachments || []) || [])],
+    {
+      pdfTitle: `Daily Report · ${report.date}`,
+      pdfName: `${report.date}-daily-report.pdf`,
+      zipName: `${report.date}-daily-report.zip`,
+      singlePngName: (n, page) =>
+        `${report.date}-daily-report-${pad(n)}-${slugify(page.title)}.png`,
+    },
+    (images, measure) => buildReportLayout(report, images, measure),
+    options,
+  );
+}
+
+export function prepareTradeReport(
+  report: TradeReport,
+  options?: PrepareReportOptions,
+): Promise<PreparedDailyReport> {
+  const { trade } = report;
+  const base = `${tradeReportDate(report)}-${slugify(trade.symbol)}-${trade.direction}-trade-report`;
+  return prepareReport(
+    trade.attachments || [],
+    {
+      pdfTitle: `Trade Report · ${trade.symbol} · ${tradeReportDate(report)}`,
+      pdfName: `${base}.pdf`,
+      zipName: `${base}.zip`,
+      singlePngName: () => `${base}.png`,
+    },
+    (images, measure) => buildTradeReportLayout(report, images, measure),
+    options,
   );
 }

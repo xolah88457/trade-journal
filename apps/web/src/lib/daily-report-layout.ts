@@ -283,6 +283,18 @@ export function defaultMeasure(text: string, size: number): number {
   return width;
 }
 
+/** Caches a pure measure function by (size, text); wrapping re-measures the same strings repeatedly. */
+function memoizeMeasure(measure: MeasureFn): MeasureFn {
+  const bySize = new Map<number, Map<string, number>>();
+  return (text, size) => {
+    let cache = bySize.get(size);
+    if (!cache) bySize.set(size, (cache = new Map()));
+    let width = cache.get(text);
+    if (width === undefined) cache.set(text, (width = measure(text, size)));
+    return width;
+  };
+}
+
 function wrapText(
   text: string,
   maxWidth: number,
@@ -1077,7 +1089,7 @@ export function buildReportLayout(
   normalizedImages: Map<string, NormalizedImage>,
   measure: MeasureFn = defaultMeasure,
 ): ReportPageLayout[] {
-  const b = new PageLayoutBuilder(measure);
+  const b = new PageLayoutBuilder(memoizeMeasure(measure));
 
   // =========================================================================
   // SECTION 1: DAILY OVERVIEW

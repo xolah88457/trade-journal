@@ -1,6 +1,4 @@
 import { createHash } from "node:crypto";
-import { createOpenAI } from "@ai-sdk/openai";
-import { createAnthropic } from "@ai-sdk/anthropic";
 import { generateText, jsonSchema, Output, type UserContent } from "ai";
 import {
   parseTimestamp,
@@ -15,6 +13,7 @@ import {
   type AiImportOptions,
 } from "@/lib/ai-import";
 import { requireValue } from "./api";
+import { languageModel, providerOptions } from "./ai";
 import { getAiKey } from "./settings";
 import { encryptJson, decryptJson } from "./crypto";
 import { executionHash } from "./ids";
@@ -211,11 +210,8 @@ export async function parseStatementWithAi(
   let output: unknown;
   try {
     const result = await generateText({
-      model:
-        options.provider === "openai"
-          ? createOpenAI({ apiKey }).responses(options.model)
-          : createAnthropic({ apiKey })(options.model),
-      ...(options.provider === "openai" ? { providerOptions: { openai: { store: false } } } : {}),
+      model: languageModel(options.provider, apiKey, options.model),
+      ...providerOptions(options.provider),
       system: SYSTEM,
       messages: [
         {

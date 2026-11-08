@@ -20,7 +20,7 @@ import { BASE_AI_SYSTEM, buildAiSystemPrompt } from "./ai-prompt";
  */
 export const aiConfigured = (): boolean => aiProviderConfigured(getAiProvider());
 
-const languageModel = (provider: AiProvider, apiKey: string | null, model: string) => {
+export const languageModel = (provider: AiProvider, apiKey: string | null, model: string) => {
   if (provider === "compatible")
     // Chat Completions is the API compatible servers share. Only the key saved for
     // this server is sent: this adapter never reads provider environment variables.
@@ -33,6 +33,10 @@ const languageModel = (provider: AiProvider, apiKey: string | null, model: strin
     ? createOpenAI({ apiKey: apiKey! }).responses(model)
     : createAnthropic({ apiKey: apiKey! })(model);
 };
+
+/** OpenAI Responses requests must opt out of server-side storage. */
+export const providerOptions = (provider: AiProvider) =>
+  provider === "openai" ? { providerOptions: { openai: { store: false } } } : {};
 
 export const runAi = async (
   prompt: string,
@@ -51,7 +55,7 @@ export const runAi = async (
   try {
     const result = await generateText({
       model: languageModel(provider, getAiKey(provider), getAiModel(provider)),
-      ...(provider === "openai" ? { providerOptions: { openai: { store: false } } } : {}),
+      ...providerOptions(provider),
       system,
       prompt,
       maxOutputTokens,

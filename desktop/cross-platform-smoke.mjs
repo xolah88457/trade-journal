@@ -455,6 +455,11 @@ export async function runSmokeTest(customAppPath) {
     );
 
     // Stage 4: Preferences sync and reload verification
+    // window.sumiDesktop exists from document commit, before the HTML has streamed in. The
+    // <head> preferences bootstrap later drops journal-* keys the store does not hold and only
+    // then starts persisting writes, so writing before it ran loses the key. Wait for the body:
+    // synchronous head scripts have run by then.
+    await waitForDomReady(cdp1, origin1, 30000);
     await cdp1.eval("localStorage.setItem('journal-theme-v1', 'dark');");
     const prefsPath = path.join(canonicalTempDir, "preferences.json");
     await waitForFileContent(

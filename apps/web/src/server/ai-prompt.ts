@@ -115,7 +115,7 @@ export function sanitizeEndpointUrl(rawUrl: string | null): {
 /**
  * Resolves the actual server-side endpoint including custom env base URLs as the SDK does.
  */
-export function resolveActualEndpoint(provider: AiProvider): string {
+function resolveActualEndpoint(provider: AiProvider): string {
   if (provider === "compatible") {
     return getCompatibleBaseUrl()?.trim() || "";
   }
@@ -130,7 +130,7 @@ export function resolveActualEndpoint(provider: AiProvider): string {
   return "";
 }
 
-export interface AiProviderInfo {
+interface AiProviderInfo {
   provider: AiProvider;
   providerName: string;
   model: string;

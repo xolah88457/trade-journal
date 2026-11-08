@@ -10,7 +10,7 @@ import { postJson, useApi } from "@/lib/use-api";
 import type { AiContextPreview } from "@/server/ai-prompt";
 import type { SavedTradeAiReview } from "@/server/ai-review-history";
 
-export interface TradeCritiqueProps {
+interface TradeCritiqueProps {
   tradeKey: string;
 }
 

@@ -5,7 +5,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Button } from "./ui/button";
 import type { AiContextPreview } from "@/server/ai-prompt";
 
-export interface AiPreviewDialogProps {
+interface AiPreviewDialogProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title?: string;

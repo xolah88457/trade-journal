@@ -11,10 +11,10 @@ import type {
 export const PAGE_WIDTH = 595.28; // Logical A4 points (72 pt / inch)
 export const PAGE_HEIGHT = 841.89;
 export const MARGIN_LEFT = 40;
-export const MARGIN_RIGHT = 40;
+const MARGIN_RIGHT = 40;
 export const USABLE_WIDTH = PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT; // 515.28 pt
-export const MARGIN_TOP = 44;
-export const MARGIN_BOTTOM = 44;
+const MARGIN_TOP = 44;
+const MARGIN_BOTTOM = 44;
 
 // Editorial palette: parchment, navy, high-contrast ink, trader green/red
 export const COLORS = {
@@ -38,7 +38,7 @@ export const COLORS = {
   baseline: "#b8b4a6",
 };
 
-export interface RectItem {
+interface RectItem {
   type: "rect";
   x: number;
   y: number;
@@ -50,7 +50,7 @@ export interface RectItem {
   radius?: number;
 }
 
-export interface LineItem {
+interface LineItem {
   type: "line";
   x1: number;
   y1: number;
@@ -61,7 +61,7 @@ export interface LineItem {
   dash?: number[];
 }
 
-export interface TextItem {
+interface TextItem {
   type: "text";
   x: number;
   y: number;
@@ -73,7 +73,7 @@ export interface TextItem {
   maxWidth?: number;
 }
 
-export interface BadgeItem {
+interface BadgeItem {
   type: "badge";
   x: number;
   y: number;
@@ -86,12 +86,12 @@ export interface BadgeItem {
   paddingY?: number;
 }
 
-export interface ChartPoint {
+interface ChartPoint {
   t: string;
   cumNetPnl: number;
 }
 
-export interface ChartItem {
+interface ChartItem {
   type: "chart";
   x: number;
   y: number;
@@ -102,7 +102,7 @@ export interface ChartItem {
   currency?: string;
 }
 
-export interface ImageItem {
+interface ImageItem {
   type: "image";
   x: number;
   y: number;
@@ -145,7 +145,7 @@ export function slugify(text: string): string {
   );
 }
 
-export function formatMoney(
+function formatMoney(
   amount: number | null | undefined,
   currency = "USD",
   options: { signed?: boolean } = {},
@@ -224,12 +224,12 @@ export function formatNumber(
   return `${sign}${abs}`;
 }
 
-export function formatPercent(val: number | null | undefined): string {
+function formatPercent(val: number | null | undefined): string {
   if (val === null || val === undefined || Number.isNaN(val)) return "–";
   return `${(val * 100).toFixed(1)}%`;
 }
 
-export function formatDuration(ms: number | null | undefined): string {
+function formatDuration(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || Number.isNaN(ms) || ms < 0) return "–";
   const totalSeconds = Math.round(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -240,7 +240,7 @@ export function formatDuration(ms: number | null | undefined): string {
   return `${seconds}s`;
 }
 
-export function formatDate(iso: string | null | undefined): string {
+function formatDate(iso: string | null | undefined): string {
   if (!iso) return "–";
   const cleaned = iso
     .replace("T", " ")
@@ -249,13 +249,13 @@ export function formatDate(iso: string | null | undefined): string {
   return cleaned;
 }
 
-export function formatFileSize(bytes: number): string {
+function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
 }
 
-export function renderRating(rating: number | null): string {
+function renderRating(rating: number | null): string {
   if (rating === null || rating === undefined || rating < 1) return "Unrated";
   const stars = Math.min(5, Math.max(1, Math.round(rating)));
   return `${"★".repeat(stars)}${"☆".repeat(5 - stars)} (${rating}/5)`;
@@ -283,7 +283,7 @@ export function defaultMeasure(text: string, size: number): number {
   return width;
 }
 
-export function wrapText(
+function wrapText(
   text: string,
   maxWidth: number,
   size: number,
@@ -337,7 +337,7 @@ export function wrapText(
 // Headless Markdown Parser
 // ---------------------------------------------------------------------------
 
-export interface MarkdownBlock {
+interface MarkdownBlock {
   type: "heading" | "paragraph" | "list" | "quote" | "divider" | "code" | "table";
   level?: number;
   text?: string;
@@ -346,7 +346,7 @@ export interface MarkdownBlock {
   rows?: string[][];
 }
 
-export function parseMarkdown(src: string): MarkdownBlock[] {
+function parseMarkdown(src: string): MarkdownBlock[] {
   if (!src) return [];
   const lines = src.split(/\r?\n/);
   const blocks: MarkdownBlock[] = [];
@@ -486,7 +486,7 @@ export function parseMarkdown(src: string): MarkdownBlock[] {
 // Page Layout Builder
 // ---------------------------------------------------------------------------
 
-export class PageLayoutBuilder {
+class PageLayoutBuilder {
   pages: ReportPageLayout[] = [];
   currentPage!: ReportPageLayout;
   cursorY: number = MARGIN_TOP;

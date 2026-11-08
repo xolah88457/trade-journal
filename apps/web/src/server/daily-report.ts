@@ -138,7 +138,7 @@ export function parseAndValidateDailyFilters(searchParams: URLSearchParams): Ana
   return filters;
 }
 
-export function computeTradeRunningPnl(
+function computeTradeRunningPnl(
   trade: {
     openedAt: string;
     fees: number;

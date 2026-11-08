@@ -19,13 +19,13 @@ export interface SavedTradeAiReview {
   model: string;
 }
 
-export interface ExportedTradeAiReview extends SavedTradeAiReview {
+interface ExportedTradeAiReview extends SavedTradeAiReview {
   tradeKey: string;
 }
 
 const SETTING_PREFIX = "tradeAiReviews:";
 
-export const reviewSettingKey = (tradeKey: string): string => `${SETTING_PREFIX}${tradeKey.trim()}`;
+const reviewSettingKey = (tradeKey: string): string => `${SETTING_PREFIX}${tradeKey.trim()}`;
 
 /**
  * Validates and parses raw review history JSON.
@@ -34,7 +34,7 @@ export const reviewSettingKey = (tradeKey: string): string => `${SETTING_PREFIX}
  * preventing silent corruption and accidental overwriting.
  * Whitelists mapped fields on output.
  */
-export function parseTradeAiReviews(
+function parseTradeAiReviews(
   raw: string | null | undefined,
   tradeKey: string,
 ): SavedTradeAiReview[] {

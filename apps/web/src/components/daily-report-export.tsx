@@ -37,7 +37,7 @@ import { cn } from "@/lib/utils";
 
 export type { DailyReportPage, PreparedDailyReport };
 
-export interface DailyReportRenderModule {
+interface DailyReportRenderModule {
   prepareDailyReport(
     report: DailyReport,
     options?: PrepareReportOptions,

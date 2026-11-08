@@ -27,7 +27,7 @@ interface Extraction {
   errors: string[];
   executions: (ImportedExecution & { source: string })[];
 }
-export interface AiStatement {
+interface AiStatement {
   content: string;
   fileName?: string;
   encoding?: "text" | "pdf";

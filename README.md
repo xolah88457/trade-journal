@@ -8,17 +8,164 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 
 ## Features
 
-- **Broker sync**: read-only sync through [`@luxalgo/broker-sdk`](https://github.com/LuxAlgo/broker-sdk) for Alpaca, Binance, Bybit, Coinbase, Kraken, OKX, Tradier, IBKR Flex, Hyperliquid, Questrade, Topstep, Trading212, Webull, Crypto.com, E\*TRADE, Public, Charles Schwab, TradeStation, tastytrade, Robinhood Crypto, Gemini and KuCoin.
-- **Statement import**: auto-detected file formats (TradeZella, Tradervue, TradingView, MetaTrader 4/5, ThinkorSwim, IBKR, NinjaTrader, Tradovate, TopstepX, Webull, DAS Trader, XTB, Hyperliquid and others) plus a column mapper for any other CSV. See [docs/importers.md](docs/importers.md) for the full list and validation status.
-- **Round-trip engine**: flat-to-flat trades built from raw fills, with FIFO, LIFO or weighted-average matching per account.
-- **Analytics**: P&L, win rate, profit factor, expectancy, R multiples, drawdown, per-symbol/tag/mistake/playbook breakdowns, advanced filters, comparison groups, rolling [performance trends](docs/performance-trends.md), a [trade explorer](docs/trade-explorer.md) and the documented [Edge Score](docs/edge-score.md).
-- **Dashboard and calendar**: customizable, saveable card layouts, a P&L calendar with weekly totals and [calendar insights](docs/calendar-insights.md).
-- **Daily journal and notebook**: Markdown notes with templates and image/PDF attachments, playbooks with rule checklists, routines and a missed-trade log.
-- **Offline voice dictation**: dictate notes with on-device speech recognition (see [below](#offline-voice-dictation)).
-- **AI reflection (optional)**: session recaps, trade critiques and "ask your journal", using your own Anthropic or OpenAI key or an OpenAI-compatible server. Configure it in **Settings → AI**. See [docs/ai-scope.md](docs/ai-scope.md).
-- **Prop firm tracker**: evaluation and reset costs, refunds, payout requests and receipts, cash ROI and renewal reminders, kept separate from trade P&L. See [docs/prop-firms.md](docs/prop-firms.md).
-- **Market data for MAE/MFE (optional)**: estimated maximum adverse and favorable excursion for closed trades. See [below](#market-data).
-- **Export and privacy**: privacy mode masks monetary values; trades export to CSV, reviews to PDF or PNG, and journal records to JSON.
+### Getting trades in
+
+- **Broker sync**: read-only API sync through [`@luxalgo/broker-sdk`](https://github.com/LuxAlgo/broker-sdk) for Alpaca, Binance, Bybit, Coinbase, Kraken, OKX, Tradier, IBKR Flex, Hyperliquid, Questrade, Topstep, Trading212, Webull, Crypto.com, E\*TRADE, Public, Charles Schwab, TradeStation, tastytrade, Robinhood Crypto, Gemini and KuCoin. Keys are encrypted on your machine; **Sync now** per account.
+- **Statement import**: CSV, TSV, HTML, XML and Excel files with automatic format detection for TradeZella, Tradervue, TradingView (paper history and strategy list), MetaTrader 4 and 5, Interactive Brokers (activity CSV, Flex Query, Flex XML), ThinkorSwim/Schwab, NinjaTrader, Tradovate, TopstepX, Webull, DAS Trader Pro, XTB xStation and Hyperliquid. See [docs/importers.md](docs/importers.md).
+- **Column mapper**: map the columns of any other CSV yourself.
+- **AI statement parsing (optional)**: read unsupported statements, including PDFs, with your own AI key.
+- **Import preview**: check the parsed executions before importing, set the statement time zone, and choose or create the target account for multi-account files.
+- **Duplicate protection**: re-importing the same fills is ignored.
+- **Manual trade entry**: add a trade with side, quantity, entry/exit, fees, stop loss, take profit, outcome (open, stop hit, target hit, breakeven) and notes, or add raw executions.
+- **Demo data**: load about 90 days of generated trades to explore the app.
+
+### Accounts
+
+- File-import, manual and broker-synced accounts, each with a currency and starting balance.
+- FIFO, LIFO or weighted-average matching per account.
+- Archive, unarchive, clear all trades, delete, or transfer all data into another account.
+- Quick account switcher on every screen; the Filters panel selects several accounts at once.
+
+### Dashboard
+
+- Cards: Net P&L, trade win %, profit factor, day win %, average win/loss, Edge Score, cumulative P&L, daily P&L, month calendar, recent trades and open positions, max drawdown, streaks, expectancy per trade, average duration, best/worst day and trade time performance.
+- Drag cards to rearrange them, show or hide cards, and search for cards.
+- Save named layouts or use the Overview, Trading day, Performance and Risk review presets.
+- Add a trade straight from the dashboard.
+- Accounts in different currencies are summarized per currency.
+
+### Calendar
+
+- Monthly P&L calendar with weekly totals.
+- Hover a day for its trades and running P&L.
+- Insights: net P&L, trade win rate, average daily P&L, day consistency, best and worst day, average green and red day, a daily performance chart and performance by weekday. See [docs/calendar-insights.md](docs/calendar-insights.md).
+
+### Trades
+
+- Trade table with sorting, a column picker and running totals (net cumulative P&L, win %, profit factor, average win/loss).
+- Bulk actions: mark reviewed or unreviewed, add a tag, delete.
+- Export the filtered trades to CSV.
+- **Trade detail**: executions, average entry and exit, gross and net P&L, fees, net ROI, duration, volume, planned and realized R, and a running P&L chart.
+- Planned stop loss and take profit, with stop or target hit detection.
+- Close an open position by entering an exit.
+- Tags, mistakes, playbook assignment, a 1 to 5 star rating and reviewed status.
+- Playbook rule checklist per trade: followed, broken or not assessed.
+- Trade notes in the Markdown editor.
+- **Screenshots**: drag and drop or upload chart screenshots (PNG, JPEG, WebP) into a gallery with full-size view. PDFs and other documents can be attached too.
+- Previous and next trade navigation, within all trades, the current filters or the same account.
+
+### Filters
+
+- Applies to the dashboard, calendar, trades and reports.
+- Filter by date range, weekday, accounts, symbols, excluded symbols, direction, asset class, outcome, strategy, tags, mistakes, review status and rating.
+- Filter by entry and exit time, size, entry and exit price, minutes held, net P&L, and planned or realized R.
+
+### Daily journal
+
+- List of trading days with their results.
+- Each day shows day stats (net and gross P&L, trades, winners and losers, win rate, volume, profit factor, expectancy), an intraday cumulative P&L chart and the day's trades.
+- Day note in the Markdown editor, with screenshots and attachments.
+- AI session recap (optional).
+
+### Notebook
+
+- Free-form Markdown notes organized into folders, with search.
+- Create and delete folders, and drag folders to reorder them.
+- Attachments on notes.
+
+### Note editor (journal, trades, notebook, missed trades)
+
+- Markdown with headings, bold, italic, bullet lists and checklists, plus a preview mode.
+- Link a trade into a note by searching symbol, date or account.
+- Note templates: built-in Pre-market plan, Trade review and Weekly review, plus your own saved templates.
+- Autosave.
+- Voice dictation into any note.
+
+### Playbooks
+
+- Strategies with a description and a rule list.
+- Rule adherence report: performance when all rules were followed versus when at least one was broken, and performance by rule.
+
+### Progress
+
+- Daily routines scheduled by weekday for before, during and after trading.
+- Tick off each day's routines.
+- Daily completion score and a 13-week completion heatmap.
+
+### Missed trades
+
+- Log missed opportunities with symbol, direction, strategy, planned entry, stop and target, observation time and a review note.
+- Search, edit, archive and restore entries, and attach screenshots.
+
+### Reports
+
+- **Overview**: trading overview plus breakdowns by symbol, tag, mistake, playbook, weekday, holding time, long vs short and opening hour.
+- **Performance trends**: rolling 20-trade win-rate and average P&L trends, with the largest winner and loser. See [docs/performance-trends.md](docs/performance-trends.md).
+- **Trade explorer**: scatter plots of holding time, entry time, MAE, MFE, net P&L and realized R, with presets. See [docs/trade-explorer.md](docs/trade-explorer.md).
+- **Breakdowns and cross-analysis**: group by one or two of symbol, strategy, tag, mistake, direction, asset class, weekday, month, entry or exit hour, 15-minute entry or exit slot, holding time, position size and entry price.
+- **Compare groups**: two filter sets side by side.
+- **MAE and MFE estimates** from market data (see [below](#market-data)).
+- **Edge Score**: a 0 to 100 score from win %, profit factor, average win/loss, drawdown, recovery and consistency. See [docs/edge-score.md](docs/edge-score.md).
+
+### Exporting
+
+- **Daily journal report and trade report**: multi-page PDF or PNG with the day overview or trade summary, executions, notes and chart screenshots. Preview pages and choose which to include.
+- **Review exports**: PDF or PNG of reports, the notebook, missed trades and progress.
+- **Data**: full journal backup as JSON, all trades as CSV.
+- Exports respect privacy mode.
+
+### Prop firm tracker
+
+- Overview, Accounts, Payouts and Transactions views.
+- Track prop accounts through evaluation, verification, funded, instant-funded and live phases, with linked attempts and resets.
+- Expenses in eight categories (evaluation, reset, activation, subscription, platform, market data, transfer, other), shared firm costs and partial refunds.
+- Payout requests with trader split, withheld fees, status and expected date. Record partial receipts and reversals, with overdue flags.
+- Money spent, payouts received, net after costs and cash ROI.
+- Monthly spending vs payouts chart, cumulative net cash, firm returns, expense breakdown, account progress and pass rate.
+- Renewal reminders for the next 30 days and overdue ones.
+- Filter by firm, account, currency and dates.
+- Search records.
+- Every edit records a reason; void and restore entries; edit history.
+- Attach invoices and payout proof.
+- Import and export prop cash records as CSV.
+- Read-only demo preview.
+- Kept separate from trade P&L. See [docs/prop-firms.md](docs/prop-firms.md).
+
+### AI reflection (optional)
+
+- Ask your journal questions in plain language.
+- Session recaps for a day and critiques of a single trade.
+- Every request shows a preview of exactly what will be sent before it goes out.
+- Use your own Anthropic or OpenAI key or an OpenAI-compatible server, choose the model, and add personal trading instructions.
+- Configure it in **Settings → AI**. See [docs/ai-scope.md](docs/ai-scope.md).
+
+### Offline voice dictation
+
+- Dictate into notes, trade entries, playbooks and prop records with on-device speech recognition. No audio leaves your machine (see [below](#offline-voice-dictation)).
+
+### Settings
+
+- **General**: display and default import time zones.
+- **Trading**: contract multipliers, breakeven range, default fees and default stop and target distances.
+- **Currency conversion**: reporting currency with saved exchange rates for combined results.
+- **Market data**: provider connections or uploaded candle CSVs.
+- **AI**: provider, model, key and personal instructions.
+- **Data and backups**: JSON and CSV export.
+- **About and licenses**: licenses, and checking for updates in the desktop app.
+
+### Privacy and appearance
+
+- Privacy mode hides balances, P&L and prices everywhere.
+- Light and dark themes.
+- Collapsible sidebar and a layout that works on narrow windows.
+- Optional password for the web version.
+
+### Desktop app
+
+- Native app for macOS, Windows and Linux; everything is stored in a local SQLite database.
+- In-app updates.
+- **Show Journal Data** menu item opens the data folder.
+- Window, theme and sidebar preferences are remembered.
 
 ## Screenshots
 

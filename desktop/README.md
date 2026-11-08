@@ -226,10 +226,15 @@ To ensure native modules (such as `transcribe.dll` and `ggml`) execute reliably 
 
 Sumi is distributed independently without paid code-signing certificates:
 
-- **macOS**: Ad-hoc signed (`codesign --sign -`) with Apple Hardened Runtime entitlements (JIT, unsigned executable memory, and microphone capture). On first launch, if Gatekeeper displays a security notice:
-  1. In Finder, **Right-Click (Control-Click)** on `Sumi.app` and choose **Open**.
-  2. Click **Open** in the macOS confirmation dialog.
-  3. Alternatively, open **System Settings → Privacy & Security** and click **Open Anyway**.
+- **macOS**: Ad-hoc signed (`codesign --sign -`) with Apple Hardened Runtime entitlements (JIT, unsigned executable memory, and microphone capture), without an Apple Developer ID or notarization. The first time you open a downloaded copy, Gatekeeper reports that Apple could not verify `Sumi.app`. Allow it once:
+  - **macOS 15 (Sequoia) and later**:
+    1. Open `Sumi.app`. When the "Sumi.app Not Opened" dialog appears, click **Done** (not **Move to Trash**).
+    2. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to the Sumi message.
+    3. Confirm with your password or Touch ID, then click **Open**.
+  - **macOS 14 (Sonoma)**: in Finder, **Right-Click (Control-Click)** `Sumi.app`, choose **Open**, then click **Open** in the confirmation dialog. **System Settings → Privacy & Security → Open Anyway** also works.
+  - **Terminal alternative** (any version): `xattr -dr com.apple.quarantine /Applications/Sumi.app`
+
+  You only need to do this once per downloaded copy; later launches open normally. Installing a newer version from a fresh download asks again.
 - **Windows**: Unsigned (no Authenticode certificate). Windows Defender SmartScreen may display an "Unrecognized app" prompt on first launch:
   1. Click **More info**.
   2. Click **Run anyway**.

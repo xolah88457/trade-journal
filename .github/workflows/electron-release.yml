@@ -497,10 +497,18 @@ jobs:
           - **Sparkle Feeds**: `appcast.xml` (arm64 & v0.2 clients) | `appcast-x64.xml` (Intel x64)
 
           ##### Initial Launch Instructions (macOS Gatekeeper)
-          This build is ad-hoc signed without an Apple Developer ID. When opening for the first time:
-          1. In Finder, **Right-Click (Control-Click)** on `Sumi.app` and choose **Open**.
-          2. Click **Open** in the confirmation dialog.
-          3. Alternatively, open **System Settings → Privacy & Security** and select **Open Anyway**.
+          This build is ad-hoc signed without an Apple Developer ID or notarization, so the first time you open a downloaded copy macOS reports that Apple could not verify `Sumi.app`. Allow it once:
+
+          **macOS 15 (Sequoia) and later**
+          1. Open `Sumi.app`. When the "Sumi.app Not Opened" dialog appears, click **Done** (not **Move to Trash**).
+          2. Open **System Settings → Privacy & Security**, scroll to **Security**, and click **Open Anyway** next to the Sumi message.
+          3. Confirm with your password or Touch ID, then click **Open**.
+
+          **macOS 14 (Sonoma)**: in Finder, **Right-Click (Control-Click)** `Sumi.app`, choose **Open**, then click **Open** in the confirmation dialog.
+
+          **Terminal alternative** (any version): `xattr -dr com.apple.quarantine /Applications/Sumi.app`
+
+          You only need to do this once per downloaded copy; later launches open normally.
           *(Managed corporate Macs with strict MDM profiles may block ad-hoc binaries.)*
 
           ##### Native In-App Updates (Sparkle 2.9.6)

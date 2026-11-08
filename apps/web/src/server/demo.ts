@@ -5,7 +5,7 @@ import { insertExecutions } from "./executions";
 import { newId, nowIso } from "./ids";
 
 /** Demo accounts are tagged by broker so they can be found and deleted. */
-export const DEMO_BROKER = "demo";
+const DEMO_BROKER = "demo";
 
 /* Deterministic RNG: the demo journal looks the same on every install. */
 const rng = (seed: number) => {
@@ -164,7 +164,7 @@ const generateExecutions = (): ImportedExecution[] => {
   return rows;
 };
 
-export interface DemoResult {
+interface DemoResult {
   accountId: string;
   inserted: number;
   alreadyLoaded: boolean;

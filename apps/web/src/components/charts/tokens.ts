@@ -2,7 +2,7 @@
 
 import { useSyncExternalStore } from "react";
 
-export interface VizTokens {
+interface VizTokens {
   surface: string;
   inkMuted: string;
   gridline: string;
@@ -11,7 +11,6 @@ export interface VizTokens {
   profit: string;
   profitFill: string;
   loss: string;
-  series: string[];
   foreground: string;
   card: string;
   border: string;
@@ -30,7 +29,6 @@ export const readVizTokens = (): VizTokens => {
     profit: v("--profit", "#0ca30c"),
     profitFill: v("--profit-fill", "#0ca30c"),
     loss: v("--loss", "#d03b3b"),
-    series: [1, 2, 3, 4, 5, 6, 7, 8].map((i) => v(`--series-${i}`, "#3987e5")),
     foreground: v("--foreground", "#f4f4f2"),
     card: v("--card", "#1a1a19"),
     border: v("--border", "#2c2c2a"),

@@ -14,18 +14,13 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { getLocalNowString } from "@/lib/date-input";
 import { postJson } from "@/lib/use-api";
 import { AccountPicker } from "./account-picker";
 
-/** Return device local ISO string formatted for <input type="datetime-local" /> */
-function getLocalNowString(): string {
-  const d = new Date();
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 16);
-}
+type TradeOutcome = "open" | "sl_hit" | "tp_hit" | "break_even";
 
-export type TradeOutcome = "open" | "sl_hit" | "tp_hit" | "break_even";
-
-export interface ManualTradeEntryProps {
+interface ManualTradeEntryProps {
   onSaved?: (tradeKey?: string) => void;
 }
 
@@ -38,7 +33,7 @@ export function ManualTradeEntry({ onSaved }: ManualTradeEntryProps) {
   const [direction, setDirection] = useState<"buy" | "sell">("buy"); // Entry direction
 
   // Entry Section
-  const [entryDatetime, setEntryDatetime] = useState(getLocalNowString());
+  const [entryDatetime, setEntryDatetime] = useState(getLocalNowString(16));
   const [quantity, setQuantity] = useState("1");
   const [entryPrice, setEntryPrice] = useState("");
   const [entryFee, setEntryFee] = useState("0");
@@ -49,7 +44,7 @@ export function ManualTradeEntry({ onSaved }: ManualTradeEntryProps) {
 
   // Outcome
   const [outcome, setOutcome] = useState<TradeOutcome>("open");
-  const [exitDatetime, setExitDatetime] = useState(getLocalNowString());
+  const [exitDatetime, setExitDatetime] = useState(getLocalNowString(16));
   const [exitFee, setExitFee] = useState("0");
 
   const [notes, setNotes] = useState("");

@@ -12,6 +12,7 @@ import {
   ZAxis,
 } from "recharts";
 import { useMemo } from "react";
+import { mediumShortDateTime } from "@/lib/date-format";
 import {
   clockLabel,
   type PlottedTrade,
@@ -48,10 +49,7 @@ export function TradeScatter({
     ],
     [points],
   );
-  const date = useMemo(
-    () => new Intl.DateTimeFormat("en", { timeZone, dateStyle: "medium", timeStyle: "short" }),
-    [timeZone],
-  );
+  const date = mediumShortDateTime(timeZone);
   const yLabel = (n: number) =>
     y === "realizedR" ? `${n.toFixed(2)}R` : privateMode ? "••••" : fmtMoney(n, currency);
   const xLabel = (n: number) =>

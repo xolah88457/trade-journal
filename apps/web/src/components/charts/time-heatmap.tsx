@@ -9,7 +9,7 @@ import { useVizTokens } from "./tokens";
 
 const EChart = dynamic(() => import("./echart").then((module) => module.EChart), { ssr: false });
 
-export interface HourBucket {
+interface HourBucket {
   key: string; // "09"
   netPnl: number;
   trades: number;

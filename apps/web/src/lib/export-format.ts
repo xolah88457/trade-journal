@@ -1,5 +1,5 @@
 /** Attachment fields included in the JSON export. Binaries stay on disk. */
-export interface ExportedAttachment {
+interface ExportedAttachment {
   id: string;
   ownerType: string;
   ownerId: string;

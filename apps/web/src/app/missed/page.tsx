@@ -13,6 +13,7 @@ import { Attachments } from "@/components/attachments";
 import { ReviewExport } from "@/components/review-export";
 import { MonetaryValue, MonetaryField } from "@/components/privacy";
 import { useApi, postJson } from "@/lib/use-api";
+import { getLocalNowString } from "@/lib/date-input";
 interface Missed {
   id: string;
   symbol: string;
@@ -28,9 +29,7 @@ interface Missed {
 const blank = () => ({
   symbol: "",
   direction: "long",
-  observedAt: new Date(Date.now() - new Date().getTimezoneOffset() * 60000)
-    .toISOString()
-    .slice(0, 16),
+  observedAt: getLocalNowString(16),
   entry: "",
   stop: "",
   target: "",

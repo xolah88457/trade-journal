@@ -2,14 +2,15 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { MIN_TREND_POINTS, type PerformanceTrendsResponse } from "@/lib/performance-trends";
 import { useApi } from "@/lib/use-api";
 import { fmtPercent } from "@/lib/utils";
 import { Pnl } from "./pnl";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
-import { Button } from "./ui/button";
 import { Skeleton } from "./ui/skeleton";
+import { LoadError } from "./load-error";
+import { mediumShortDateTime } from "@/lib/date-format";
 
 const RollingTradeChart = dynamic(
   () => import("./charts/rolling-trade-chart").then((module) => module.RollingTradeChart),
@@ -28,15 +29,7 @@ export function PerformanceTrendsReport({ query }: { query: string }) {
     `/api/performance-trends?${query}`,
   );
   const [tableOpen, setTableOpen] = useState(false);
-  const dateFormat = useMemo(
-    () =>
-      new Intl.DateTimeFormat("en", {
-        timeZone: data?.timeZone ?? "UTC",
-        dateStyle: "medium",
-        timeStyle: "short",
-      }),
-    [data?.timeZone],
-  );
+  const dateFormat = mediumShortDateTime(data?.timeZone ?? "UTC");
   if (loading)
     return (
       <div
@@ -50,12 +43,11 @@ export function PerformanceTrendsReport({ query }: { query: string }) {
     );
   if (error || !data)
     return (
-      <div role="alert" className="rounded-xl border p-5">
-        <p className="text-sm text-destructive">{error ?? "Unable to load performance trends."}</p>
-        <Button onClick={refresh} variant="outline" size="sm" className="mt-3">
-          Try again
-        </Button>
-      </div>
+      <LoadError
+        message={error ?? "Unable to load performance trends."}
+        onRetry={refresh}
+        variant="panel"
+      />
     );
   const { trends, timeZone, currencies } = data;
   const currency = currencies[0] ?? "USD";

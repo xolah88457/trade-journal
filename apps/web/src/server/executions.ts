@@ -1,4 +1,5 @@
 import { and, eq, inArray } from "drizzle-orm";
+import type { ExecutionSource } from "@luxalgo/journal-core";
 import { positionFillProblem, type ImportedExecution } from "@luxalgo/journal-importers";
 import { db, executions, accounts, trades } from "@/db";
 import { executionHash, newId, nowIso } from "./ids";
@@ -19,8 +20,6 @@ export interface InsertResult {
   /** Trade keys created or updated by this batch of executions. */
   tradeKeys?: string[];
 }
-
-export type ExecutionSource = "sync" | "import" | "manual";
 
 const MAX_SKIP_REASONS = 5;
 
@@ -111,7 +110,7 @@ export const partitionExecutions = (
   return { usable, skipped, skippedReasons };
 };
 
-export interface InsertExecutionOptions {
+interface InsertExecutionOptions {
   preserveFees?: boolean;
   stopLoss?: number | null;
   profitTarget?: number | null;

@@ -1,7 +1,7 @@
 import { headerKey, parseCsv } from "@luxalgo/journal-importers";
 import { RESOLUTIONS, type Resolution, type MarketBar } from "./market-data";
 export const MAX_CSV_BYTES = 5 * 1024 * 1024;
-export const MAX_CSV_BARS = 50_000;
+const MAX_CSV_BARS = 50_000;
 export function parseMarketCsv(
   content: string,
   symbol: string,

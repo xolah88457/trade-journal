@@ -18,7 +18,3 @@ export interface TranscribeResponse {
   latencyMs: number;
   warning?: string;
 }
-
-export interface CancelResponse {
-  ok: boolean;
-}

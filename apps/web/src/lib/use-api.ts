@@ -3,7 +3,7 @@
 import { startTransition, useCallback, useEffect, useState } from "react";
 import { acquireJson } from "./api-request";
 
-export interface ApiState<T> {
+interface ApiState<T> {
   data: T | null;
   error: string | null;
   loading: boolean;

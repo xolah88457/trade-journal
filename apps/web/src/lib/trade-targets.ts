@@ -1,4 +1,4 @@
-export type HitTarget = "stop_loss" | "profit_target" | null;
+type HitTarget = "stop_loss" | "profit_target" | null;
 
 /**
  * Determine which planned target (if any) was hit on trade exit.

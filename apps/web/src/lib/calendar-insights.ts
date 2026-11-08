@@ -18,7 +18,7 @@ export function calendarScope(filters: AnalysisFilters, year: number, month: num
   };
 }
 
-export const closingWeekday = (date: string) => new Date(`${date}T12:00:00Z`).getUTCDay();
+const closingWeekday = (date: string) => new Date(`${date}T12:00:00Z`).getUTCDay();
 
 /** Calendar cells already contain filtered, timezone-bucketed CLOSED trades. */
 export function calendarInsights(calendar: CalendarMonth) {

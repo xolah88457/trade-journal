@@ -1,6 +1,6 @@
 import type { AnnotatedTrade } from "@luxalgo/journal-core";
 
-export const ROLLING_TRADE_WINDOW = 20;
+const ROLLING_TRADE_WINDOW = 20;
 export const MIN_TREND_POINTS = 8;
 
 export function performanceTrends(trades: AnnotatedTrade[]) {

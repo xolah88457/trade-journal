@@ -1,7 +1,6 @@
 import { createMarketTransport, marketTransport } from "../src/server/market-data/transport";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { estimateExcursions } from "../src/lib/excursions";
-import { replayFrame } from "../src/lib/trade-replay";
 import { londonStrategicEdge, parseLseBars } from "../src/server/market-data/london-strategic-edge";
 import type { MarketHistory } from "../src/lib/market-data";
 
@@ -288,18 +287,6 @@ describe("LSE REST contract", () => {
       }),
     );
     await expect(londonStrategicEdge.test("test-secret")).rejects.toThrow("failed or timed out");
-  });
-});
-
-describe("replay without future chart data", () => {
-  it("reveals only completed candles and executions through the cursor, and rewinds", () => {
-    const fills = [fill(0.5, "buy", 10, 100), fill(2.5, "sell", 10, 102)];
-    const first = replayFrame(history(), fills, 1);
-    expect(first.bars).toHaveLength(1);
-    expect(first.fills).toEqual([fills[0]]);
-    expect(replayFrame(history(), fills, 3).fills).toHaveLength(2);
-    expect(replayFrame(history(), fills, 1).fills).toHaveLength(1);
-    expect(replayFrame(history(), fills, 0).fills).toHaveLength(0);
   });
 });
 

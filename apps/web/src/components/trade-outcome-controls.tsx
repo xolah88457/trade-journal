@@ -4,10 +4,11 @@ import { useState } from "react";
 import { MonetaryField } from "@/components/privacy";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { getLocalNowString } from "@/lib/date-input";
 import { postJson } from "@/lib/use-api";
 import { fmtMoney } from "@/lib/utils";
 
-export interface TradeOutcomeControlsProps {
+interface TradeOutcomeControlsProps {
   trade: {
     key: string;
     accountId: string;
@@ -23,12 +24,6 @@ export interface TradeOutcomeControlsProps {
   onClosed?: () => void;
 }
 
-/** Return device local ISO string formatted for <input type="datetime-local" /> */
-function getLocalNowString(): string {
-  const d = new Date();
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 19);
-}
-
 /**
  * Dedicated controls to close an existing open trade by selecting which target hit,
  * breaking even before fees, or entering a custom exit price.
@@ -36,7 +31,7 @@ function getLocalNowString(): string {
 export function TradeOutcomeControls({ trade, onClosed }: TradeOutcomeControlsProps) {
   const [outcome, setOutcome] = useState<"sl_hit" | "tp_hit" | "break_even" | "custom">("sl_hit");
   const [customPrice, setCustomPrice] = useState("");
-  const [exitDatetime, setExitDatetime] = useState(getLocalNowString());
+  const [exitDatetime, setExitDatetime] = useState(getLocalNowString(19));
   const [fee, setFee] = useState("0");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");

@@ -7,7 +7,7 @@ import { Label } from "@/components/ui/label";
 import { postJson } from "@/lib/use-api";
 import { CurrencyPicker } from "./currency-picker";
 
-export interface CreatedAccount {
+interface CreatedAccount {
   id: string;
   name: string;
   kind: string;

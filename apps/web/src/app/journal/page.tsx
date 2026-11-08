@@ -9,6 +9,7 @@ import { FilterBar, useFilters } from "@/components/filter-bar";
 import { Pnl } from "@/components/pnl";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadError } from "@/components/load-error";
 import { Button } from "@/components/ui/button";
 import Loading from "@/app/loading";
 import { useApi } from "@/lib/use-api";
@@ -59,12 +60,7 @@ function Journal() {
       />
       <div className="space-y-2 p-4">
         {error ? (
-          <div role="alert" className="space-y-2 text-sm text-destructive">
-            <p>{error}</p>
-            <Button variant="outline" onClick={refresh}>
-              Try again
-            </Button>
-          </div>
+          <LoadError message={error} onRetry={refresh} />
         ) : !data ? (
           <div role="status" aria-label="Loading journal">
             <Skeleton className="h-48" />

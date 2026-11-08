@@ -25,7 +25,7 @@ export const EMPTY_DEFAULTS: JournalDefaults = {
   feeRules: [],
   riskRules: [],
 };
-export const matchesRule = (
+const matchesRule = (
   rule: { accountId: string; symbol: string },
   accountId: string,
   symbol: string,
@@ -65,9 +65,9 @@ const onlyKeys = (value: object, allowed: readonly string[]) =>
 const DEFAULT_KEYS = ["breakeven", "breakevenMode", "feeRules", "riskRules"] as const;
 const FEE_KEYS = ["id", "accountId", "symbol", "amount", "mode"] as const;
 const RISK_KEYS = ["id", "accountId", "symbol", "stop", "target", "mode"] as const;
-export const MAX_DEFAULT_RULES = 100;
+const MAX_DEFAULT_RULES = 100;
 
-export type ParsedDefaults = { defaults: JournalDefaults; error?: undefined } | { error: string };
+type ParsedDefaults = { defaults: JournalDefaults; error?: undefined } | { error: string };
 
 /**
  * Validate a journal-defaults payload before it is persisted. Only the known

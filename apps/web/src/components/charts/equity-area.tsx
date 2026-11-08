@@ -16,7 +16,7 @@ import { usePrivacy } from "../privacy";
 import { tooltipStyle, useVizTokens } from "./tokens";
 import { ChartFrame } from "./chart-frame";
 
-export interface EquityPointDatum {
+interface EquityPointDatum {
   t: string;
   cumNetPnl: number;
 }

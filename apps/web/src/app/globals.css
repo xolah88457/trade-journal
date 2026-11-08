@@ -42,14 +42,6 @@
   --profit-fill: #0ca30c;
   --loss: #c33535;
   --neutral-mid: #e8e6dc;
-  --series-1: #2a78d6;
-  --series-2: #eb6834;
-  --series-3: #1baf7a;
-  --series-4: #eda100;
-  --series-5: #e87ba4;
-  --series-6: #008300;
-  --series-7: #4a3aa7;
-  --series-8: #e34948;
 }
 
 .dark {
@@ -84,14 +76,6 @@
   --profit-fill: #0ca30c;
   --loss: #ee7777;
   --neutral-mid: #383835;
-  --series-1: #3987e5;
-  --series-2: #d95926;
-  --series-3: #199e70;
-  --series-4: #c98500;
-  --series-5: #d55181;
-  --series-6: #008300;
-  --series-7: #9085e9;
-  --series-8: #e66767;
 }
 
 @theme inline {
@@ -264,32 +248,6 @@ body.dashboard-is-dragging .journal-hover-card {
     transform: scale(1.28);
   }
 }
-.journal-replay-enter {
-  animation: journal-replay-enter 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-.journal-replay-reveal {
-  animation: journal-replay-reveal 700ms cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-@keyframes journal-replay-enter {
-  from {
-    opacity: 0;
-    transform: translateY(6px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-@keyframes journal-replay-reveal {
-  from {
-    opacity: 0;
-    clip-path: inset(0 100% 0 0);
-  }
-  to {
-    opacity: 1;
-    clip-path: inset(0);
-  }
-}
 @media (prefers-reduced-motion: reduce) {
   .journal-rating-star {
     transition: none;
@@ -298,9 +256,7 @@ body.dashboard-is-dragging .journal-hover-card {
   .journal-rating-star:focus-visible {
     transform: none;
   }
-  .journal-rating-selected,
-  .journal-replay-enter,
-  .journal-replay-reveal {
+  .journal-rating-selected {
     animation: none;
   }
 }
@@ -957,23 +913,6 @@ body.dashboard-is-dragging .journal-hover-card {
 @container report-summary (min-width: 560px) {
   .report-summary-grid {
     grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
-}
-.manual-executions {
-  container: executions / inline-size;
-}
-.manual-execution-row {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-}
-.manual-execution-date {
-  grid-column: 1 / -1;
-}
-@container executions (min-width: 600px) {
-  .manual-execution-row {
-    grid-template-columns: minmax(200px, 1fr) repeat(4, minmax(60px, 90px));
-  }
-  .manual-execution-date {
-    grid-column: auto;
   }
 }
 @container note-editor (min-width: 520px) {

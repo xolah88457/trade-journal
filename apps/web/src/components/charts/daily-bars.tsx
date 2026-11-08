@@ -16,7 +16,7 @@ import { usePrivacy } from "../privacy";
 import { tooltipStyle, useVizTokens } from "./tokens";
 import { ChartFrame } from "./chart-frame";
 
-export interface DailyBarDatum {
+interface DailyBarDatum {
   date: string;
   netPnl: number;
 }

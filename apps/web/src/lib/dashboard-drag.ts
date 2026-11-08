@@ -1,9 +1,9 @@
-export interface DashboardDragPoint {
+interface DashboardDragPoint {
   x: number;
   y: number;
 }
 
-export interface DashboardDropRect {
+interface DashboardDropRect {
   left: number;
   right: number;
   top: number;

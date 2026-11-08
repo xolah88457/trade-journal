@@ -1,7 +1,7 @@
 import type { AnnotatedTrade } from "@luxalgo/journal-core";
 import { type CurrencyConversion, type CurrencyScope } from "@/lib/currencies";
 
-export interface CurrencyAccount {
+interface CurrencyAccount {
   id: string;
   currency: string;
   initialBalance: number;

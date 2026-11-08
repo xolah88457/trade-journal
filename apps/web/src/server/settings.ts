@@ -82,9 +82,6 @@ export const setAiKey = (provider: AiProvider, key: string | null): void => {
   else setSetting(`${provider}KeyEnc`, encryptJson(key.trim()));
 };
 
-export const getAnthropicKey = (): string | null => getAiKey("anthropic");
-export const setAnthropicKey = (key: string | null): void => setAiKey("anthropic", key);
-
 /** An http(s) API root without credentials, query or fragment, minus trailing slashes. */
 export const normalizeAiBaseUrl = (value: string): string | null => {
   if (value.length > 2048 || /[?#]/.test(value)) return null;

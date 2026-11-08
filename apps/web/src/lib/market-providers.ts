@@ -1,13 +1,13 @@
 import type { Resolution } from "./market-data";
 
-export interface CredentialField {
+interface CredentialField {
   key: string;
   label: string;
   environmentKey: string;
   options?: { value: string; label: string }[];
   defaultValue?: string;
 }
-export interface ProviderInfo {
+interface ProviderInfo {
   id: string;
   name: string;
   mode: "credentials" | "public" | "csv";
@@ -17,7 +17,7 @@ export interface ProviderInfo {
   datasets?: { value: string; label: string }[];
   resolutions?: Resolution[];
 }
-export const MARKET_PROVIDERS: ProviderInfo[] = [
+const MARKET_PROVIDERS: ProviderInfo[] = [
   {
     id: "london-strategic-edge",
     name: "London Strategic Edge",

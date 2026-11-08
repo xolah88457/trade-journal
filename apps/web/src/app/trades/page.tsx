@@ -24,6 +24,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
+import { LoadError } from "@/components/load-error";
 import Loading from "@/app/loading";
 import { postJson, useApi } from "@/lib/use-api";
 import { cn, fmtDuration, fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
@@ -421,12 +422,7 @@ function Trades() {
         )}
 
         {error ? (
-          <div role="alert" className="space-y-2 text-sm text-destructive">
-            <p>{error}</p>
-            <Button variant="outline" onClick={refresh}>
-              Try again
-            </Button>
-          </div>
+          <LoadError message={error} onRetry={refresh} />
         ) : !data ? (
           <Skeleton className="h-96" />
         ) : (

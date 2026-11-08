@@ -16,14 +16,14 @@ import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { postJson, useApi } from "@/lib/use-api";
 
-export interface AttachmentItem {
+interface AttachmentItem {
   id: string;
   name: string;
   mime: string;
   size: number;
 }
 
-export interface AttachmentsProps {
+interface AttachmentsProps {
   type: "trade" | "day" | "note" | "missed" | "prop-account" | "prop-entry";
   id: string;
   variant?: "default" | "trade-gallery";

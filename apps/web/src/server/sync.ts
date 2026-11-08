@@ -37,7 +37,7 @@ const flexExecutionRowsOnly: typeof globalThis.fetch = async (input, init) => {
   });
 };
 
-export interface SyncOutcome extends InsertResult {
+interface SyncOutcome extends InsertResult {
   accountId: string;
   equity: number | null;
   positions: number;

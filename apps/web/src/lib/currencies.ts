@@ -2,7 +2,7 @@
 const names = new Intl.DisplayNames("en", { type: "currency" });
 export const currencyCodes = Intl.supportedValuesOf("currency");
 export const currencyName = (code: string): string => `${code} — ${names.of(code) ?? code}`;
-export const isCurrencyCode = (value: unknown): value is string =>
+const isCurrencyCode = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Z]{3}$/.test(value);
 
 export interface CurrencyConversion {

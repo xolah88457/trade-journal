@@ -20,6 +20,8 @@ import { Button } from "./ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { OptionSelect } from "./ui/option-select";
 import { Skeleton } from "./ui/skeleton";
+import { LoadError } from "./load-error";
+import { mediumShortDateTime } from "@/lib/date-format";
 
 const TradeScatter = dynamic(
   () => import("./charts/trade-scatter").then((module) => module.TradeScatter),
@@ -44,15 +46,7 @@ export function TradeExplorer({ query }: { query: string }) {
   const [page, setPage] = useState(0);
   const [tableOpen, setTableOpen] = useState(false);
   const points = useMemo(() => plotTradePoints(data?.points ?? [], x, y), [data, x, y]);
-  const date = useMemo(
-    () =>
-      new Intl.DateTimeFormat("en", {
-        timeZone: data?.timeZone ?? "UTC",
-        dateStyle: "medium",
-        timeStyle: "short",
-      }),
-    [data?.timeZone],
-  );
+  const date = mediumShortDateTime(data?.timeZone ?? "UTC");
   if (loading && !data)
     return (
       <div role="status" aria-label="Loading trade explorer">
@@ -61,12 +55,11 @@ export function TradeExplorer({ query }: { query: string }) {
     );
   if (error || !data)
     return (
-      <div role="alert" className="rounded-xl border p-5">
-        <p className="text-sm text-destructive">{error ?? "Unable to load trade explorer."}</p>
-        <Button onClick={refresh} variant="outline" size="sm" className="mt-3">
-          Try again
-        </Button>
-      </div>
+      <LoadError
+        message={error ?? "Unable to load trade explorer."}
+        onRetry={refresh}
+        variant="panel"
+      />
     );
   const currency = data.currencies[0] ?? "USD";
   const excursion = x === "mae" || x === "mfe" || y === "mae" || y === "mfe";

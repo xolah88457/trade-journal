@@ -18,7 +18,7 @@ import {
   type PropData,
 } from "@/lib/prop-firms";
 export class PropConflict extends RequestError {}
-export const propToday = () =>
+const propToday = () =>
   new Intl.DateTimeFormat("en-CA", {
     timeZone: getTimeZone(),
     year: "numeric",

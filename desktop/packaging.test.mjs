@@ -41,6 +41,7 @@ import {
   bundleWindowsCrt,
   checkRequiredScripts,
   cleanPrivateFiles,
+  bundledDependencyPackages,
   collectShippedLicenses,
   collectWindowsCrtCandidateDirs,
   compareFileVersions,
@@ -2211,6 +2212,48 @@ test("collectShippedLicenses lists only packages in the staged app and reads lic
       false,
       "dev-only packages must not be listed",
     );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("bundledDependencyPackages follows production dependencies and skips dev and type-only packages", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "sumi-bundled-"));
+  try {
+    const writePkg = (dir, json) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify(json));
+      writeFileSync(join(dir, "index.js"), "module.exports = {};");
+    };
+    const web = join(tempDir, "apps/web");
+    const modules = join(tempDir, "node_modules");
+    writePkg(web, {
+      name: "web",
+      dependencies: { chart: "1", "@types/react": "1" },
+      devDependencies: { vitest: "1" },
+    });
+    writePkg(join(modules, "chart"), {
+      name: "chart",
+      version: "1.0.0",
+      dependencies: { scale: "1" },
+      optionalDependencies: { "not-installed": "1" },
+      peerDependencies: { react: "1" },
+    });
+    writePkg(join(modules, "scale"), { name: "scale", version: "2.0.0" });
+    writePkg(join(modules, "react"), { name: "react", version: "19.0.0" });
+    writePkg(join(modules, "vitest"), { name: "vitest", version: "3.0.0" });
+    writePkg(join(modules, "@types/react"), { name: "@types/react", version: "19.0.0" });
+    // CSS-only package: its exports map exposes no JavaScript entry or package.json.
+    mkdirSync(join(modules, "animate"), { recursive: true });
+    writeFileSync(
+      join(modules, "animate/package.json"),
+      JSON.stringify({ name: "animate", version: "1.0.0", exports: { "./css": "./a.css" } }),
+    );
+
+    const names = bundledDependencyPackages(web, ["animate"])
+      .map((dir) => JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).name)
+      .sort();
+    assert.deepEqual(names, ["animate", "chart", "react", "scale"]);
   } finally {
     rmSync(tempDir, { recursive: true, force: true });
   }

@@ -1150,12 +1150,63 @@ function listPackageDirs(modules) {
  * standalone tracing copies only the files a package needs at runtime and leaves
  * its LICENSE behind, so each shipped package's license text is taken from the same
  * name@version in `sourceStores` (pnpm virtual stores of the checkout) when found,
- * otherwise from the staged copy itself.
+ * otherwise from the staged copy itself. `bundledPackages` adds package directories that
+ * ship compiled into the app bundle (see bundledDependencyPackages).
  *
  * Handles pnpm's virtual store (`.pnpm/<id>/node_modules`) and nested node_modules.
  * Returns the sorted list of shipped package ids.
  */
-export function collectShippedLicenses(destRoot, scanRoots, sourceStores = []) {
+/**
+ * Package directories in the production dependency closure of `rootDir`'s package.json
+ * (dependencies, optionalDependencies and installed peers), plus `extraNames` resolved from
+ * `rootDir`. The web build compiles these into its .next chunks, so they ship as code even
+ * though most never appear as files under node_modules in the staged server tree.
+ */
+function findInstalledPackage(name, fromDir) {
+  for (let dir = fromDir; dir !== dirname(dir); dir = dirname(dir)) {
+    const pkgPath = join(dir, "node_modules", name, "package.json");
+    if (existsSync(pkgPath))
+      return { pkgPath, pkgDir: dirname(pkgPath), json: JSON.parse(readFileSync(pkgPath, "utf8")) };
+  }
+  return null;
+}
+
+export function bundledDependencyPackages(rootDir, extraNames = []) {
+  const found = new Map(); // real package dir -> package dir
+  function visit(json, fromDir) {
+    const required = Object.keys(json.dependencies || {});
+    const optional = [
+      ...Object.keys(json.optionalDependencies || {}),
+      ...Object.keys(json.peerDependencies || {}),
+    ];
+    for (const name of [...required, ...optional]) {
+      if (name.startsWith("@types/")) continue; // type declarations compile to nothing
+      let resolved;
+      try {
+        resolved = resolvePackage(name, fromDir);
+      } catch (error) {
+        // CSS-only packages export no resolvable entry; find their directory directly.
+        resolved = findInstalledPackage(name, fromDir);
+        if (!resolved && required.includes(name)) throw error;
+        if (!resolved) continue; // optional or peer dependency not installed on this host
+      }
+      const real = realpathSync(resolved.pkgDir);
+      if (found.has(real)) continue;
+      found.set(real, resolved.pkgDir);
+      visit(resolved.json, real);
+    }
+  }
+  visit({ dependencies: Object.fromEntries(extraNames.map((name) => [name, "*"])) }, rootDir);
+  visit(JSON.parse(readFileSync(join(rootDir, "package.json"), "utf8")), rootDir);
+  return [...found.values()];
+}
+
+export function collectShippedLicenses(
+  destRoot,
+  scanRoots,
+  sourceStores = [],
+  bundledPackages = [],
+) {
   const sourceById = new Map();
   for (const store of sourceStores) {
     if (!existsSync(store)) continue;
@@ -1198,6 +1249,11 @@ export function collectShippedLicenses(destRoot, scanRoots, sourceStores = []) {
         }
       }
     }
+  }
+
+  for (const packagePath of bundledPackages) {
+    const id = packageIdOf(packagePath);
+    if (!shipped.has(id)) shipped.set(id, packagePath);
   }
 
   for (const [id, stagedPath] of shipped) {
@@ -1574,7 +1630,25 @@ export async function build(options = {}) {
         }
       }
 
-      for (const targetPkgDir of koffiTargets) {
+      // pnpm may stage some targets as relative links to another target's directory. Fill the
+      // real directories first; a link that then resolves is left as is, and a dangling one is
+      // replaced by a copy (copying onto it fails with ENOTDIR).
+      const isLink = (path) => {
+        try {
+          return lstatSync(path).isSymbolicLink();
+        } catch {
+          return false;
+        }
+      };
+      const ordered = [
+        ...koffiTargets.filter((target) => !isLink(target)),
+        ...koffiTargets.filter(isLink),
+      ];
+      for (const targetPkgDir of ordered) {
+        if (isLink(targetPkgDir)) {
+          if (existsSync(join(targetPkgDir, "package.json"))) continue;
+          rmSync(targetPkgDir);
+        }
         mkdirSync(targetPkgDir, { recursive: true });
         cpSync(koffiPkgDir, targetPkgDir, { recursive: true, dereference: true });
       }
@@ -1589,6 +1663,12 @@ export async function build(options = {}) {
   assertSelfContained(join(resources, "server"), serverBase);
 
   const pnpmRoot = join(root, "node_modules/.pnpm");
+  // Client and server bundles inline the web app's runtime dependencies; Tailwind and
+  // tw-animate-css contribute generated CSS to the bundle.
+  const webBundledPackages = bundledDependencyPackages(join(root, "apps/web"), [
+    "tailwindcss",
+    "tw-animate-css",
+  ]);
 
   // 7. Assemble Electron Application Entry in resources/app (unpacked ASAR off)
   mkdirSync(appDir, { recursive: true });
@@ -1696,6 +1776,7 @@ export async function build(options = {}) {
       join(resources, "licenses/dependencies"),
       [join(resources, "server"), appNodeModules],
       [pnpmRoot],
+      webBundledPackages,
     );
 
     // Stage update-config.json in resources/app with architecture-split feedUrl
@@ -1821,6 +1902,7 @@ export async function build(options = {}) {
       join(resources, "licenses/dependencies"),
       [join(resources, "server"), appNodeModules],
       [pnpmRoot],
+      webBundledPackages,
     );
 
     if (existsSync(updateConfigPath)) {

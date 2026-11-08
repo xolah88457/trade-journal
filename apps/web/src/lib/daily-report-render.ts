@@ -303,7 +303,7 @@ async function normalizeImage(rawBytes: Uint8Array, mime: string): Promise<Norma
           height: h,
           originalWidth: origW,
           originalHeight: origH,
-        } as NormalizedImage;
+        };
       }
       throw new Error(`Failed to export normalized image to PNG (${mime})`);
     }

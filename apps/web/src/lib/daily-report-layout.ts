@@ -109,8 +109,12 @@ export interface ReportPageLayout {
 export interface NormalizedImage {
   bytes: Uint8Array;
   mime: string;
+  /** Pixel size of the embedded raster (may be downscaled for the page). */
   width: number;
   height: number;
+  /** Pixel size of the uploaded image, when the embedded raster was downscaled. */
+  originalWidth?: number;
+  originalHeight?: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -1353,7 +1357,7 @@ function addScreenshotBody(
   b.y += imgH + 10;
 
   for (const line of wrapText(
-    `Figure: ${name} (${norm.width} × ${norm.height} px)`,
+    `Figure: ${name} (${norm.originalWidth ?? norm.width} × ${norm.originalHeight ?? norm.height} px)`,
     USABLE_WIDTH,
     SIZE.caption,
     b.measure,

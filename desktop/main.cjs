@@ -478,6 +478,17 @@ if (app && typeof app.whenReady === "function") {
   let updateService = null;
   let isStopping = false;
 
+  // Resolves once Electron is ready. Anything that needs `app` to be ready
+  // (dialogs, windows, menus, sessions) must wait on this; the backend child
+  // is spawned earlier so Next boots in parallel with Chromium init.
+  const appReady = app.whenReady();
+
+  function showErrorWhenReady(title, message) {
+    return appReady.then(() => {
+      dialog.showErrorBox(title, message);
+    });
+  }
+
   async function stopBackendChild() {
     if (!childProcess || isStopping) return;
     isStopping = true;
@@ -528,13 +539,14 @@ if (app && typeof app.whenReady === "function") {
 
     const startupTimeout = setTimeout(() => {
       console.error("[main] Sumi local server startup timed out after 60s.");
-      dialog.showErrorBox(
+      showErrorWhenReady(
         "Sumi could not open",
         "The local journal server did not become ready within 60 seconds. See desktop.log in your journal data folder.",
-      );
-      stopBackendChild().finally(() => {
-        app.quit();
-      });
+      )
+        .then(() => stopBackendChild())
+        .finally(() => {
+          app.quit();
+        });
     }, 60_000);
 
     const onData = (chunk) => {
@@ -577,11 +589,12 @@ if (app && typeof app.whenReady === "function") {
       }
       if (!isStopping) {
         const exitDetail = code !== null ? `exit ${code}` : `signal ${signal}`;
-        dialog.showErrorBox(
+        showErrorWhenReady(
           "Sumi could not open",
           `The local journal server stopped (${exitDetail}). Your data is still saved. See desktop.log in your journal data folder.`,
-        );
-        app.quit();
+        ).finally(() => {
+          app.quit();
+        });
       }
     });
   }
@@ -616,6 +629,12 @@ if (app && typeof app.whenReady === "function") {
     mainWindow.once("ready-to-show", () => {
       mainWindow.show();
     });
+
+    // The server may already be ready (it starts before the app is ready).
+    if (expectedOrigin) {
+      mainWindow.loadURL(expectedOrigin);
+      return;
+    }
 
     // Initial splash page while server starts
     mainWindow.loadURL(
@@ -653,9 +672,30 @@ if (app && typeof app.whenReady === "function") {
     appVersion: app.getVersion() || "0.3.0",
   });
 
-  app.whenReady().then(() => {
-    createWindow();
+  // Start the local server now, in parallel with Electron/Chromium init.
+  try {
     startChildProcess();
+  } catch (err) {
+    console.error("[main] Failed to start the local server:", err);
+    showErrorWhenReady(
+      "Sumi could not open",
+      `The local journal server could not be started (${err && err.message ? err.message : err}).`,
+    ).finally(() => {
+      app.quit();
+    });
+  }
+
+  // Last resort if the app exits before the async before-quit cleanup ran.
+  process.on("exit", () => {
+    if (childProcess) {
+      try {
+        childProcess.kill();
+      } catch {}
+    }
+  });
+
+  appReady.then(() => {
+    createWindow();
   });
 
   let beforeQuitHandled = false;

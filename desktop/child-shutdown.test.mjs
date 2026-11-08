@@ -275,3 +275,114 @@ test("SUMI_SERVER_PATH override is ignored in production (SUMI_TEST_MODE !== 1)"
     fs.rmSync(tmpDir, { recursive: true, force: true });
   }
 });
+
+function runLaunchWithFakeServer({ preload } = {}) {
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sumi-launch-"));
+  const dataDir = path.join(tmpDir, "data");
+  fs.mkdirSync(dataDir, { mode: 0o700 });
+  const serverPath = path.join(tmpDir, "fake-server.cjs");
+  const hitsPath = path.join(tmpDir, "hits.txt");
+  fs.writeFileSync(
+    serverPath,
+    `
+    const http = require("node:http");
+    const fs = require("node:fs");
+    const server = http.createServer((req, res) => {
+      fs.appendFileSync(${JSON.stringify(hitsPath)}, req.url + "\\n");
+      res.statusCode = req.url === "/api/health" ? 401 : 500;
+      res.end("x");
+    });
+    server.listen(0, "127.0.0.1", () => {
+      process.env.PORT = String(server.address().port);
+    });
+    `,
+  );
+  const args = [];
+  if (preload) {
+    const preloadPath = path.join(tmpDir, "preload.cjs");
+    fs.writeFileSync(preloadPath, preload);
+    args.push("--require", preloadPath);
+  }
+  args.push(path.join(__dirname, "launch.cjs"));
+  const child = spawn(process.execPath, args, {
+    env: {
+      ...process.env,
+      SUMI_TEST_MODE: "1",
+      SUMI_SERVER_PATH: serverPath,
+      JOURNAL_DATA_DIR: dataDir,
+    },
+    stdio: ["ignore", "pipe", "pipe", "ipc"],
+  });
+  return { child, tmpDir, dataDir, hitsPath };
+}
+
+function waitForReady(child) {
+  let out = "";
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`no SUMI_READY: ${out}`)), 15000);
+    child.stdout.on("data", (d) => {
+      out += d.toString();
+      if (/SUMI_READY http:\/\/127\.0\.0\.1:\d+/.test(out)) {
+        clearTimeout(timer);
+        resolve(out);
+      }
+    });
+    child.once("exit", () => reject(new Error(`exited early: ${out}`)));
+  });
+}
+
+async function cleanupLaunch({ child, tmpDir }) {
+  const exit = once(child, "exit");
+  child.kill("SIGKILL");
+  await exit;
+  fs.rmSync(tmpDir, { recursive: true, force: true });
+}
+
+test("launch.cjs probes /api/health (any non-5xx counts as ready) and not /", async () => {
+  const run = runLaunchWithFakeServer();
+  try {
+    await waitForReady(run.child);
+    const hits = fs.readFileSync(run.hitsPath, "utf8").trim().split("\n");
+    assert.ok(hits.length >= 1);
+    assert.ok(
+      hits.every((h) => h === "/api/health"),
+      `unexpected probes: ${hits}`,
+    );
+  } finally {
+    await cleanupLaunch(run);
+  }
+});
+
+test("launch.cjs enables a private compile cache inside the data dir when supported", async () => {
+  const run = runLaunchWithFakeServer({
+    preload: `
+      require("node:module").enableCompileCache = (dir) => {
+        require("node:fs").writeFileSync(process.env.JOURNAL_DATA_DIR + "/cache-arg.txt", dir);
+      };
+    `,
+  });
+  try {
+    await waitForReady(run.child);
+    const cacheDir = path.join(run.dataDir, ".node-cache");
+    assert.equal(fs.readFileSync(path.join(run.dataDir, "cache-arg.txt"), "utf8"), cacheDir);
+    if (process.platform !== "win32") {
+      assert.equal(fs.statSync(cacheDir).mode & 0o777, 0o700);
+    }
+  } finally {
+    await cleanupLaunch(run);
+  }
+});
+
+test("launch.cjs tolerates a missing or throwing enableCompileCache", async () => {
+  for (const body of [
+    `require("node:module").enableCompileCache = undefined;`,
+    `require("node:module").enableCompileCache = () => { throw new Error("nope"); };`,
+  ]) {
+    const run = runLaunchWithFakeServer({ preload: body });
+    try {
+      await waitForReady(run.child);
+    } finally {
+      await cleanupLaunch(run);
+    }
+  }
+});

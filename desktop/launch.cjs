@@ -7,6 +7,20 @@ process.env.HOSTNAME = "127.0.0.1";
 process.env.PORT = "0";
 process.env.NEXT_TELEMETRY_DISABLED = "1";
 
+// Cache compiled JS next to the journal data (the data dir is 0o700, so the
+// cache inherits its privacy). Best effort only: older Node lacks the API.
+try {
+  const nodeModule = require("node:module");
+  const dataDir = process.env.JOURNAL_DATA_DIR;
+  if (typeof nodeModule.enableCompileCache === "function" && dataDir) {
+    const cacheDir = path.join(dataDir, ".node-cache");
+    fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+    nodeModule.enableCompileCache(cacheDir);
+  }
+} catch {
+  // Non-fatal: startup simply proceeds without the cache.
+}
+
 const isTestMode = process.env.SUMI_TEST_MODE === "1";
 const serverPath =
   isTestMode && process.env.SUMI_SERVER_PATH
@@ -106,7 +120,9 @@ const timer = setInterval(async () => {
   checking = true;
   try {
     const origin = `http://127.0.0.1:${port}`;
-    const response = await fetch(origin, {
+    // Cheap probe: any non-5xx response (including middleware 401/redirects)
+    // proves Next is serving, without rendering the SSR dashboard.
+    const response = await fetch(`${origin}/api/health`, {
       redirect: "manual",
       signal: AbortSignal.timeout(2000),
     });

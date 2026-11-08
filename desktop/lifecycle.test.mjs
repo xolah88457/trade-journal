@@ -431,3 +431,22 @@ test("buildMenuTemplate adapts for Windows and Linux with File and Help menus", 
     assert.ok(helpLabels.includes("About Sumi"));
   }
 });
+
+test("main.cjs spawns the server before whenReady and defers app-only APIs until ready", () => {
+  const src = fs.readFileSync(new URL("./main.cjs", import.meta.url), "utf8");
+  const lock = src.indexOf("app.requestSingleInstanceLock");
+  const spawnCall = src.indexOf("    startChildProcess();");
+  const createWin = src.indexOf("createWindow();\n  });");
+  assert.ok(lock > 0 && spawnCall > lock, "child spawns after the single-instance lock");
+  assert.ok(createWin > spawnCall, "window creation happens after (and inside) ready");
+  assert.match(src, /appReady\.then\(\(\) => \{\s*createWindow\(\);/);
+  // Dialogs must not be shown directly from child event handlers.
+  const startFn = src.slice(
+    src.indexOf("function startChildProcess"),
+    src.indexOf("function createWindow"),
+  );
+  assert.ok(!startFn.includes("dialog.showErrorBox"), "dialogs wait for app ready");
+  assert.ok(startFn.includes("showErrorWhenReady"));
+  // Early quit cleanup
+  assert.match(src, /process\.on\("exit"[\s\S]*childProcess\.kill\(\)/);
+});

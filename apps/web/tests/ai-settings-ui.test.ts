@@ -154,3 +154,40 @@ it("loads, edits and saves personal trading instructions", async () => {
     "PATCH",
   );
 });
+
+const button = (label: string) =>
+  container.querySelector<HTMLButtonElement>(`button[aria-label="${label}"]`)!;
+
+it("shows free OpenRouter and Groq options with links to their key pages", async () => {
+  await render(settings("anthropic"));
+  expect(container.textContent).toContain("Start free: no API fees");
+  const links = Array.from(container.querySelectorAll<HTMLAnchorElement>("a")).map((a) => a.href);
+  expect(links).toContain("https://openrouter.ai/keys");
+  expect(links).toContain("https://console.groq.com/keys");
+});
+
+it.each([
+  ["OpenRouter", "https://openrouter.ai/api/v1", "openrouter/free"],
+  ["Groq", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b"],
+])("fills in %s and saves it with the pasted key", async (name, baseUrl, model) => {
+  await render(settings("anthropic"));
+  await act(async () => button(`Use ${name} settings`).click());
+  expect(field("ai-base-url")!.value).toBe(baseUrl);
+  expect(field("ai-model")!.value).toBe(model);
+  expect(container.textContent).toContain(`Paste your ${name} API key into the key field`);
+  expect(container.textContent).toContain(`${name} API key`);
+  expect(container.textContent).not.toContain("API key (optional)");
+  await type("ai-api-key", "free-key");
+  await act(async () => saveButton().click());
+  expect(state.post).toHaveBeenCalledWith(
+    "/api/settings",
+    {
+      aiProvider: "compatible",
+      aiModel: model,
+      compatibleBaseUrl: baseUrl,
+      compatibleKey: "free-key",
+      aiInstructions: "",
+    },
+    "PATCH",
+  );
+});

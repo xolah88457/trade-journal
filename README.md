@@ -137,6 +137,7 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 - Session recaps for a day and critiques of a single trade.
 - Every request shows a preview of exactly what will be sent before it goes out.
 - Use your own Anthropic or OpenAI key or an OpenAI-compatible server, choose the model, and add personal trading instructions.
+- **Free to start**: one-click setup for OpenRouter (`openrouter/free`) or Groq (`openai/gpt-oss-120b`) with a free API key, no API fees. Free plans are rate-limited, and free models may log prompts.
 - Configure it in **Settings → AI**. See [docs/ai-scope.md](docs/ai-scope.md).
 
 ### Offline voice dictation

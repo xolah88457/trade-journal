@@ -22,6 +22,32 @@ export const AI_KEY_VARIABLES: Partial<Record<AiProvider, string>> = {
 
 export const AI_INSTRUCTIONS_MAX_LENGTH = 2000;
 
+/**
+ * Hosted OpenAI-compatible services with a free tier, offered as one-click setups
+ * for people who do not want to pay for API usage. Free model lineups rotate, so
+ * each entry also links the provider's own model list.
+ */
+export const FREE_AI_SERVICES = [
+  {
+    name: "OpenRouter",
+    baseUrl: "https://openrouter.ai/api/v1",
+    model: "openrouter/free",
+    keysUrl: "https://openrouter.ai/keys",
+    modelsUrl: "https://openrouter.ai/models?max_price=0",
+    about:
+      "openrouter/free picks an available free model for each request. You can also enter any model ID ending in :free. Free models have a daily request limit.",
+  },
+  {
+    name: "Groq",
+    baseUrl: "https://api.groq.com/openai/v1",
+    model: "openai/gpt-oss-120b",
+    keysUrl: "https://console.groq.com/keys",
+    modelsUrl: "https://console.groq.com/docs/models",
+    about:
+      "Fast responses on a free, rate-limited plan. Any production model in Groq's list works.",
+  },
+] as const;
+
 export interface AiConnection {
   configured: boolean;
   source: "environment" | "saved" | null;

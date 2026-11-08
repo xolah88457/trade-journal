@@ -7,6 +7,7 @@ import {
   AI_KEY_VARIABLES,
   AI_PROVIDER_NAMES,
   AI_PROVIDERS,
+  FREE_AI_SERVICES,
   type AiProvider,
   type AiSettingsPayload,
 } from "@/lib/ai-settings";
@@ -42,6 +43,9 @@ export function AiSettings() {
   const connection = data?.aiConnections[provider];
   const environment = connection?.source === "environment";
   const compatible = provider === "compatible";
+  const freeService = compatible
+    ? FREE_AI_SERVICES.find((service) => baseUrl.trim().replace(/\/+$/, "") === service.baseUrl)
+    : undefined;
   const name = AI_PROVIDER_NAMES[provider];
   const disabled = busy || loading || !data;
   const keyHint = environment
@@ -49,10 +53,23 @@ export function AiSettings() {
     : compatible
       ? connection?.source === "saved"
         ? "Leave blank to keep your saved key. Saving a different server URL removes it."
-        : "Only needed if your server requires one."
+        : freeService
+          ? `Required for ${freeService.name}: paste the key you created on its site.`
+          : "Only needed if your server requires one."
       : connection?.configured
         ? "Leave blank to keep your saved key, or enter a replacement."
         : "Add your API key, then save to use this provider.";
+
+  const applyFreeService = (service: (typeof FREE_AI_SERVICES)[number]) => {
+    setProvider("compatible");
+    setBaseUrl(service.baseUrl);
+    setModel(service.model);
+    setApiKey("");
+    setFailure("");
+    setSaved(
+      `${service.name} filled in. Paste your ${service.name} API key into the key field, then save.`,
+    );
+  };
 
   const save = async (remove = false) => {
     setBusy(true);
@@ -91,10 +108,76 @@ export function AiSettings() {
       </CardHeader>
       <CardContent className="space-y-3">
         <p className="text-sm text-muted-foreground">
-          Use Anthropic, OpenAI, or an OpenAI-compatible server such as Ollama, LM Studio or
-          OpenRouter for recaps, trade critiques, and “ask your journal”. Your key is encrypted at
-          rest. AI requests go from your server directly to the provider you select.
+          Use Anthropic, OpenAI, or an OpenAI-compatible server such as Ollama, LM Studio,
+          OpenRouter or Groq for recaps, trade critiques, and “ask your journal”. Your key is
+          encrypted at rest. AI requests go from your server directly to the provider you select.
         </p>
+        <section
+          aria-labelledby="ai-free-heading"
+          className="space-y-2 rounded-md border bg-muted/40 p-3"
+        >
+          <h3 id="ai-free-heading" className="text-sm font-medium">
+            Start free: no API fees
+          </h3>
+          <p className="text-xs text-muted-foreground">
+            OpenRouter and Groq give free API keys with free models. Create a key, choose{" "}
+            <span className="font-medium text-foreground">Use</span> below to fill in the server and
+            model, paste the key, and save.
+          </p>
+          <ul className="space-y-2">
+            {FREE_AI_SERVICES.map((service) => (
+              <li
+                key={service.name}
+                className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between"
+              >
+                <div className="min-w-0 space-y-0.5 text-xs">
+                  <p>
+                    <span className="font-medium">{service.name}</span>{" "}
+                    <span className="text-muted-foreground">
+                      · model <code className="break-all">{service.model}</code>
+                    </span>
+                  </p>
+                  <p className="text-muted-foreground">{service.about}</p>
+                  <p className="flex flex-wrap gap-x-3">
+                    <a
+                      className="underline underline-offset-2"
+                      href={service.keysUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Get a free {service.name} key
+                    </a>
+                    <a
+                      className="underline underline-offset-2"
+                      href={service.modelsUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Free models
+                    </a>
+                  </p>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  className="shrink-0 self-start"
+                  disabled={disabled}
+                  aria-label={`Use ${service.name} settings`}
+                  onClick={() => applyFreeService(service)}
+                >
+                  Use {service.name}
+                </Button>
+              </li>
+            ))}
+          </ul>
+          <p className="text-xs text-muted-foreground">
+            Free plans have request limits and the free model lineup changes over time. Free models
+            may log prompts or use them for training, and prompts include your journal data. If
+            OpenRouter finds no free endpoint, check the data policy options in its privacy
+            settings.
+          </p>
+        </section>
         {data && (
           <p className="text-xs text-muted-foreground">
             Active provider: {AI_PROVIDER_NAMES[data.aiProvider]} ·{" "}
@@ -171,7 +254,11 @@ export function AiSettings() {
         )}
         <div className="space-y-1">
           <Label htmlFor="ai-api-key">
-            {compatible ? "API key (optional)" : `${name} API key`}
+            {freeService
+              ? `${freeService.name} API key`
+              : compatible
+                ? "API key (optional)"
+                : `${name} API key`}
           </Label>
           <Input
             id="ai-api-key"
@@ -185,11 +272,13 @@ export function AiSettings() {
             placeholder={
               connection?.source
                 ? "Key configured"
-                : compatible
-                  ? "Optional"
-                  : provider === "anthropic"
-                    ? "sk-ant-…"
-                    : "sk-…"
+                : freeService
+                  ? `Your ${freeService.name} key`
+                  : compatible
+                    ? "Optional"
+                    : provider === "anthropic"
+                      ? "sk-ant-…"
+                      : "sk-…"
             }
             autoComplete="off"
             spellCheck={false}

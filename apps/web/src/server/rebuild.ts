@@ -25,6 +25,10 @@ const COMPUTED_COLUMNS = [
   "exitsJson",
   "durationMs",
 ] as const satisfies readonly (keyof typeof trades.$inferSelect)[];
+type ComputedColumn = (typeof COMPUTED_COLUMNS)[number];
+const computedSelection = Object.fromEntries(
+  COMPUTED_COLUMNS.map((column) => [column, trades[column]]),
+) as { [K in ComputedColumn]: (typeof trades)[K] };
 
 /**
  * Rebuild the materialized round trips for an account from its executions.
@@ -58,27 +62,7 @@ export const rebuildAccount = (accountId: string): void => {
   });
   const existing = new Map(
     db
-      .select({
-        key: trades.key,
-        accountId: trades.accountId,
-        symbol: trades.symbol,
-        assetClass: trades.assetClass,
-        direction: trades.direction,
-        status: trades.status,
-        openedAt: trades.openedAt,
-        closedAt: trades.closedAt,
-        quantity: trades.quantity,
-        openQuantity: trades.openQuantity,
-        avgEntry: trades.avgEntry,
-        avgExit: trades.avgExit,
-        grossPnl: trades.grossPnl,
-        fees: trades.fees,
-        netPnl: trades.netPnl,
-        executionCount: trades.executionCount,
-        executionIdsJson: trades.executionIdsJson,
-        exitsJson: trades.exitsJson,
-        durationMs: trades.durationMs,
-      })
+      .select({ key: trades.key, ...computedSelection })
       .from(trades)
       .where(eq(trades.accountId, accountId))
       .all()

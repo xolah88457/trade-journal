@@ -240,6 +240,57 @@ const bucketBlock = (title: string, buckets: BucketStats[]): string =>
         )
         .join("\n")}\n`;
 
+/**
+ * Shared tail of every prompt builder: resolve the effective system prompt and provider, fingerprint
+ * the snapshot, enforce the preview-to-send drift check, and assemble the preview payload.
+ */
+function finishContext(
+  input: { preview?: boolean; snapshotFingerprint?: string },
+  parts: {
+    /** Task text as shown in the preview (may differ from the start of `fullPrompt`). */
+    taskPrompt: string;
+    journalContext: string;
+    fullPrompt: string;
+    scopeLabel?: string;
+  },
+) {
+  const { taskPrompt, journalContext, fullPrompt, scopeLabel } = parts;
+  const customInstructions = getAiInstructions();
+  const effectiveSystemPrompt = buildAiSystemPrompt(customInstructions);
+  const providerInfo = getAiProviderInfo();
+
+  const snapshotFingerprint = computeSnapshotFingerprint({
+    fullPrompt,
+    effectiveSystemPrompt,
+    provider: providerInfo.provider,
+    model: providerInfo.model,
+    endpoint: providerInfo.actualEndpoint,
+  });
+
+  if (!input.preview && input.snapshotFingerprint) {
+    verifySnapshotFingerprint(input.snapshotFingerprint, snapshotFingerprint);
+  }
+
+  const preview: AiContextPreview = {
+    snapshotFingerprint,
+    system: BASE_AI_SYSTEM,
+    customInstructions,
+    effectiveSystemPrompt,
+    taskPrompt,
+    journalContext,
+    fullPrompt,
+    provider: providerInfo.provider,
+    providerName: providerInfo.providerName,
+    model: providerInfo.model,
+    isLocal: providerInfo.isLocal,
+    endpointUrl: providerInfo.baseUrl,
+    networkPrivacy: providerInfo.networkPrivacy,
+    ...(scopeLabel === undefined ? {} : { scopeLabel }),
+  };
+
+  return { effectiveSystemPrompt, snapshotFingerprint, preview };
+}
+
 export function buildAskPromptContext(input: {
   question: string;
   filters: AnalysisFilters;
@@ -273,46 +324,14 @@ Cite the numbers you used. Under 200 words.`;
 
   const fullPrompt = `${taskPrompt}\n\n${journalContext}\n\nQuestion: ${question}`;
 
-  const customInstructions = getAiInstructions();
-  const effectiveSystemPrompt = buildAiSystemPrompt(customInstructions);
-  const providerInfo = getAiProviderInfo();
-
-  const snapshotFingerprint = computeSnapshotFingerprint({
-    fullPrompt,
-    effectiveSystemPrompt,
-    provider: providerInfo.provider,
-    model: providerInfo.model,
-    endpoint: providerInfo.actualEndpoint,
-  });
-
-  if (!input.preview && input.snapshotFingerprint) {
-    verifySnapshotFingerprint(input.snapshotFingerprint, snapshotFingerprint);
-  }
-
-  const preview: AiContextPreview = {
-    snapshotFingerprint,
-    system: BASE_AI_SYSTEM,
-    customInstructions,
-    effectiveSystemPrompt,
+  const { effectiveSystemPrompt, snapshotFingerprint, preview } = finishContext(input, {
     taskPrompt: `${taskPrompt}\n\nQuestion: ${question}`,
     journalContext,
     fullPrompt,
-    provider: providerInfo.provider,
-    providerName: providerInfo.providerName,
-    model: providerInfo.model,
-    isLocal: providerInfo.isLocal,
-    endpointUrl: providerInfo.baseUrl,
-    networkPrivacy: providerInfo.networkPrivacy,
     scopeLabel: scope.scope.label,
-  };
+  });
 
-  return {
-    scope,
-    fullPrompt,
-    effectiveSystemPrompt,
-    snapshotFingerprint,
-    preview,
-  };
+  return { scope, fullPrompt, effectiveSystemPrompt, snapshotFingerprint, preview };
 }
 
 export function buildRecapPromptContext(input: {
@@ -366,46 +385,14 @@ short "**Keep**" and "**Fix**" list at the end.`;
 
   const fullPrompt = `${taskPrompt}\n\n${journalContext}`;
 
-  const customInstructions = getAiInstructions();
-  const effectiveSystemPrompt = buildAiSystemPrompt(customInstructions);
-  const providerInfo = getAiProviderInfo();
-
-  const snapshotFingerprint = computeSnapshotFingerprint({
-    fullPrompt,
-    effectiveSystemPrompt,
-    provider: providerInfo.provider,
-    model: providerInfo.model,
-    endpoint: providerInfo.actualEndpoint,
-  });
-
-  if (!input.preview && input.snapshotFingerprint) {
-    verifySnapshotFingerprint(input.snapshotFingerprint, snapshotFingerprint);
-  }
-
-  const preview: AiContextPreview = {
-    snapshotFingerprint,
-    system: BASE_AI_SYSTEM,
-    customInstructions,
-    effectiveSystemPrompt,
+  const { effectiveSystemPrompt, snapshotFingerprint, preview } = finishContext(input, {
     taskPrompt,
     journalContext,
     fullPrompt,
-    provider: providerInfo.provider,
-    providerName: providerInfo.providerName,
-    model: providerInfo.model,
-    isLocal: providerInfo.isLocal,
-    endpointUrl: providerInfo.baseUrl,
-    networkPrivacy: providerInfo.networkPrivacy,
     scopeLabel: scope.scope.label,
-  };
+  });
 
-  return {
-    scope,
-    fullPrompt,
-    effectiveSystemPrompt,
-    snapshotFingerprint,
-    preview,
-  };
+  return { scope, fullPrompt, effectiveSystemPrompt, snapshotFingerprint, preview };
 }
 
 export function buildCritiquePromptContext(input: {
@@ -454,42 +441,11 @@ ${fills.map((fill) => `${fill.executedAt} ${fill.side} ${fill.quantity} @ ${fill
 
   const fullPrompt = `${taskPrompt}\n\n${journalContext}`;
 
-  const customInstructions = getAiInstructions();
-  const effectiveSystemPrompt = buildAiSystemPrompt(customInstructions);
-  const providerInfo = getAiProviderInfo();
-
-  const snapshotFingerprint = computeSnapshotFingerprint({
-    fullPrompt,
-    effectiveSystemPrompt,
-    provider: providerInfo.provider,
-    model: providerInfo.model,
-    endpoint: providerInfo.actualEndpoint,
-  });
-
-  if (!input.preview && input.snapshotFingerprint) {
-    verifySnapshotFingerprint(input.snapshotFingerprint, snapshotFingerprint);
-  }
-
-  const preview: AiContextPreview = {
-    snapshotFingerprint,
-    system: BASE_AI_SYSTEM,
-    customInstructions,
-    effectiveSystemPrompt,
+  const { effectiveSystemPrompt, snapshotFingerprint, preview } = finishContext(input, {
     taskPrompt,
     journalContext,
     fullPrompt,
-    provider: providerInfo.provider,
-    providerName: providerInfo.providerName,
-    model: providerInfo.model,
-    isLocal: providerInfo.isLocal,
-    endpointUrl: providerInfo.baseUrl,
-    networkPrivacy: providerInfo.networkPrivacy,
-  };
+  });
 
-  return {
-    fullPrompt,
-    effectiveSystemPrompt,
-    snapshotFingerprint,
-    preview,
-  };
+  return { fullPrompt, effectiveSystemPrompt, snapshotFingerprint, preview };
 }

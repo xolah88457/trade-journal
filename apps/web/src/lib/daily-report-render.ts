@@ -9,6 +9,7 @@ import type {
   ReportCurvePoint,
 } from "./daily-report-types";
 import { zipSync } from "fflate";
+import { loadFontBytes } from "./pdf-font";
 import {
   PAGE_WIDTH,
   PAGE_HEIGHT,
@@ -79,23 +80,7 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
 // Font Loader & Browser FontFace Registration
 // ---------------------------------------------------------------------------
 
-let cachedFontBytes: Uint8Array | null = null;
 let fontFaceRegistered = false;
-
-async function loadFontBytes(): Promise<Uint8Array> {
-  if (cachedFontBytes) return cachedFontBytes;
-
-  // Browser fetch only — no dynamic Node fs/path in client-importable code
-  const res = await fetch("/fonts/NotoSans-Regular.ttf");
-  if (!res.ok) {
-    throw new Error(
-      `Could not load PDF font /fonts/NotoSans-Regular.ttf (${res.status} ${res.statusText})`,
-    );
-  }
-  const buffer = await res.arrayBuffer();
-  cachedFontBytes = new Uint8Array(buffer);
-  return cachedFontBytes;
-}
 
 /**
  * Registers the verified Noto Sans font bytes into document.fonts once before Canvas renders.
@@ -996,7 +981,10 @@ export async function prepareDailyReport(
   const normalizedImages = await fetchAllScreenshots(allAttachments, options);
 
   // 3. Load font bytes, register FontFace for Canvas, and prepare fontkit layout measurement
-  const fontBytes = await loadFontBytes();
+  const fontBytes = await loadFontBytes(
+    (res) =>
+      `Could not load PDF font /fonts/NotoSans-Regular.ttf (${res.status} ${res.statusText})`,
+  );
   await ensureFontFaceRegistered(fontBytes);
 
   let measure: MeasureFn = defaultMeasure;

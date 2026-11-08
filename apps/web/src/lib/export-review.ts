@@ -1,4 +1,5 @@
 import { readVizTokens } from "@/components/charts/tokens";
+import { loadFontBytes } from "./pdf-font";
 
 export interface ReviewDocument {
   title: string;
@@ -79,9 +80,7 @@ export async function buildReviewPdf(doc: ReviewDocument, fontBytes: ArrayBuffer
   return new Uint8Array(await pdf.save());
 }
 export async function exportPdf(doc: ReviewDocument) {
-  const response = await fetch("/fonts/NotoSans-Regular.ttf");
-  if (!response.ok) throw new Error("Could not load the PDF font.");
-  const bytes = await buildReviewPdf(doc, await response.arrayBuffer());
+  const bytes = await buildReviewPdf(doc, await loadFontBytes());
   return [
     {
       blob: new Blob([new Uint8Array(bytes)], { type: "application/pdf" }),

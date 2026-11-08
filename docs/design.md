@@ -1,8 +1,8 @@
 # Design notes
 
 Dark-first trading terminal. Tokens live in `apps/web/src/app/globals.css`; charts
-resolve them at runtime (`components/charts/tokens.ts`) because ECharts paints to
-canvas, where CSS variables don't reach.
+resolve them at runtime (`components/charts/tokens.ts`) so chart marks and tooltips
+match the active theme.
 
 ## P&L color is never load-bearing
 

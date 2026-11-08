@@ -1,13 +1,22 @@
 "use client";
 
-import { useMemo, useEffect, useRef, useState } from "react";
-import dynamic from "next/dynamic";
-import type { EChartsOption } from "echarts";
+import {
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  Line,
+  LineChart,
+  ReferenceLine,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import { fmtMoney, fmtNumber } from "@/lib/utils";
 import { usePrivacy } from "../privacy";
-import { useVizTokens } from "./tokens";
-
-const EChart = dynamic(() => import("./echart").then((module) => module.EChart), { ssr: false });
+import { tooltipStyle, useVizTokens } from "./tokens";
+import { ChartFrame } from "./chart-frame";
 
 interface HourBucket {
   key: string; // "09"
@@ -15,10 +24,13 @@ interface HourBucket {
   trades: number;
 }
 
+const SYNC_ID = "time-of-day";
+const AXIS_WIDTH = 64;
+
 /**
- * Time-of-day performance (ECharts — the heavy plot). Two aligned rows:
- * P&L per opening hour as diverging columns, trade count as a muted line.
- * One value axis per pane — never dual-axis on one grid.
+ * Time-of-day performance (Recharts). Two aligned rows sharing the hour axis
+ * and a linked tooltip: P&L per opening hour as diverging columns, trade
+ * count as a muted line. One value axis per pane — never dual-axis on one grid.
  */
 export function TimeHeatmap({
   hours,
@@ -31,123 +43,99 @@ export function TimeHeatmap({
 }) {
   const t = useVizTokens();
   const privateMode = usePrivacy();
-  const host = useRef<HTMLDivElement>(null);
-  const [visible, setVisible] = useState(false);
-  useEffect(() => {
-    if (!host.current) return;
-    if (typeof IntersectionObserver === "undefined") {
-      setVisible(true);
-      return;
-    }
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (entry?.isIntersecting) {
-          setVisible(true);
-          observer.disconnect();
-        }
-      },
-      { rootMargin: "240px" },
-    );
-    observer.observe(host.current);
-    return () => observer.disconnect();
-  }, []);
-  const option = useMemo<EChartsOption | null>(() => {
-    if (!t) return null;
-    const categories = hours.map((h) => `${h.key}:00`);
-    return {
-      backgroundColor: "transparent",
-      grid: [
-        { left: 64, right: 16, top: 24, height: "48%" },
-        { left: 64, right: 16, bottom: 28, height: "22%" },
-      ],
-      tooltip: {
-        confine: true,
-        trigger: "axis",
-        backgroundColor: t.card,
-        borderColor: t.border,
-        borderWidth: 1,
-        padding: [12, 14],
-        extraCssText:
-          "border-radius:12px;box-shadow:0 12px 32px rgba(0,0,0,.18),0 2px 8px rgba(0,0,0,.1);line-height:1.6;",
-        textStyle: { color: t.foreground, fontSize: 13 },
-      },
-      axisPointer: { link: [{ xAxisIndex: "all" }] },
-      xAxis: [
-        {
-          type: "category",
-          data: categories,
-          gridIndex: 0,
-          axisLine: { lineStyle: { color: t.baseline } },
-          axisLabel: { show: false },
-          axisTick: { show: false },
-        },
-        {
-          type: "category",
-          data: categories,
-          gridIndex: 1,
-          axisLine: { lineStyle: { color: t.baseline } },
-          axisLabel: { color: t.inkMuted, fontSize: 11 },
-          axisTick: { show: false },
-        },
-      ],
-      yAxis: [
-        {
-          type: "value",
-          gridIndex: 0,
-          name: privateMode ? "Net P&L (hidden)" : `Net P&L (${currency})`,
-          nameTextStyle: { color: t.inkMuted, fontSize: 11 },
-          splitLine: { lineStyle: { color: t.gridline } },
-          axisLabel: {
-            color: t.inkMuted,
-            fontSize: 11,
-            formatter: (value: number) => (privateMode ? "••••" : fmtNumber(value, 0)),
-          },
-        },
-        {
-          type: "value",
-          gridIndex: 1,
-          name: "Trades",
-          nameTextStyle: { color: t.inkMuted, fontSize: 11 },
-          splitLine: { show: false },
-          axisLabel: { color: t.inkMuted, fontSize: 11 },
-        },
-      ],
-      series: [
-        {
-          type: "bar",
-          name: "Net P&L",
-          tooltip: {
-            valueFormatter: (value) => (privateMode ? "Hidden" : fmtMoney(Number(value), currency)),
-          },
-          xAxisIndex: 0,
-          yAxisIndex: 0,
-          data: hours.map((h) => ({
-            value: h.netPnl,
-            itemStyle: {
-              color: h.netPnl >= 0 ? t.profitFill : t.loss,
-              borderRadius: h.netPnl >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4],
-            },
-          })),
-          barMaxWidth: 26,
-        },
-        {
-          type: "line",
-          name: "Trades",
-          tooltip: { valueFormatter: (value) => fmtNumber(Number(value), 0) },
-          xAxisIndex: 1,
-          yAxisIndex: 1,
-          data: hours.map((h) => h.trades),
-          lineStyle: { color: t.inkMuted, width: 2 },
-          itemStyle: { color: t.inkMuted },
-          symbolSize: 6,
-        },
-      ],
-    };
-  }, [hours, t, privateMode, currency]);
+  if (!t) return <div style={{ height }} />;
+
+  const data = hours.map((h) => ({
+    hour: `${h.key}:00`,
+    netPnl: h.netPnl,
+    trades: h.trades,
+  }));
+  const pnlHeight = Math.round(height * 0.66);
+  const tickStyle = { fill: t.inkMuted, fontSize: 11 };
+  const labelStyle = { fill: t.inkMuted, fontSize: 11, textAnchor: "middle" as const };
+  const margin = { top: 8, right: 16, bottom: 0, left: 0 };
 
   return (
-    <div ref={host} style={{ height }}>
-      {visible && option && <EChart key={String(privateMode)} option={option} height={height} />}
+    <div style={{ height }}>
+      <ChartFrame height={pnlHeight}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart
+            key={String(privateMode)}
+            data={data}
+            syncId={SYNC_ID}
+            margin={margin}
+            barCategoryGap="20%"
+          >
+            <CartesianGrid stroke={t.gridline} strokeWidth={1} vertical={false} />
+            <XAxis dataKey="hour" tick={false} tickLine={false} axisLine={{ stroke: t.baseline }} />
+            <YAxis
+              width={AXIS_WIDTH}
+              tick={tickStyle}
+              tickLine={false}
+              axisLine={false}
+              tickFormatter={(value: number) => (privateMode ? "••••" : fmtNumber(value, 0))}
+              label={{
+                value: privateMode ? "Net P&L (hidden)" : `Net P&L (${currency})`,
+                angle: -90,
+                position: "insideLeft",
+                style: labelStyle,
+              }}
+            />
+            <ReferenceLine y={0} stroke={t.baseline} />
+            <Tooltip
+              contentStyle={tooltipStyle(t)}
+              formatter={(value) => [
+                privateMode ? "Hidden" : fmtMoney(Number(value), currency),
+                "Net P&L",
+              ]}
+              cursor={{ fill: t.gridline, opacity: 0.4 }}
+            />
+            <Bar dataKey="netPnl" isAnimationActive={false} maxBarSize={26}>
+              {data.map((entry) => (
+                <Cell
+                  key={entry.hour}
+                  fill={entry.netPnl >= 0 ? t.profitFill : t.loss}
+                  radius={(entry.netPnl >= 0 ? [4, 4, 0, 0] : [0, 0, 4, 4]) as unknown as number}
+                />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartFrame>
+      <ChartFrame height={height - pnlHeight}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={data} syncId={SYNC_ID} margin={{ ...margin, top: 4, bottom: 4 }}>
+            <XAxis
+              dataKey="hour"
+              tick={tickStyle}
+              tickLine={false}
+              axisLine={{ stroke: t.baseline }}
+              minTickGap={8}
+            />
+            <YAxis
+              width={AXIS_WIDTH}
+              tick={tickStyle}
+              tickLine={false}
+              axisLine={false}
+              allowDecimals={false}
+              label={{ value: "Trades", angle: -90, position: "insideLeft", style: labelStyle }}
+            />
+            <Tooltip
+              contentStyle={tooltipStyle(t)}
+              formatter={(value) => [fmtNumber(Number(value), 0), "Trades"]}
+            />
+            <Line
+              dataKey="trades"
+              type="linear"
+              stroke={t.inkMuted}
+              strokeWidth={2}
+              dot={{ r: 3, fill: t.inkMuted, stroke: t.inkMuted }}
+              activeDot={{ r: 4 }}
+              isAnimationActive={false}
+            />
+          </LineChart>
+        </ResponsiveContainer>
+      </ChartFrame>
     </div>
   );
 }

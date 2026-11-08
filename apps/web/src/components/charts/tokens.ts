@@ -36,9 +36,8 @@ export const readVizTokens = (): VizTokens => {
 };
 
 /**
- * Resolved viz colors. SVG charts could use `var(--x)` strings, but ECharts
- * paints to canvas, which can't — so every chart resolves tokens through this
- * hook and re-resolves when the theme class flips.
+ * Resolved viz colors, so chart marks match the active theme. Every chart
+ * resolves tokens through this hook and re-resolves when the theme class flips.
  */
 let tokens: VizTokens | null = null;
 const listeners = new Set<() => void>();

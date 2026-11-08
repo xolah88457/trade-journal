@@ -41,6 +41,7 @@ import {
   bundleWindowsCrt,
   checkRequiredScripts,
   cleanPrivateFiles,
+  collectShippedLicenses,
   collectWindowsCrtCandidateDirs,
   compareFileVersions,
   copyStandaloneForWindows,
@@ -88,6 +89,15 @@ import {
   verifyBuiltApp,
 } from "./package.mjs";
 
+import {
+  assertSymlinksConfined,
+  ensureVerifiedArchive,
+  forbiddenNameKind,
+  normalizeArch,
+  probeDllFileVersion,
+  readRootVersion,
+  sha256Hex,
+} from "./lib/common.mjs";
 import { getExecutablePath, openApp } from "./open.mjs";
 import { getReleaseMetadata } from "./release.mjs";
 
@@ -1988,5 +1998,220 @@ test("copyStandaloneForWindows fails fast on circular directory links", () => {
   } finally {
     rmSync(mockStandalone, { recursive: true, force: true });
     rmSync(mockDest, { recursive: true, force: true });
+  }
+});
+
+test("shared helpers: arch normalisation, root version and forbidden file names", () => {
+  assert.equal(normalizeArch("arm64"), "arm64");
+  assert.equal(normalizeArch("x64"), "x64");
+  assert.equal(normalizeArch("ia32"), "x64");
+  assert.equal(readRootVersion(root), JSON.parse(readFileSync(join(root, "package.json"))).version);
+
+  const tempDir = mkdtempSync(join(tmpdir(), "sumi-common-"));
+  try {
+    assert.throws(() => readRootVersion(tempDir), /ENOENT/);
+    writeFileSync(join(tempDir, "package.json"), JSON.stringify({ name: "x" }));
+    assert.throws(() => readRootVersion(tempDir), /has no version field/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+
+  assert.equal(forbiddenNameKind(".env.local"), "env");
+  assert.equal(forbiddenNameKind("journal.sqlite-wal"), "database");
+  assert.equal(forbiddenNameKind("a.db"), "database");
+  assert.equal(forbiddenNameKind("parakeet.gguf"), "model");
+  assert.equal(forbiddenNameKind("silero-vad-v6.2-F32.gguf"), null);
+  assert.equal(forbiddenNameKind(".secret"), "secret");
+  assert.equal(forbiddenNameKind("index.js"), null);
+});
+
+test("isPathContained does not mistake children named like parent escapes for escapes", () => {
+  assert.equal(isPathContained("/app/base", "/app/base/..hidden/file", "linux"), true);
+  assert.equal(isPathContained("/app/base", "/app/base/../outside", "linux"), false);
+  assert.equal(isPathContained("C:\\bundle", "C:\\bundle\\..foo\\x", "win32"), true);
+});
+
+test("assertSymlinksConfined reports escapes with the given message and honours skipMissing", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "sumi-symlinks-"));
+  try {
+    const base = join(tempDir, "bundle");
+    mkdirSync(base);
+    writeFileSync(join(tempDir, "outside.txt"), "x");
+    symlinkSync(join(tempDir, "outside.txt"), join(base, "bad"));
+    assert.throws(
+      () => assertSymlinksConfined(base, base, { message: "Custom escape" }),
+      /^Error: Custom escape: .*bad -> .*outside\.txt$/,
+    );
+    const missing = join(tempDir, "missing");
+    assert.doesNotThrow(() => assertSymlinksConfined(missing, base));
+    assert.throws(() => assertSymlinksConfined(missing, base, { skipMissing: false }), /ENOENT/);
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
+  }
+});
+
+test("probeDllFileVersion parses tool output and propagates tool failures", () => {
+  const ok = probeDllFileVersion("C:\\x\\a'b.dll", (cmd, args) => {
+    assert.equal(cmd, "powershell");
+    assert.match(args.at(-1), /a''b\.dll/);
+    return "14.44.35111.0\r\n";
+  });
+  assert.deepEqual(ok.version, [14, 44, 35111, 0]);
+  assert.equal(probeDllFileVersion("x", () => "garbage").version, null);
+  assert.throws(
+    () =>
+      probeDllFileVersion("x", () => {
+        throw new Error("powershell missing");
+      }),
+    /powershell missing/,
+  );
+});
+
+test("ensureVerifiedArchive downloads, verifies against official and pinned checksums, and caches", async () => {
+  const cacheDir = mkdtempSync(join(tmpdir(), "sumi-archive-"));
+  try {
+    const payload = Buffer.from("archive-bytes");
+    const sha = sha256Hex(payload);
+    const calls = [];
+    const makeFetch =
+      (sums, body = payload) =>
+      async (url) => {
+        calls.push(url);
+        if (url.endsWith("SHASUMS256.txt"))
+          return { ok: true, status: 200, text: async () => sums };
+        return { ok: true, status: 200, arrayBuffer: async () => body };
+      };
+    const spec = {
+      cacheDir,
+      archiveName: "thing-1.zip",
+      baseUrl: "https://example.test/v1",
+      sumsCacheName: "thing-SHASUMS256.txt",
+      label: "official Thing v1",
+      sumsLabel: "Thing SHASUMS256.txt",
+      archiveKind: "Thing",
+      archiveTimeoutMs: 5000,
+    };
+
+    // Fresh download verifies against the official sums and caches both files.
+    const first = await ensureVerifiedArchive({
+      ...spec,
+      fetchFn: makeFetch(`${sha}  thing-1.zip\n`),
+    });
+    assert.equal(first.checksum, sha);
+    assert.equal(readFileSync(first.archivePath, "utf8"), "archive-bytes");
+    assert.equal(calls.length, 2);
+
+    // A matching cached archive is reused without any network access.
+    const second = await ensureVerifiedArchive({
+      ...spec,
+      fetchFn: async () => assert.fail("must not fetch when the cache is valid"),
+    });
+    assert.equal(second.archivePath, first.archivePath);
+    assert.equal(second.checksum, sha);
+
+    // A pinned checksum is authoritative: a stale cache with a different pin re-downloads.
+    const wrongPin = "0".repeat(64);
+    await assert.rejects(
+      ensureVerifiedArchive({
+        ...spec,
+        pinnedSha: wrongPin,
+        fetchFn: makeFetch(`${sha}  thing-1.zip\n`),
+      }),
+      /does not match pinned checksum/,
+    );
+
+    // Corrupt download and missing checksum entries are rejected and not cached.
+    rmSync(join(cacheDir, "thing-1.zip"));
+    await assert.rejects(
+      ensureVerifiedArchive({
+        ...spec,
+        fetchFn: makeFetch(`${sha}  thing-1.zip\n`, Buffer.from("tampered")),
+      }),
+      /Thing archive checksum mismatch/,
+    );
+    assert.equal(existsSync(join(cacheDir, "thing-1.zip")), false);
+    await assert.rejects(
+      ensureVerifiedArchive({ ...spec, fetchFn: makeFetch(`${sha}  other.zip\n`) }),
+      /Could not find checksum for thing-1\.zip in Thing SHASUMS256\.txt/,
+    );
+    await assert.rejects(
+      ensureVerifiedArchive({
+        ...spec,
+        fetchFn: async () => ({ ok: false, status: 404 }),
+      }),
+      /Failed to download official Thing v1 \(404\/404\)/,
+    );
+  } finally {
+    rmSync(cacheDir, { recursive: true, force: true });
+  }
+});
+
+test("collectShippedLicenses lists only packages in the staged app and reads licenses from the store", () => {
+  const tempDir = mkdtempSync(join(tmpdir(), "sumi-licenses-"));
+  try {
+    const writePkg = (dir, name, version, files = {}) => {
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, "package.json"), JSON.stringify({ name, version }));
+      for (const [file, text] of Object.entries(files)) writeFileSync(join(dir, file), text);
+    };
+
+    // Checkout pnpm store: shipped + dev-only packages, with license texts.
+    const store = join(tempDir, "checkout/node_modules/.pnpm");
+    writePkg(join(store, "next@1.0.0/node_modules/next"), "next", "1.0.0", { LICENSE: "MIT next" });
+    writePkg(join(store, "@scope+lib@2.0.0/node_modules/@scope/lib"), "@scope/lib", "2.0.0", {
+      LICENSE: "MIT scope-lib",
+    });
+    writePkg(join(store, "vitest@3.0.0/node_modules/vitest"), "vitest", "3.0.0", {
+      LICENSE: "MIT dev only",
+    });
+
+    // Staged app: traced standalone server (no LICENSE files) and app node_modules.
+    const resources = join(tempDir, "app/resources");
+    const serverModules = join(resources, "server/node_modules");
+    writePkg(join(serverModules, ".pnpm/next@1.0.0/node_modules/next"), "next", "1.0.0");
+    writePkg(
+      join(serverModules, ".pnpm/@scope+lib@2.0.0/node_modules/@scope/lib"),
+      "@scope/lib",
+      "2.0.0",
+    );
+    writePkg(join(resources, "server/apps/web/node_modules/local"), "local", "0.0.1", {
+      "README.md": "not a license file",
+      COPYING: "own copying",
+    });
+    const appModules = join(resources, "app/node_modules");
+    writePkg(join(appModules, "electron-updater"), "electron-updater", "6.0.0", {
+      LICENSE: "MIT updater",
+    });
+    writePkg(join(appModules, "electron-updater/node_modules/nested"), "nested", "1.0.0", {
+      "NOTICE.md": "nested notice",
+    });
+
+    const dest = join(resources, "licenses/dependencies");
+    const ids = collectShippedLicenses(
+      dest,
+      [join(resources, "server"), appModules],
+      [store, join(tempDir, "missing-store")],
+    );
+
+    assert.deepEqual(ids, [
+      "@scope__lib@2.0.0",
+      "electron-updater@6.0.0",
+      "local@0.0.1",
+      "nested@1.0.0",
+      "next@1.0.0",
+    ]);
+    assert.equal(readFileSync(join(dest, "next@1.0.0/LICENSE"), "utf8"), "MIT next");
+    assert.equal(readFileSync(join(dest, "@scope__lib@2.0.0/LICENSE"), "utf8"), "MIT scope-lib");
+    assert.equal(readFileSync(join(dest, "electron-updater@6.0.0/LICENSE"), "utf8"), "MIT updater");
+    assert.equal(readFileSync(join(dest, "nested@1.0.0/NOTICE.md"), "utf8"), "nested notice");
+    assert.equal(readFileSync(join(dest, "local@0.0.1/COPYING"), "utf8"), "own copying");
+    assert.equal(existsSync(join(dest, "local@0.0.1/README.md")), false);
+    assert.equal(
+      existsSync(join(dest, "vitest@3.0.0")),
+      false,
+      "dev-only packages must not be listed",
+    );
+  } finally {
+    rmSync(tempDir, { recursive: true, force: true });
   }
 });

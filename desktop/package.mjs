@@ -4,25 +4,27 @@ import {
   existsSync,
   mkdtempSync,
   readFileSync,
-  readdirSync,
   realpathSync,
   rmSync,
   statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { ELECTRON_VERSION, REQUIRED_DESKTOP_SCRIPTS, REQUIRED_WIN32_CRT_DLLS } from "./build.mjs";
 import {
-  ELECTRON_VERSION,
-  REQUIRED_DESKTOP_SCRIPTS,
-  REQUIRED_WIN32_CRT_DLLS,
-  isPathContained,
-} from "./build.mjs";
+  checkNoPrivateFiles,
+  checkSelfContainedSymlinks,
+  normalizeArch,
+  readRootVersion,
+  sha256File,
+} from "./lib/common.mjs";
+
+export { checkNoPrivateFiles, checkSelfContainedSymlinks };
 
 export const GITHUB_PUBLISH_CONFIG = Object.freeze([
   {
@@ -35,7 +37,7 @@ export const GITHUB_PUBLISH_CONFIG = Object.freeze([
 export const DEBIAN_MAINTAINER = "Sumi contributors <noreply@github.com>";
 
 export function resolveArtifactNames(version, arch = process.arch, platform = process.platform) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   if (platform === "darwin") {
     return {
       zipName: `Sumi-${version}-macos-${normArch}.zip`,
@@ -116,44 +118,6 @@ export function extractPlistValue(plistContent, key) {
   return match ? match[1] : null;
 }
 
-export function checkNoPrivateFiles(directory) {
-  if (!existsSync(directory)) return;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    if (entry.name.startsWith(".env")) {
-      throw new Error(`Environment file bundled in distribution: ${entry.name}`);
-    }
-    if (/\.(db|sqlite)(-shm|-wal|-journal)?$/.test(entry.name)) {
-      throw new Error(`Database bundled in distribution: ${entry.name}`);
-    }
-    if (entry.name.endsWith(".gguf") && entry.name !== "silero-vad-v6.2-F32.gguf") {
-      throw new Error(`Forbidden model weights bundled in distribution: ${entry.name}`);
-    }
-    if (entry.name === ".secret") {
-      throw new Error(`Secret file bundled in distribution: ${entry.name}`);
-    }
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) {
-      checkNoPrivateFiles(path);
-    }
-  }
-}
-
-export function checkSelfContainedSymlinks(directory, basePrefix) {
-  if (!existsSync(directory)) return;
-  const canonicalBase = realpathSync(basePrefix);
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isSymbolicLink()) {
-      const real = realpathSync(path);
-      if (!isPathContained(canonicalBase, real)) {
-        throw new Error(`Symlink escapes application bundle: ${path} -> ${real}`);
-      }
-    } else if (entry.isDirectory()) {
-      checkSelfContainedSymlinks(path, canonicalBase);
-    }
-  }
-}
-
 export function getYamlLib() {
   try {
     const req = createRequire(import.meta.url);
@@ -197,6 +161,52 @@ export function mergeLinuxYml(meta1, meta2) {
   return yaml.dump(merged, { lineWidth: -1 });
 }
 
+/** Windows/Linux: the staged resources/package.json (if any) must carry the expected version. */
+function assertResourcesVersion(appPath, expectedVersion) {
+  const pkgPath = join(appPath, "resources", "package.json");
+  if (!existsSync(pkgPath)) return;
+  const meta = JSON.parse(readFileSync(pkgPath, "utf8"));
+  if (meta.version && meta.version !== expectedVersion) {
+    throw new Error(
+      `Version mismatch: package.json specifies ${expectedVersion} but app resources contains ${meta.version}.`,
+    );
+  }
+}
+
+/** No private files anywhere in resources, and the staged server tree stays self-contained. */
+function assertResourcesClean(resourcesPath) {
+  checkNoPrivateFiles(resourcesPath);
+  const serverPath = join(resourcesPath, "server");
+  if (existsSync(serverPath)) {
+    checkSelfContainedSymlinks(serverPath, realpathSync(serverPath) + "/");
+  }
+}
+
+/**
+ * Windows/Linux: resources/app-update.yml must exist with the canonical fork coordinates.
+ * electron-builder's prepackaged mode skips afterPack, so build.mjs stages this file itself.
+ */
+function assertAppUpdateYml(resourcesPath) {
+  const appUpdatePath = join(resourcesPath, "app-update.yml");
+  if (!existsSync(appUpdatePath)) {
+    throw new Error(`Required updater configuration missing: ${appUpdatePath}`);
+  }
+  const rawYml = readFileSync(appUpdatePath, "utf8");
+  if (
+    !rawYml.includes("owner: xolah88457") ||
+    !rawYml.includes("repo: trade-journal") ||
+    !rawYml.includes("updaterCacheDirName: sumi-updater")
+  ) {
+    throw new Error(`Invalid app-update.yml configuration in ${appUpdatePath}`);
+  }
+}
+
+/**
+ * Lightweight pre-packaging sanity check of a staged app. The exhaustive structural check
+ * (licenses, Silero model, runtime binaries, native libraries) is check-support.mjs
+ * verifyPackageForPlatform, run by `pnpm desktop:check` before packaging; this adds the
+ * checks only packaging needs (version, updater configuration, artifact preconditions).
+ */
 export function verifyBuiltApp(appPath, expectedVersion, platform = process.platform) {
   if (!existsSync(appPath)) {
     throw new Error(`Built application missing at ${appPath}. Run 'pnpm desktop:build' first.`);
@@ -233,19 +243,12 @@ export function verifyBuiltApp(appPath, expectedVersion, platform = process.plat
     execFileSync("codesign", ["--verify", "--deep", "--strict", appPath], { stdio: "pipe" });
 
     const resourcesPath = join(appPath, "Contents", "Resources");
-    if (existsSync(resourcesPath)) {
-      checkNoPrivateFiles(resourcesPath);
-      const serverPath = join(resourcesPath, "server");
-      if (existsSync(serverPath)) {
-        const serverPrefix = realpathSync(serverPath) + "/";
-        checkSelfContainedSymlinks(serverPath, serverPrefix);
-      }
-    }
+    if (existsSync(resourcesPath)) assertResourcesClean(resourcesPath);
 
     return { plistVersion, executable };
   }
 
-  // Verify desktop scripts presence across all platforms
+  // Verify desktop scripts presence across all other platforms
   const appDir = join(appPath, "resources", "app");
   if (existsSync(appDir)) {
     for (const script of REQUIRED_DESKTOP_SCRIPTS) {
@@ -255,31 +258,17 @@ export function verifyBuiltApp(appPath, expectedVersion, platform = process.plat
     }
   }
 
-  // Windows verification
+  const resourcesPath = join(appPath, "resources");
+
   if (platform === "win32") {
     const exePath = join(appPath, "Sumi.exe");
     if (!existsSync(exePath)) {
       throw new Error(`Application executable missing at ${exePath}`);
     }
+    assertResourcesVersion(appPath, expectedVersion);
 
-    const pkgPath = join(appPath, "resources", "package.json");
-    if (existsSync(pkgPath)) {
-      const meta = JSON.parse(readFileSync(pkgPath, "utf8"));
-      if (meta.version && meta.version !== expectedVersion) {
-        throw new Error(
-          `Version mismatch: package.json specifies ${expectedVersion} but app resources contains ${meta.version}.`,
-        );
-      }
-    }
-
-    const resourcesPath = join(appPath, "resources");
     if (existsSync(resourcesPath)) {
-      checkNoPrivateFiles(resourcesPath);
-      const serverPath = join(resourcesPath, "server");
-      if (existsSync(serverPath)) {
-        const serverPrefix = realpathSync(serverPath) + "/";
-        checkSelfContainedSymlinks(serverPath, serverPrefix);
-      }
+      assertResourcesClean(resourcesPath);
 
       // Assert shipped required VC++ CRT DLLs exist in runtime directory if present
       const runtimeDir = join(resourcesPath, "runtime");
@@ -293,68 +282,27 @@ export function verifyBuiltApp(appPath, expectedVersion, platform = process.plat
         }
       }
 
-      // Assert canonical app-update.yml exists with fork coordinates
-      const appUpdatePath = join(resourcesPath, "app-update.yml");
-      if (!existsSync(appUpdatePath)) {
-        throw new Error(`Required updater configuration missing: ${appUpdatePath}`);
-      }
-      const rawYml = readFileSync(appUpdatePath, "utf8");
-      if (
-        !rawYml.includes("owner: xolah88457") ||
-        !rawYml.includes("repo: trade-journal") ||
-        !rawYml.includes("updaterCacheDirName: sumi-updater")
-      ) {
-        throw new Error(`Invalid app-update.yml configuration in ${appUpdatePath}`);
-      }
+      assertAppUpdateYml(resourcesPath);
     }
 
     return { executable: "Sumi.exe", version: expectedVersion };
   }
 
-  // Linux verification
   if (platform === "linux") {
     const binPath = join(appPath, "sumi");
     if (!existsSync(binPath)) {
       throw new Error(`Application executable missing at ${binPath}`);
     }
-
-    const pkgPath = join(appPath, "resources", "package.json");
-    if (existsSync(pkgPath)) {
-      const meta = JSON.parse(readFileSync(pkgPath, "utf8"));
-      if (meta.version && meta.version !== expectedVersion) {
-        throw new Error(
-          `Version mismatch: package.json specifies ${expectedVersion} but app resources contains ${meta.version}.`,
-        );
-      }
-    }
+    assertResourcesVersion(appPath, expectedVersion);
 
     const sandboxPath = join(appPath, "chrome-sandbox");
     if (!existsSync(sandboxPath)) {
       console.warn(`Notice: chrome-sandbox not found at ${sandboxPath}`);
     }
 
-    const resourcesPath = join(appPath, "resources");
     if (existsSync(resourcesPath)) {
-      checkNoPrivateFiles(resourcesPath);
-      const serverPath = join(resourcesPath, "server");
-      if (existsSync(serverPath)) {
-        const serverPrefix = realpathSync(serverPath) + "/";
-        checkSelfContainedSymlinks(serverPath, serverPrefix);
-      }
-
-      // Assert canonical app-update.yml exists with fork coordinates
-      const appUpdatePath = join(resourcesPath, "app-update.yml");
-      if (!existsSync(appUpdatePath)) {
-        throw new Error(`Required updater configuration missing: ${appUpdatePath}`);
-      }
-      const rawYml = readFileSync(appUpdatePath, "utf8");
-      if (
-        !rawYml.includes("owner: xolah88457") ||
-        !rawYml.includes("repo: trade-journal") ||
-        !rawYml.includes("updaterCacheDirName: sumi-updater")
-      ) {
-        throw new Error(`Invalid app-update.yml configuration in ${appUpdatePath}`);
-      }
+      assertResourcesClean(resourcesPath);
+      assertAppUpdateYml(resourcesPath);
     }
 
     return { executable: "sumi", version: expectedVersion };
@@ -373,10 +321,9 @@ export async function packageApp(options = {}) {
   const root = options.root || resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
 
-  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const version = options.version || rootPkg.version || "0.3.0";
+  const version = options.version || readRootVersion(root);
 
   const distDir = options.distDir || join(root, "dist");
   const defaultAppPath =
@@ -418,8 +365,8 @@ export async function packageApp(options = {}) {
       rmSync(dmgStaging, { recursive: true, force: true });
     }
 
-    const zipSha = hashFile(zipPath);
-    const dmgSha = hashFile(dmgPath);
+    const zipSha = sha256File(zipPath);
+    const dmgSha = sha256File(dmgPath);
     artifacts.push({ name: zipName, path: zipPath, sha: zipSha });
     artifacts.push({ name: dmgName, path: dmgPath, sha: dmgSha });
   } else if (platform === "win32") {
@@ -463,8 +410,8 @@ export async function packageApp(options = {}) {
     if (!existsSync(zipPath)) {
       throw new Error(`Expected Windows ZIP package missing after build: ${zipPath}`);
     }
-    artifacts.push({ name: nsisName, path: nsisPath, sha: hashFile(nsisPath) });
-    artifacts.push({ name: zipName, path: zipPath, sha: hashFile(zipPath) });
+    artifacts.push({ name: nsisName, path: nsisPath, sha: sha256File(nsisPath) });
+    artifacts.push({ name: zipName, path: zipPath, sha: sha256File(zipPath) });
   } else if (platform === "linux") {
     // Linux packaging via electron-builder PREPACKAGED mode
     const builder = options.customBuilder || (await import("electron-builder")).build;
@@ -557,8 +504,8 @@ export async function packageApp(options = {}) {
     if (!existsSync(debPath)) {
       throw new Error(`Expected Linux deb package missing after build: ${debPath}`);
     }
-    artifacts.push({ name: appImageName, path: appImagePath, sha: hashFile(appImagePath) });
-    artifacts.push({ name: debName, path: debPath, sha: hashFile(debPath) });
+    artifacts.push({ name: appImageName, path: appImagePath, sha: sha256File(appImagePath) });
+    artifacts.push({ name: debName, path: debPath, sha: sha256File(debPath) });
   }
 
   // 4. Generate SHA256SUMS.txt
@@ -591,11 +538,6 @@ export async function packageApp(options = {}) {
         }
       : {}),
   };
-}
-
-function hashFile(filePath) {
-  const bytes = readFileSync(filePath);
-  return createHash("sha256").update(bytes).digest("hex");
 }
 
 const isDirectRun = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);

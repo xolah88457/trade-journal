@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { readRootVersion } from "./lib/common.mjs";
+
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -416,8 +418,7 @@ export async function runSmokeTest(customAppPath) {
     const bridgeKeys = await cdp1.eval("Object.keys(window.sumiDesktop || {}).sort()");
     assert.deepEqual(bridgeKeys, ["checkForUpdates", "getInfo", "preferences", "savePreferences"]);
 
-    const rootPkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
-    const expectedAppVersion = rootPkg.version;
+    const expectedAppVersion = readRootVersion(root);
 
     const info = await cdp1.eval("window.sumiDesktop.getInfo()");
     assert.equal(info.version, expectedAppVersion, "info.version mismatch");

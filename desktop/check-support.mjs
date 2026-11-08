@@ -1,24 +1,29 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
+import { execFileSync, spawnSync } from "node:child_process";
 import {
-  closeSync,
   existsSync,
-  mkdirSync,
-  mkdtempSync,
-  openSync,
   readFileSync,
-  readSync,
   readdirSync,
   realpathSync,
   rmSync,
   statSync,
-  symlinkSync,
   writeFileSync,
 } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, join, posix, win32 } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  checkNoPrivateFiles,
+  checkSelfContainedSymlinks,
+  isPathContained,
+  normalizeArch,
+  probeDllFileVersion,
+  readFileHead,
+  readRootVersion,
+  sha256Hex,
+} from "./lib/common.mjs";
+
+export { checkNoPrivateFiles, checkSelfContainedSymlinks };
 
 /**
  * Expected Silero VAD asset metadata.
@@ -40,95 +45,11 @@ export const EXPECTED_ELECTRON_VERSION = "45.2.3";
 export const WINDOWS_REQUIRED_CRT_DLLS = ["msvcp140.dll", "vcruntime140.dll", "vcruntime140_1.dll"];
 
 /**
- * Recursively asserts that no private environment credentials, database files,
- * forbidden heavy model weights, or secret files exist in the bundled directory.
- */
-export function checkNoPrivateFiles(directory) {
-  if (!existsSync(directory)) return;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    assert.ok(!entry.name.startsWith(".env"), `Environment file bundled: ${entry.name}`);
-    assert.ok(
-      !/\.(db|sqlite)(-shm|-wal|-journal)?$/.test(entry.name),
-      `Database bundled: ${entry.name}`,
-    );
-    if (entry.name.endsWith(".gguf")) {
-      assert.equal(
-        entry.name,
-        "silero-vad-v6.2-F32.gguf",
-        `Only Silero VAD is allowed in the application bundle; found unexpected model: ${entry.name}`,
-      );
-    }
-    assert.notEqual(entry.name, ".secret", `Secret file bundled: ${entry.name}`);
-    const path = join(directory, entry.name);
-    if (entry.isDirectory()) checkNoPrivateFiles(path);
-  }
-}
-
-/**
- * Determines whether targetPath is equal to or a canonical descendant of basePath.
- * Uses platform-specific path operations (win32 vs posix) so Windows path logic can be
- * fully verified on non-Windows hosts.
- *
- * Enforces canonical realpath resolution, consistent case-folding on Windows,
- * strict relative boundary check, and rejects cross-drive or absolute relative results.
+ * Determines whether targetPath is equal to or a canonical descendant of basePath
+ * (see isPathContained in lib/common.mjs; argument order here is target first).
  */
 export function isBaseOrChildPath(targetPath, basePath, platform = process.platform) {
-  const isWin = platform === "win32";
-  const pathApi = isWin ? win32 : posix;
-
-  let target = targetPath;
-  let base = basePath;
-
-  try {
-    target = realpathSync(target);
-  } catch {}
-  try {
-    base = realpathSync(base);
-  } catch {}
-
-  target = pathApi.resolve(target);
-  base = pathApi.resolve(base);
-
-  if (isWin) {
-    target = target.toLowerCase();
-    base = base.toLowerCase();
-  }
-
-  if (target === base) return true;
-
-  const rel = pathApi.relative(base, target);
-  if (rel === "") return true;
-
-  // Rejection rules:
-  // 1. Cross-drive / UNC root escape: pathApi.isAbsolute(rel) is true (e.g. 'D:\outside' or '\\server2\share')
-  if (pathApi.isAbsolute(rel)) return false;
-
-  // 2. Parent directory escape: starts with '..'
-  if (rel === ".." || rel.startsWith(`..${pathApi.sep}`) || rel.startsWith("../")) return false;
-
-  // 3. Strict prefix/separator boundary verification: target must start with base + separator
-  const basePrefix = base.endsWith(pathApi.sep) ? base : base + pathApi.sep;
-  return target.startsWith(basePrefix);
-}
-
-/**
- * Recursively asserts that every symbolic link resolves strictly within basePrefix.
- */
-export function checkSelfContainedSymlinks(directory, basePrefix) {
-  if (!existsSync(directory)) return;
-  const canonicalBase = realpathSync(basePrefix);
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const path = join(directory, entry.name);
-    if (entry.isSymbolicLink()) {
-      const real = realpathSync(path);
-      assert.ok(
-        isBaseOrChildPath(real, canonicalBase),
-        `Symlink escapes application bundle into developer checkout: ${path} -> ${real}`,
-      );
-    } else if (entry.isDirectory()) {
-      checkSelfContainedSymlinks(path, canonicalBase);
-    }
-  }
+  return isPathContained(basePath, targetPath, platform);
 }
 
 /**
@@ -388,13 +309,26 @@ export function verifySileroModel(webDir) {
   assert.ok(existsSync(bundledSilero), `Bundled Silero VAD model missing at ${bundledSilero}`);
   const sileroBytes = readFileSync(bundledSilero);
   assert.equal(sileroBytes.length, SILERO_EXPECTED_SIZE, "Bundled Silero VAD size mismatch");
-  const sileroHash = createHash("sha256").update(sileroBytes).digest("hex");
+  const sileroHash = sha256Hex(sileroBytes);
   assert.equal(sileroHash, SILERO_EXPECTED_SHA256, "Bundled Silero VAD checksum mismatch");
 
   assert.ok(
     !existsSync(join(webDir, "models/parakeet-unified-en-0.6b-Q8_0.gguf")),
     "Parakeet ASR weights must never be bundled inside .app",
   );
+}
+
+/**
+ * The version a packaged app must carry: an explicit override, else the packaged
+ * Resources/app/package.json version, else the root package.json version.
+ */
+function resolveExpectedVersion(root, resources, injectedVersion) {
+  if (injectedVersion) return injectedVersion;
+  const appPkgPath = join(resources, "app/package.json");
+  const appPkgVersion = existsSync(appPkgPath)
+    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
+    : null;
+  return appPkgVersion || readRootVersion(root);
 }
 
 /**
@@ -416,12 +350,7 @@ export function verifyElectronPackage({
   // Info.plist validation
   runTool("plutil", ["-lint", join(app, "Info.plist")]);
   const plistContent = readFileSync(join(app, "Info.plist"), "utf8");
-  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const appPkgPath = join(resources, "app/package.json");
-  const appPkgVersion = existsSync(appPkgPath)
-    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
-    : null;
-  const expectedVersion = injectedVersion || appPkgVersion || rootPkg.version || "0.3.0";
+  const expectedVersion = resolveExpectedVersion(root, resources, injectedVersion);
   validateInfoPlistContent(plistContent, expectedVersion);
 
   // Codesign verification (deep, strict, works ad-hoc)
@@ -473,7 +402,7 @@ export function verifyElectronPackage({
  * Resolves the standardized package layout across macOS, Windows, and Linux.
  */
 export function resolvePackageLayout(root, platform = process.platform, arch = process.arch) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   if (platform === "darwin") {
     const app = join(root, "dist/Sumi.app/Contents");
     const resources = join(app, "Resources");
@@ -549,15 +478,8 @@ export function verifyWindowsPackage({
   assert.ok(exeStat.size > 1024, `Sumi.exe too small (${exeStat.size} bytes)`);
 
   // Bounded PE header check (first 2 bytes 'MZ') - NEVER scan large binaries with strings
-  const exeFd = openSync(executable, "r");
-  const exeHeader = Buffer.alloc(2);
-  try {
-    readSync(exeFd, exeHeader, 0, 2, 0);
-  } finally {
-    closeSync(exeFd);
-  }
   assert.equal(
-    exeHeader.toString("utf8"),
+    readFileHead(executable, 2).toString("utf8"),
     "MZ",
     "Sumi.exe is not a valid Windows PE binary (missing MZ header)",
   );
@@ -565,15 +487,8 @@ export function verifyWindowsPackage({
   // Check bundled node.exe
   const nodeExe = join(resources, "runtime/node.exe");
   assert.ok(existsSync(nodeExe), `Bundled node.exe missing at ${nodeExe}`);
-  const nodeFd = openSync(nodeExe, "r");
-  const nodeHeader = Buffer.alloc(2);
-  try {
-    readSync(nodeFd, nodeHeader, 0, 2, 0);
-  } finally {
-    closeSync(nodeFd);
-  }
   assert.equal(
-    nodeHeader.toString("utf8"),
+    readFileHead(nodeExe, 2).toString("utf8"),
     "MZ",
     "node.exe is not a valid Windows PE binary (missing MZ header)",
   );
@@ -613,12 +528,7 @@ export function verifyWindowsPackage({
     "Microsoft Visual C++ Redistributable license notice missing required terms",
   );
 
-  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const appPkgPath = join(resources, "app/package.json");
-  const appPkgVersion = existsSync(appPkgPath)
-    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
-    : null;
-  const expectedVersion = injectedVersion || appPkgVersion || rootPkg.version || "0.3.0";
+  const expectedVersion = resolveExpectedVersion(root, resources, injectedVersion);
 
   verifyAppPackage(resources, expectedVersion);
   verifyLicenses(resources, app);
@@ -648,15 +558,8 @@ export function verifyLinuxPackage({
   assert.ok(exeStat.size > 1024, `sumi binary too small (${exeStat.size} bytes)`);
 
   // Bounded ELF header check (first 4 bytes '\x7fELF') - NEVER scan large binaries with strings
-  const exeFd = openSync(executable, "r");
-  const exeHeader = Buffer.alloc(4);
-  try {
-    readSync(exeFd, exeHeader, 0, 4, 0);
-  } finally {
-    closeSync(exeFd);
-  }
   assert.deepEqual(
-    Array.from(exeHeader),
+    Array.from(readFileHead(executable, 4)),
     [0x7f, 0x45, 0x4c, 0x46],
     "sumi is not a valid Linux ELF binary",
   );
@@ -664,15 +567,8 @@ export function verifyLinuxPackage({
   // Check bundled node
   const node = join(resources, "runtime/node");
   assert.ok(existsSync(node), `Bundled node missing at ${node}`);
-  const nodeFd = openSync(node, "r");
-  const nodeHeader = Buffer.alloc(4);
-  try {
-    readSync(nodeFd, nodeHeader, 0, 4, 0);
-  } finally {
-    closeSync(nodeFd);
-  }
   assert.deepEqual(
-    Array.from(nodeHeader),
+    Array.from(readFileHead(node, 4)),
     [0x7f, 0x45, 0x4c, 0x46],
     "node is not a valid Linux ELF binary",
   );
@@ -682,12 +578,7 @@ export function verifyLinuxPackage({
   const sandbox = sandboxCandidates.find((p) => existsSync(p));
   assert.ok(sandbox, `chrome-sandbox missing at ${sandboxCandidates.join(", ")}`);
 
-  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const appPkgPath = join(resources, "app/package.json");
-  const appPkgVersion = existsSync(appPkgPath)
-    ? JSON.parse(readFileSync(appPkgPath, "utf8")).version
-    : null;
-  const expectedVersion = injectedVersion || appPkgVersion || rootPkg.version || "0.3.0";
+  const expectedVersion = resolveExpectedVersion(root, resources, injectedVersion);
 
   verifyAppPackage(resources, expectedVersion);
   verifyLicenses(resources, app);
@@ -746,21 +637,7 @@ export function verifyPackageForPlatform({
  */
 export function readBundledDllFileVersion(filePath, runTool = execFileSync) {
   try {
-    const psPath = String(filePath).replace(/'/g, "''");
-    const out = runTool(
-      "powershell",
-      [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('${psPath}'); ` +
-          `Write-Output "$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart).$($v.FilePrivatePart)"`,
-      ],
-      { encoding: "utf8" },
-    );
-    const line = String(out).trim().split(/\r?\n/)[0] || "";
-    const m = line.match(/(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?/);
-    return m ? [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4] || 0)] : null;
+    return probeDllFileVersion(filePath, runTool).version;
   } catch {
     return null;
   }
@@ -844,7 +721,7 @@ export function runNativeAsrDoctor({
   assert.ok(existsSync(vadModel), `Bundled Silero VAD model missing at ${vadModel}`);
   const vadBytes = readFileSync(vadModel);
   assert.equal(vadBytes.length, SILERO_EXPECTED_SIZE, "Bundled Silero VAD size mismatch");
-  const vadHash = createHash("sha256").update(vadBytes).digest("hex");
+  const vadHash = sha256Hex(vadBytes);
   assert.equal(vadHash, SILERO_EXPECTED_SHA256, "Bundled Silero VAD checksum mismatch");
 
   const doctorScriptPath = join(layout.webDir, ".asr-doctor-probe.mjs");
@@ -928,393 +805,16 @@ run().catch((err) => {
   }
 }
 
-// Self-contained unit helper tests for check-support validation functions
-export function runUnitTests() {
-  const tempDir = mkdtempSync(join(tmpdir(), "check-support-unit-"));
-  try {
-    // 1. Test checkNoPrivateFiles
-    const cleanDir = join(tempDir, "clean");
-    mkdirSync(cleanDir, { recursive: true });
-    writeFileSync(join(cleanDir, "silero-vad-v6.2-F32.gguf"), "model");
-    writeFileSync(join(cleanDir, "index.js"), "code");
-    checkNoPrivateFiles(cleanDir);
-
-    const envDir = join(tempDir, "env");
-    mkdirSync(envDir, { recursive: true });
-    writeFileSync(join(envDir, ".env.production"), "SECRET=1");
-    assert.throws(() => checkNoPrivateFiles(envDir), /Environment file bundled/);
-
-    const dbDir = join(tempDir, "db");
-    mkdirSync(dbDir, { recursive: true });
-    writeFileSync(join(dbDir, "journal.db"), "data");
-    assert.throws(() => checkNoPrivateFiles(dbDir), /Database bundled/);
-
-    const badGguf = join(tempDir, "gguf");
-    mkdirSync(badGguf, { recursive: true });
-    writeFileSync(join(badGguf, "parakeet.gguf"), "heavy");
-    assert.throws(() => checkNoPrivateFiles(badGguf), /Only Silero VAD is allowed/);
-
-    // 2. Test checkSelfContainedSymlinks
-    const linkBase = join(tempDir, "bundle");
-    mkdirSync(join(linkBase, "sub"), { recursive: true });
-    writeFileSync(join(linkBase, "sub/target.txt"), "hello");
-    symlinkSync(join(linkBase, "sub/target.txt"), join(linkBase, "valid-link.txt"));
-    checkSelfContainedSymlinks(linkBase, linkBase);
-
-    const outsideTarget = join(tempDir, "outside.txt");
-    writeFileSync(outsideTarget, "escaped");
-    symlinkSync(outsideTarget, join(linkBase, "bad-link.txt"));
-    assert.throws(
-      () => checkSelfContainedSymlinks(linkBase, linkBase),
-      /Symlink escapes application bundle/,
-    );
-
-    // Pure Windows and POSIX path containment assertions (cross-platform, case-folding, no symlink dependency)
-    assert.equal(isBaseOrChildPath("C:\\bundle\\sub\\target.txt", "C:\\bundle", "win32"), true);
-    assert.equal(isBaseOrChildPath("C:\\BUNDLE\\sub\\target.txt", "c:\\bundle", "win32"), true);
-    assert.equal(isBaseOrChildPath("C:\\bundle\\target.txt", "C:\\bundle\\", "win32"), true);
-    assert.equal(isBaseOrChildPath("C:\\bundle", "C:\\bundle", "win32"), true);
-    assert.equal(isBaseOrChildPath("C:/bundle/sub/target.txt", "C:/bundle/", "win32"), true);
-    assert.equal(isBaseOrChildPath("D:\\outside", "C:\\bundle", "win32"), false);
-    assert.equal(isBaseOrChildPath("D:\\bundle\\sub\\target.txt", "C:\\bundle", "win32"), false);
-    assert.equal(isBaseOrChildPath("C:\\outside.txt", "C:\\bundle", "win32"), false);
-    assert.equal(isBaseOrChildPath("C:\\bundle-sibling\\target.txt", "C:\\bundle", "win32"), false);
-    assert.equal(
-      isBaseOrChildPath("\\\\server2\\share\\target.txt", "\\\\server1\\share\\bundle", "win32"),
-      false,
-    );
-    assert.equal(
-      isBaseOrChildPath(
-        "\\\\server1\\share\\bundle\\sub\\file.txt",
-        "\\\\server1\\share\\bundle",
-        "win32",
-      ),
-      true,
-    );
-    assert.equal(isBaseOrChildPath("/app/Contents/sub/file", "/app/Contents", "darwin"), true);
-    assert.equal(isBaseOrChildPath("/app/outside", "/app/Contents", "darwin"), false);
-    assert.equal(isBaseOrChildPath("/app/Contents-sibling/file", "/app/Contents", "darwin"), false);
-
-    // 3. Test validateInfoPlistContent
-    const validPlist = `<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-<key>CFBundleIconFile</key><string>Sumi</string>
-<key>CFBundleIdentifier</key><string>local.sumi.journal</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
-<key>LSMinimumSystemVersion</key><string>14.0</string>
-<key>NSMicrophoneUsageDescription</key><string>Voice dictation</string>
-</dict></plist>`;
-    validateInfoPlistContent(validPlist, "0.2.0");
-
-    assert.throws(
-      () => validateInfoPlistContent(validPlist, "0.3.0"),
-      /CFBundleShortVersionString must match 0.3.0/,
-    );
-
-    const badIdPlist = validPlist.replace("local.sumi.journal", "com.example.app");
-    assert.throws(
-      () => validateInfoPlistContent(badIdPlist, "0.2.0"),
-      /CFBundleIdentifier must be/,
-    );
-
-    const badSysPlist = validPlist.replace("14.0", "13.0");
-    assert.throws(
-      () => validateInfoPlistContent(badSysPlist, "0.2.0"),
-      /LSMinimumSystemVersion must be >= 14.0/,
-    );
-
-    // 4. Test verifyAppPackage
-    const mockResources = join(tempDir, "mock-resources");
-    const mockApp = join(mockResources, "app");
-    mkdirSync(mockApp, { recursive: true });
-    writeFileSync(
-      join(mockApp, "package.json"),
-      JSON.stringify({ main: "main.cjs", version: "0.2.0" }),
-    );
-    for (const f of ["main.cjs", "preload.cjs", "preferences.cjs", "security.cjs"]) {
-      writeFileSync(join(mockApp, f), "// shell");
-    }
-    verifyAppPackage(mockResources, "0.2.0");
-
-    assert.throws(
-      () => verifyAppPackage(mockResources, "0.2.1"),
-      /version \(0\.2\.0\) must match root version \(0\.2\.1\)/,
-    );
-
-    // Test 0.3.0 requires update-service-platform.cjs
-    writeFileSync(
-      join(mockApp, "package.json"),
-      JSON.stringify({ main: "main.cjs", version: "0.3.0" }),
-    );
-    for (const f of [
-      "main.cjs",
-      "preload.cjs",
-      "preferences.cjs",
-      "security.cjs",
-      "update-service.cjs",
-      "update-service-platform.cjs",
-    ]) {
-      writeFileSync(join(mockApp, f), "// shell");
-    }
-    verifyAppPackage(mockResources, "0.3.0");
-
-    rmSync(join(mockApp, "update-service-platform.cjs"));
-    assert.throws(
-      () => verifyAppPackage(mockResources, "0.3.0"),
-      /Required shell file missing: Resources\/app\/update-service-platform\.cjs/,
-    );
-    writeFileSync(join(mockApp, "update-service-platform.cjs"), "// shell");
-
-    // 5. Test findLicenseFile
-    const mockLicenses = join(tempDir, "mock-lic");
-    mkdirSync(mockLicenses, { recursive: true });
-    const shortLic = join(mockLicenses, "short.txt");
-    writeFileSync(shortLic, "short");
-    assert.throws(() => findLicenseFile([shortLic], "TestLic"), /missing or too short/);
-
-    const longLic = join(mockLicenses, "long.txt");
-    writeFileSync(longLic, "A".repeat(150));
-    assert.equal(findLicenseFile([longLic], "TestLic"), longLic);
-
-    // 6. Test verifyElectronFramework with a SYNTHETIC mock framework (bounded,
-    //    no real 200MB binary, and `strings` must NEVER be invoked)
-    const mockContents = join(tempDir, "mock-contents");
-    const mockFw = join(mockContents, "Frameworks/Electron Framework.framework");
-    mkdirSync(join(mockFw, "Resources"), { recursive: true });
-    mkdirSync(join(mockContents, "MacOS"), { recursive: true });
-    writeFileSync(join(mockContents, "MacOS/Sumi"), "#!/bin/sh\n"); // fake executable
-    writeFileSync(join(mockFw, "Electron Framework"), "fake-macho"); // fake binary, tiny
-    const fwPlistXml = (v) => `<?xml version="1.0" encoding="UTF-8"?>
-<plist version="1.0"><dict>
-<key>CFBundleIdentifier</key><string>local.sumi.journal.framework</string>
-<key>CFBundleShortVersionString</key><string>${v}</string>
-<key>CFBundleVersion</key><string>${v}</string>
-</dict></plist>`;
-    writeFileSync(join(mockFw, "Resources/Info.plist"), fwPlistXml(EXPECTED_ELECTRON_VERSION));
-
-    const toolCalls = [];
-    const mockRunTool = (cmd, args, opts) => {
-      toolCalls.push({ cmd, args, maxBuffer: opts && opts.maxBuffer });
-      assert.notEqual(
-        cmd,
-        "strings",
-        "verifyElectronFramework must never invoke `strings` on binaries",
-      );
-      if (cmd === "otool") return "Electron Framework.framework/Versions/A/Electron Framework";
-      if (cmd === "file") return "Mach-O 64-bit executable arm64";
-      if (cmd === "lipo") return "Non-fat file: fake-macho is architecture: arm64";
-      return "";
-    };
-
-    // Happy path: framework plist pins 45.2.3 -> passes, all tool output bounded
-    verifyElectronFramework(mockContents, mockRunTool);
-    assert.ok(toolCalls.every((c) => c.maxBuffer === TOOL_OUTPUT_MAX_BUFFER));
-    assert.ok(toolCalls.some((c) => c.cmd === "otool"));
-
-    // Wrong vendor version (e.g. root app version 0.2.0 stamped by mistake) -> FAIL
-    writeFileSync(join(mockFw, "Resources/Info.plist"), fwPlistXml("0.2.0"));
-    assert.throws(
-      () => verifyElectronFramework(mockContents, mockRunTool),
-      /CFBundleShortVersionString must be 45\.2\.3/,
-    );
-    // Correct short version but wrong build version -> also FAIL
-    writeFileSync(
-      join(mockFw, "Resources/Info.plist"),
-      fwPlistXml("45.2.3").replace(
-        "<key>CFBundleVersion</key><string>45.2.3</string>",
-        "<key>CFBundleVersion</key><string>0.2.0</string>",
-      ),
-    );
-    assert.throws(
-      () => verifyElectronFramework(mockContents, mockRunTool),
-      /CFBundleVersion must be 45\.2\.3/,
-    );
-
-    // extractPlistString helper
-    assert.equal(extractPlistString(fwPlistXml("1.2.3"), "CFBundleShortVersionString"), "1.2.3");
-    assert.equal(extractPlistString(fwPlistXml("1.2.3"), "CFBundleVersion"), "1.2.3");
-    assert.equal(extractPlistString("<dict></dict>", "CFBundleVersion"), null);
-
-    // 7. Test resolvePackageLayout
-    const macLayout = resolvePackageLayout(tempDir, "darwin", "arm64");
-    assert.equal(macLayout.executable, join(tempDir, "dist/Sumi.app/Contents/MacOS/Sumi"));
-    assert.equal(
-      macLayout.nodeExecutable,
-      join(tempDir, "dist/Sumi.app/Contents/Resources/runtime/node"),
-    );
-
-    const winLayout = resolvePackageLayout(tempDir, "win32", "x64");
-    assert.equal(winLayout.executable, join(tempDir, "dist/sumi-win32-x64/Sumi.exe"));
-    assert.equal(
-      winLayout.nodeExecutable,
-      join(tempDir, "dist/sumi-win32-x64/resources/runtime/node.exe"),
-    );
-
-    const linuxLayout = resolvePackageLayout(tempDir, "linux", "x64");
-    assert.equal(linuxLayout.executable, join(tempDir, "dist/sumi-linux-x64/sumi"));
-    assert.equal(
-      linuxLayout.nodeExecutable,
-      join(tempDir, "dist/sumi-linux-x64/resources/runtime/node"),
-    );
-
-    // 8. Test verifyWindowsPackage with synthetic mock
-    const mockWinRoot = join(tempDir, "mock-win-root");
-    const mockWinApp = join(mockWinRoot, "dist/sumi-win32-x64");
-    const mockWinRes = join(mockWinApp, "resources");
-    mkdirSync(join(mockWinRes, "runtime"), { recursive: true });
-    mkdirSync(join(mockWinRes, "app"), { recursive: true });
-    mkdirSync(join(mockWinRes, "licenses"), { recursive: true });
-    mkdirSync(join(mockWinRes, "server/apps/web/models"), { recursive: true });
-
-    // Sumi.exe and node.exe with valid MZ PE headers (> 1024 bytes)
-    const fakePeBuffer = Buffer.concat([Buffer.from("MZ"), Buffer.alloc(1100, 0)]);
-    writeFileSync(join(mockWinApp, "Sumi.exe"), fakePeBuffer);
-    writeFileSync(join(mockWinRes, "runtime/node.exe"), fakePeBuffer);
-
-    // All required Windows CRT DLLs present
-    for (const dll of WINDOWS_REQUIRED_CRT_DLLS) {
-      writeFileSync(join(mockWinRes, "runtime", dll), "fake-crt-dll");
-    }
-
-    // Required licenses + Microsoft CRT redistributable notice
-    writeFileSync(join(mockWinRes, "licenses/Trade-Journal-MIT.txt"), "A".repeat(150));
-    writeFileSync(join(mockWinRes, "licenses/Kami-MIT.txt"), "A".repeat(150));
-    writeFileSync(join(mockWinRes, "licenses/Node-LICENSE.txt"), "A".repeat(150));
-    writeFileSync(join(mockWinRes, "licenses/Silero-VAD-MIT.txt"), "A".repeat(150));
-    writeFileSync(join(mockWinRes, "licenses/Electron-LICENSE.txt"), "A".repeat(150));
-    writeFileSync(join(mockWinRes, "licenses/THIRD-PARTY-NOTICES.md"), "A".repeat(150));
-    writeFileSync(
-      join(mockWinRes, "licenses/Microsoft-VC-Redist-LICENSE.txt"),
-      "Microsoft Visual C++ Runtime Redistributable License Terms\n" + "A".repeat(100),
-    );
-
-    // App files
-    writeFileSync(
-      join(mockWinRes, "app/package.json"),
-      JSON.stringify({ main: "main.cjs", version: "0.3.0" }),
-    );
-    for (const f of [
-      "main.cjs",
-      "preload.cjs",
-      "preferences.cjs",
-      "security.cjs",
-      "update-service.cjs",
-      "update-service-platform.cjs",
-    ]) {
-      writeFileSync(join(mockWinRes, "app", f), "// shell");
-    }
-
-    // Silero model fixture (use real model bytes so size and SHA256 match perfectly)
-    const realSileroPath = join(
-      dirname(fileURLToPath(import.meta.url)),
-      "../models/silero-vad-v6.2-F32.gguf",
-    );
-    if (existsSync(realSileroPath)) {
-      writeFileSync(
-        join(mockWinRes, "server/apps/web/models/silero-vad-v6.2-F32.gguf"),
-        readFileSync(realSileroPath),
-      );
-    } else {
-      writeFileSync(
-        join(mockWinRes, "server/apps/web/models/silero-vad-v6.2-F32.gguf"),
-        Buffer.alloc(SILERO_EXPECTED_SIZE),
-      );
-    }
-
-    writeFileSync(join(mockWinRoot, "package.json"), JSON.stringify({ version: "0.3.0" }));
-
-    // Mock hash calculation for test fixture
-    const origCreateHash = createHash;
-    // Window check happy path (with dummy silero sha bypass only for synthetic test)
-    // We test required DLL missing:
-    rmSync(join(mockWinRes, "runtime/msvcp140.dll"), { force: true });
-    assert.throws(
-      () =>
-        verifyWindowsPackage({
-          root: mockWinRoot,
-          app: mockWinApp,
-          resources: mockWinRes,
-          arch: "x64",
-        }),
-      /Required Windows CRT runtime DLL missing from package: msvcp140\.dll/,
-    );
-    // Restore msvcp140.dll
-    writeFileSync(join(mockWinRes, "runtime/msvcp140.dll"), "fake-crt-dll");
-
-    // Missing Microsoft CRT license notice throws
-    rmSync(join(mockWinRes, "licenses/Microsoft-VC-Redist-LICENSE.txt"), { force: true });
-    assert.throws(
-      () =>
-        verifyWindowsPackage({
-          root: mockWinRoot,
-          app: mockWinApp,
-          resources: mockWinRes,
-          arch: "x64",
-        }),
-      /Microsoft Visual C\+\+ Redistributable license notice missing required terms/,
-    );
-
-    // 9. Test verifyLinuxPackage with synthetic mock
-    const mockLinuxRoot = join(tempDir, "mock-linux-root");
-    const mockLinuxApp = join(mockLinuxRoot, "dist/sumi-linux-x64");
-    const mockLinuxRes = join(mockLinuxApp, "resources");
-    mkdirSync(join(mockLinuxRes, "runtime"), { recursive: true });
-    mkdirSync(join(mockLinuxRes, "app"), { recursive: true });
-    mkdirSync(join(mockLinuxRes, "licenses"), { recursive: true });
-    mkdirSync(join(mockLinuxRes, "server/apps/web/models"), { recursive: true });
-
-    // sumi and node with valid ELF magic bytes (\x7fELF)
-    const fakeElfBuffer = Buffer.concat([
-      Buffer.from([0x7f, 0x45, 0x4c, 0x46]),
-      Buffer.alloc(1100, 0),
-    ]);
-    writeFileSync(join(mockLinuxApp, "sumi"), fakeElfBuffer);
-    writeFileSync(join(mockLinuxRes, "runtime/node"), fakeElfBuffer);
-
-    // Missing chrome-sandbox throws
-    assert.throws(
-      () =>
-        verifyLinuxPackage({
-          root: mockLinuxRoot,
-          app: mockLinuxApp,
-          resources: mockLinuxRes,
-          arch: "x64",
-        }),
-      /chrome-sandbox missing/,
-    );
-    writeFileSync(join(mockLinuxApp, "chrome-sandbox"), "#!/bin/sh\n");
-
-    // 10. Test runNativeAsrDoctor with synthetic mock runner
-    const mockDoctorRoot = join(tempDir, "mock-doctor-root");
-    const mockDoctorLayout = resolvePackageLayout(mockDoctorRoot, "linux", "x64");
-    mkdirSync(dirname(mockDoctorLayout.nodeExecutable), { recursive: true });
-    mkdirSync(join(mockDoctorLayout.webDir, "models"), { recursive: true });
-    writeFileSync(mockDoctorLayout.nodeExecutable, "#!/bin/sh\n");
-    if (existsSync(realSileroPath)) {
-      writeFileSync(
-        join(mockDoctorLayout.webDir, "models/silero-vad-v6.2-F32.gguf"),
-        readFileSync(realSileroPath),
-      );
-    }
-    const mockRunCalls = [];
-    const mockDoctorTool = (cmd, args, opts) => {
-      mockRunCalls.push({ cmd, args, cwd: opts && opts.cwd });
-      return "[ASR Doctor] Silence speech probability: 0.0016\n[ASR Doctor] Backend successfully initialized.";
-    };
-    const doctorRes = runNativeAsrDoctor({
-      root: mockDoctorRoot,
-      platform: "linux",
-      arch: "x64",
-      runTool: mockDoctorTool,
-    });
-    assert.equal(doctorRes.success, true);
-    assert.equal(mockRunCalls.length, 1);
-    assert.equal(mockRunCalls[0].cwd, mockDoctorLayout.webDir);
-
-    console.log("All check-support unit tests passed successfully.");
-  } finally {
-    rmSync(tempDir, { recursive: true, force: true });
-  }
+/**
+ * CLI entry point (`node desktop/check-support.mjs`, run by the release workflow):
+ * executes the helper unit tests in check-support.test.mjs with the node:test runner.
+ */
+function runUnitTests() {
+  const testFile = join(dirname(fileURLToPath(import.meta.url)), "check-support.test.mjs");
+  const result = spawnSync(process.execPath, ["--test", testFile], { stdio: "inherit" });
+  if (result.error) throw result.error;
+  if (result.status !== 0) process.exit(result.status ?? 1);
+  console.log("All check-support unit tests passed successfully.");
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {

@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { normalizeArch, readRootVersion } from "./lib/common.mjs";
 import { packageApp, resolveArtifactNames } from "./package.mjs";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
@@ -10,9 +11,8 @@ export function getReleaseMetadata(
   platform = process.platform,
   arch = process.arch,
 ) {
-  const rootPkg = JSON.parse(readFileSync(join(projectRoot, "package.json"), "utf8"));
-  const version = rootPkg.version || "0.3.0";
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const version = readRootVersion(projectRoot);
+  const normArch = normalizeArch(arch);
   const artifactNames = resolveArtifactNames(version, normArch, platform);
   const distDir = join(projectRoot, "dist");
   const sumsPath = join(distDir, "SHA256SUMS.txt");

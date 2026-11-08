@@ -5,6 +5,17 @@ allowBuilds:
   esbuild: true
   better-sqlite3: true
   koffi: true
-  electron-winstaller: false
 ignoredOptionalDependencies:
   - sharp
+# Windows builds use NSIS (not Squirrel.Windows). electron-builder lists its Squirrel
+# target package as a required peer, which autoInstallPeers would pull in together with
+# electron-winstaller (~29 MB). It is only require()d lazily for the "squirrel" target.
+packageExtensions:
+  electron-builder:
+    peerDependenciesMeta:
+      electron-builder-squirrel-windows:
+        optional: true
+  app-builder-lib:
+    peerDependenciesMeta:
+      electron-builder-squirrel-windows:
+        optional: true

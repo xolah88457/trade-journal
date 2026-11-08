@@ -101,6 +101,7 @@ dist/Sumi.app/
       runtime/node                # Standalone official Node 26.13.0 binary (ABI preserved)
       launch.cjs                  # Ephemeral loopback port launcher & lifecycle supervisor
       licenses/                   # Upstream MIT, Node, Electron, Chromium, Sparkle licenses
+                                  # licenses/dependencies/: only packages that ship in the app
 ```
 
 #### Windows (`dist/sumi-win32-x64/`)
@@ -319,6 +320,10 @@ pnpm desktop:check
 ```
 
 The desktop verification suite launches an isolated backend on an ephemeral port in a clean temporary directory, validates license compliance, tests account creation and SQLite restarts, verifies native ASR silence detection, and ensures no private files, databases, or heavy weights are packaged.
+
+### Build tooling layout
+
+`build.mjs`, `package.mjs`, `release.mjs`, `open.mjs`, `check-support.mjs` and `cross-platform-smoke.mjs` are build-time scripts and are never copied into the app. Helpers they share (architecture normalisation, root version, SHA-256, private-file and symlink-confinement checks, verified archive download, DLL version probing) live in `desktop/lib/common.mjs`. `node desktop/check-support.mjs` runs the verifier unit tests in `desktop/check-support.test.mjs`; all desktop tests run with `node --test desktop/*.test.mjs` (four `check.test.mjs` integration tests additionally need a built `dist/`).
 
 ---
 

@@ -15,11 +15,27 @@ import {
   rmSync,
   writeFileSync,
 } from "node:fs";
-import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import path, { dirname, join, relative, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+
+import {
+  assertSymlinksConfined,
+  cleanPrivateFiles,
+  ensureVerifiedArchive,
+  findFileCaseInsensitive,
+  isPathContained,
+  normalizeArch,
+  parseFileVersionString,
+  parseShaSums,
+  probeDllFileVersion,
+  readRootVersion,
+  sha256File,
+} from "./lib/common.mjs";
+
+// Shared helpers live in lib/common.mjs; re-exported here as this module's public API.
+export { cleanPrivateFiles, isPathContained, parseFileVersionString, parseShaSums };
 
 export const ELECTRON_VERSION = "45.2.3";
 
@@ -108,35 +124,15 @@ export function formatFileVersion(version) {
   return (version || []).map(Number).join(".");
 }
 
-/** Parses a "14.44.35111.0"-style version string into a 4-part numeric array (null if unparseable). */
-export function parseFileVersionString(str) {
-  if (typeof str !== "string") return null;
-  const m = str.match(/(\d+)\.(\d+)\.(\d+)(?:\.(\d+))?/);
-  if (!m) return null;
-  return [Number(m[1]), Number(m[2]), Number(m[3]), Number(m[4] || 0)];
-}
-
 /**
  * Reads the PE FILEVERSION of a Windows DLL via PowerShell FileVersionInfo.
  * Returns a 4-part numeric array. Throws when the version cannot be read;
  * `runTool` is injectable for tests.
  */
 export function readDllFileVersion(filePath, runTool = execFileSync) {
-  const psPath = String(filePath).replace(/'/g, "''");
-  const out = runTool(
-    "powershell",
-    [
-      "-NoProfile",
-      "-NonInteractive",
-      "-Command",
-      `$v = [System.Diagnostics.FileVersionInfo]::GetVersionInfo('${psPath}'); ` +
-        `Write-Output "$($v.FileMajorPart).$($v.FileMinorPart).$($v.FileBuildPart).$($v.FilePrivatePart)"`,
-    ],
-    { encoding: "utf8" },
-  );
-  const version = parseFileVersionString(String(out).trim().split(/\r?\n/)[0]);
+  const { version, output } = probeDllFileVersion(filePath, runTool);
   if (!version) {
-    throw new Error(`Could not read FILEVERSION of ${filePath} (powershell output: ${out})`);
+    throw new Error(`Could not read FILEVERSION of ${filePath} (powershell output: ${output})`);
   }
   return version;
 }
@@ -237,17 +233,6 @@ export function collectWindowsCrtCandidateDirs(env = process.env) {
   return candidates;
 }
 
-/** Finds a DLL inside a directory case-insensitively; returns the full path or null. */
-function findDllInDir(dir, dll) {
-  const direct = join(dir, dll);
-  if (existsSync(direct)) return direct;
-  try {
-    const match = readdirSync(dir).find((e) => e.toLowerCase() === dll.toLowerCase());
-    if (match) return join(dir, match);
-  } catch {}
-  return null;
-}
-
 /**
  * Selects the app-local Windows CRT DLLs to bundle, VERIFYING each candidate's PE
  * FILEVERSION. Per DLL the NEWEST candidate >= MIN_WIN32_CRT_FILEVERSION wins
@@ -271,7 +256,7 @@ export function selectWindowsCrtDlls(options = {}) {
   for (const dll of REQUIRED_WIN32_CRT_DLLS) {
     const found = [];
     for (const dir of candidates) {
-      const fullPath = findDllInDir(dir, dll);
+      const fullPath = findFileCaseInsensitive(dir, dll);
       if (!fullPath) continue;
       let version = null;
       try {
@@ -490,19 +475,6 @@ export function resolveUpdateConfig({ config = {}, env = process.env, arch = pro
   return { feedUrl, publicEdKey: validatedKey };
 }
 
-export function parseShaSums(sumsText, filename) {
-  if (typeof sumsText !== "string" || !filename) return null;
-  for (const line of sumsText.split("\n")) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const match = trimmed.match(/^([a-fA-F0-9]{64})\s+[*]?(.+)$/);
-    if (match && match[2] === filename) {
-      return match[1].toLowerCase();
-    }
-  }
-  return null;
-}
-
 export function checkRequiredScripts(desktopDir) {
   for (const script of REQUIRED_DESKTOP_SCRIPTS) {
     const fullPath = join(desktopDir, script);
@@ -512,35 +484,10 @@ export function checkRequiredScripts(desktopDir) {
   }
 }
 
-/**
- * Checks whether targetPath is strictly inside baseDir (or equals baseDir).
- * Fully platform-aware: handles Windows backslashes, drive roots, UNC paths, and case-insensitivity.
- */
-export function isPathContained(baseDir, targetPath, platform = process.platform) {
-  const normBase = platform === "win32" ? baseDir.toLowerCase() : baseDir;
-  const normTarget = platform === "win32" ? targetPath.toLowerCase() : targetPath;
-  const pathMod = platform === "win32" ? path.win32 : path.posix;
-  const rel = pathMod.relative(normBase, normTarget);
-  return rel === "" || (!rel.startsWith("..") && !pathMod.isAbsolute(rel));
-}
-
 export function assertFrameworkSymlinksConfined(frameworkPath) {
-  if (!existsSync(frameworkPath)) return;
-  const realBase = realpathSync(frameworkPath);
-  function check(dir) {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      const p = join(dir, entry.name);
-      if (entry.isSymbolicLink()) {
-        const real = realpathSync(p);
-        if (!isPathContained(realBase, real)) {
-          throw new Error(`Framework symlink escapes bundle: ${p} -> ${real}`);
-        }
-      } else if (entry.isDirectory()) {
-        check(p);
-      }
-    }
-  }
-  check(frameworkPath);
+  assertSymlinksConfined(frameworkPath, frameworkPath, {
+    message: "Framework symlink escapes bundle",
+  });
 }
 
 export function buildInfoPlist(version, options = {}) {
@@ -694,7 +641,7 @@ export function getElectronArchiveName(
   platform = process.platform,
   arch = process.arch,
 ) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   const plat = platform === "win32" ? "win32" : platform === "darwin" ? "darwin" : "linux";
   return `electron-v${version}-${plat}-${normArch}.zip`;
 }
@@ -704,59 +651,18 @@ export async function ensureElectronArchive(
   arch = process.arch,
   platform = process.platform,
 ) {
-  mkdirSync(cacheDir, { recursive: true });
-  const normArch = arch === "arm64" ? "arm64" : "x64";
-  const platformKey = `${platform === "win32" ? "win32" : platform}-${normArch}`;
-  const archiveName = getElectronArchiveName(ELECTRON_VERSION, platform, arch);
-  const base = `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`;
-  const archivePath = join(cacheDir, archiveName);
-  const sumsPath = join(cacheDir, `electron-v${ELECTRON_VERSION}-SHASUMS256.txt`);
-
-  const pinnedSha = PINNED_ELECTRON_CHECKSUMS[platformKey];
-
-  let checksum = pinnedSha;
-  if (existsSync(sumsPath)) {
-    const sumsText = readFileSync(sumsPath, "utf8");
-    const parsedChecksum = parseShaSums(sumsText, archiveName);
-    if (parsedChecksum) checksum = parsedChecksum;
-  }
-
-  if (existsSync(archivePath) && checksum) {
-    const fileBytes = readFileSync(archivePath);
-    const hash = createHash("sha256").update(fileBytes).digest("hex");
-    if (hash === checksum) {
-      return { archivePath, checksum };
-    }
-  }
-
-  const [archiveRes, sumsRes] = await Promise.all([
-    fetch(`${base}/${archiveName}`, { signal: AbortSignal.timeout(180_000) }),
-    fetch(`${base}/SHASUMS256.txt`, { signal: AbortSignal.timeout(30_000) }),
-  ]);
-  if (!archiveRes.ok || !sumsRes.ok) {
-    throw new Error(
-      `Failed to download official Electron v${ELECTRON_VERSION} (${archiveRes.status}/${sumsRes.status}).`,
-    );
-  }
-  const sumsText = await sumsRes.text();
-  checksum = parseShaSums(sumsText, archiveName);
-  if (!checksum) {
-    throw new Error(`Could not find checksum for ${archiveName} in official SHASUMS256.txt`);
-  }
-  if (pinnedSha && checksum !== pinnedSha) {
-    throw new Error(
-      `Official checksum for ${archiveName} (${checksum}) does not match pinned checksum (${pinnedSha})!`,
-    );
-  }
-
-  const buffer = Buffer.from(await archiveRes.arrayBuffer());
-  const actualHash = createHash("sha256").update(buffer).digest("hex");
-  if (actualHash !== checksum) {
-    throw new Error(`Electron archive checksum mismatch: expected ${checksum}, got ${actualHash}`);
-  }
-  writeFileSync(archivePath, buffer);
-  writeFileSync(sumsPath, sumsText, "utf8");
-  return { archivePath, checksum };
+  const platformKey = `${platform}-${normalizeArch(arch)}`;
+  return ensureVerifiedArchive({
+    cacheDir,
+    archiveName: getElectronArchiveName(ELECTRON_VERSION, platform, arch),
+    baseUrl: `https://github.com/electron/electron/releases/download/v${ELECTRON_VERSION}`,
+    sumsCacheName: `electron-v${ELECTRON_VERSION}-SHASUMS256.txt`,
+    label: `official Electron v${ELECTRON_VERSION}`,
+    sumsLabel: "official SHASUMS256.txt",
+    archiveKind: "Electron",
+    archiveTimeoutMs: 180_000,
+    pinnedSha: PINNED_ELECTRON_CHECKSUMS[platformKey],
+  });
 }
 
 export function getNodeArchiveName(
@@ -764,7 +670,7 @@ export function getNodeArchiveName(
   platform = process.platform,
   arch = process.arch,
 ) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   if (platform === "win32") {
     return `node-${runtimeVersion}-win-${normArch}.zip`;
   }
@@ -781,55 +687,23 @@ export async function ensureNodeArchive(
   arch = process.arch,
   platform = process.platform,
 ) {
-  mkdirSync(cacheDir, { recursive: true });
-  const archiveName = getNodeArchiveName(runtimeVersion, platform, arch);
-  const base = `https://nodejs.org/dist/${runtimeVersion}`;
-  const archivePath = join(cacheDir, archiveName);
-  const sumsPath = join(cacheDir, `node-${runtimeVersion}-SHASUMS256.txt`);
-
-  let checksum = null;
-  if (existsSync(sumsPath)) {
-    const sumsText = readFileSync(sumsPath, "utf8");
-    checksum = parseShaSums(sumsText, archiveName);
-  }
-
-  if (existsSync(archivePath) && checksum) {
-    const fileBytes = readFileSync(archivePath);
-    const hash = createHash("sha256").update(fileBytes).digest("hex");
-    if (hash === checksum) {
-      return { archivePath, checksum };
-    }
-  }
-
-  const [archiveRes, sumsRes] = await Promise.all([
-    fetch(`${base}/${archiveName}`, { signal: AbortSignal.timeout(120_000) }),
-    fetch(`${base}/SHASUMS256.txt`, { signal: AbortSignal.timeout(30_000) }),
-  ]);
-  if (!archiveRes.ok || !sumsRes.ok) {
-    throw new Error(
-      `Failed to download official Node ${runtimeVersion} (${archiveRes.status}/${sumsRes.status}).`,
-    );
-  }
-  const sumsText = await sumsRes.text();
-  checksum = parseShaSums(sumsText, archiveName);
-  if (!checksum) {
-    throw new Error(`Could not find checksum for ${archiveName} in Node SHASUMS256.txt`);
-  }
-  const buffer = Buffer.from(await archiveRes.arrayBuffer());
-  const actualHash = createHash("sha256").update(buffer).digest("hex");
-  if (actualHash !== checksum) {
-    throw new Error(`Node archive checksum mismatch: expected ${checksum}, got ${actualHash}`);
-  }
-  writeFileSync(archivePath, buffer);
-  writeFileSync(sumsPath, sumsText, "utf8");
-  return { archivePath, checksum };
+  return ensureVerifiedArchive({
+    cacheDir,
+    archiveName: getNodeArchiveName(runtimeVersion, platform, arch),
+    baseUrl: `https://nodejs.org/dist/${runtimeVersion}`,
+    sumsCacheName: `node-${runtimeVersion}-SHASUMS256.txt`,
+    label: `official Node ${runtimeVersion}`,
+    sumsLabel: "Node SHASUMS256.txt",
+    archiveKind: "Node",
+    archiveTimeoutMs: 120_000,
+  });
 }
 
 /**
  * Resolves the verified transcribe-cpp native platform tuple.
  */
 export function getNativeTuple(platform = process.platform, arch = process.arch) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   if (platform === "darwin") {
     return normArch === "arm64" ? "darwin-arm64-metal" : "darwin-x64-cpu";
   }
@@ -849,7 +723,7 @@ export function getNativeLibName(platform = process.platform) {
 }
 
 export function getKoffiPackageName(platform = process.platform, arch = process.arch) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   return `@koromix/koffi-${platform}-${normArch}`;
 }
 
@@ -857,7 +731,7 @@ export function getKoffiPackageName(platform = process.platform, arch = process.
  * Resolves the installed @koromix/koffi-${platform}-${arch} package directory from installed metadata.
  */
 export function resolveKoffiPackageDir(root, platform = process.platform, arch = process.arch) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   const pkgName = `koffi-${platform}-${normArch}`;
 
   // 1. Try resolving via Node's createRequire from apps/web or root
@@ -912,7 +786,7 @@ export function resolveKoffiNativeDir(root, platform = process.platform, arch = 
  * Asserts that the Koffi native binary payload (.node) exists in the staged server bundle.
  */
 export function assertKoffiPayload(serverDir, platform = process.platform, arch = process.arch) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   const binarySubpath = `${platform}_${normArch}/koffi.node`;
   const pkgSubpath = `@koromix/koffi-${platform}-${normArch}`;
 
@@ -1175,26 +1049,6 @@ export function augmentStandaloneDependencies(serverDir) {
 }
 
 /**
- * Removes sensitive and environment files from a distribution directory.
- */
-export function cleanPrivateFiles(directory) {
-  if (!existsSync(directory)) return;
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const p = join(directory, entry.name);
-    if (
-      entry.name.startsWith(".env") ||
-      /\.(db|sqlite)(-shm|-wal|-journal)?$/.test(entry.name) ||
-      (entry.name.endsWith(".gguf") && entry.name !== "silero-vad-v6.2-F32.gguf") ||
-      entry.name === ".secret"
-    ) {
-      rmSync(p, { recursive: true, force: true });
-    } else if (entry.isDirectory()) {
-      cleanPrivateFiles(p);
-    }
-  }
-}
-
-/**
  * Resolves the platform-safe command and arguments for invoking pnpm.
  * On Windows, dispatches via ComSpec cmd.exe /d /s /c "pnpm build" or validated
  * Node + npm_execpath to avoid ENOENT/EINVAL and Node batch file security restrictions.
@@ -1231,18 +1085,135 @@ export function getPnpmCommand(args = [], env = process.env, platform = process.
  * Verifies that symlinks within a directory do not escape the application bundle.
  */
 export function assertSelfContained(directory, serverBase) {
-  const canonicalBase = realpathSync(serverBase);
-  for (const entry of readdirSync(directory, { withFileTypes: true })) {
-    const p = join(directory, entry.name);
-    if (entry.isSymbolicLink()) {
-      const target = realpathSync(p);
-      if (!isPathContained(canonicalBase, target)) {
-        throw new Error(`Symlink escapes application bundle: ${p} -> ${target}`);
+  assertSymlinksConfined(directory, serverBase, { skipMissing: false });
+}
+
+/**
+ * Finds every node_modules directory under `root` without descending into node_modules
+ * themselves or following symlinks (e.g. server/node_modules, server/apps/web/node_modules).
+ */
+export function findNodeModulesDirs(root) {
+  const found = [];
+  const walk = (dir) => {
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (!entry.isDirectory()) continue;
+      const p = join(dir, entry.name);
+      if (entry.name === "node_modules") found.push(p);
+      else walk(p);
+    }
+  };
+  walk(root);
+  return found;
+}
+
+const LICENSE_FILE_PATTERN = /^(licen[sc]e|copying|notice)(\.|$)/i;
+
+function packageIdOf(packagePath) {
+  let metadata;
+  try {
+    metadata = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8"));
+  } catch (cause) {
+    throw new Error(`Cannot read dependency metadata at ${packagePath}`, { cause });
+  }
+  return `${metadata.name}@${metadata.version}`.replaceAll("/", "__");
+}
+
+/**
+ * Lists the package directories directly inside a node_modules directory
+ * (descending into @scopes), skipping dot entries.
+ */
+function listPackageDirs(modules) {
+  const dirs = [];
+  if (!existsSync(modules)) return dirs;
+  for (const entry of readdirSync(modules)) {
+    if (entry.startsWith(".")) continue;
+    const packagePath = join(modules, entry);
+    if (entry.startsWith("@")) dirs.push(...listPackageDirs(packagePath));
+    else if (existsSync(join(packagePath, "package.json"))) dirs.push(packagePath);
+  }
+  return dirs;
+}
+
+/**
+ * Copies LICENSE/COPYING/NOTICE files of every package that actually ships into
+ * `<destRoot>/<name>@<version>/`.
+ *
+ * `scanRoots` are directories of the staged app (the bundled server tree and the
+ * app's own node_modules): a package is listed only if it is present there, so dev
+ * dependencies and build tooling from the developer checkout never appear. Next's
+ * standalone tracing copies only the files a package needs at runtime and leaves
+ * its LICENSE behind, so each shipped package's license text is taken from the same
+ * name@version in `sourceStores` (pnpm virtual stores of the checkout) when found,
+ * otherwise from the staged copy itself.
+ *
+ * Handles pnpm's virtual store (`.pnpm/<id>/node_modules`) and nested node_modules.
+ * Returns the sorted list of shipped package ids.
+ */
+export function collectShippedLicenses(destRoot, scanRoots, sourceStores = []) {
+  const sourceById = new Map();
+  for (const store of sourceStores) {
+    if (!existsSync(store)) continue;
+    for (const entry of readdirSync(store)) {
+      for (const packagePath of listPackageDirs(join(store, entry, "node_modules"))) {
+        const id = packageIdOf(packagePath);
+        if (!sourceById.has(id)) sourceById.set(id, packagePath);
       }
-    } else if (entry.isDirectory()) {
-      assertSelfContained(p, canonicalBase);
     }
   }
+
+  const shipped = new Map(); // id -> staged package path
+  const visited = new Set();
+  function visitModules(modules) {
+    if (!existsSync(modules)) return;
+    let real;
+    try {
+      real = realpathSync(modules);
+    } catch {
+      return;
+    }
+    if (visited.has(real)) return;
+    visited.add(real);
+    for (const packagePath of listPackageDirs(modules)) {
+      const id = packageIdOf(packagePath);
+      if (!shipped.has(id)) shipped.set(id, packagePath);
+      visitModules(join(packagePath, "node_modules"));
+    }
+  }
+
+  for (const scanRoot of scanRoots) {
+    const modulesDirs =
+      basename(scanRoot) === "node_modules" ? [scanRoot] : findNodeModulesDirs(scanRoot);
+    for (const modules of modulesDirs) {
+      visitModules(modules);
+      const virtualStore = join(modules, ".pnpm");
+      if (existsSync(virtualStore)) {
+        for (const entry of readdirSync(virtualStore)) {
+          visitModules(join(virtualStore, entry, "node_modules"));
+        }
+      }
+    }
+  }
+
+  for (const [id, stagedPath] of shipped) {
+    const candidates = [sourceById.get(id), stagedPath].filter(Boolean);
+    for (const candidate of candidates) {
+      const files = readdirSync(candidate).filter((name) => LICENSE_FILE_PATTERN.test(name));
+      if (files.length === 0) continue;
+      const destination = join(destRoot, id);
+      mkdirSync(destination, { recursive: true });
+      for (const name of files) {
+        cpSync(join(candidate, name), join(destination, name), { recursive: true });
+      }
+      break;
+    }
+  }
+  return [...shipped.keys()].sort();
 }
 
 /**
@@ -1253,7 +1224,7 @@ export async function build(options = {}) {
   const root = options.root || resolve(dirname(fileURLToPath(import.meta.url)), "..");
   const platform = options.platform || process.platform;
   const arch = options.arch || process.arch;
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
 
   if (!SUPPORTED_PLATFORMS.includes(platform)) {
     throw new Error(
@@ -1280,8 +1251,7 @@ export async function build(options = {}) {
     suPublicEDKey = resolved.publicEdKey;
   }
 
-  const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  const appVersion = rootPkg.version || "0.3.0";
+  const appVersion = readRootVersion(root);
 
   // Pre-flight 2: check required desktop scripts
   checkRequiredScripts(join(root, "desktop"));
@@ -1540,8 +1510,7 @@ export async function build(options = {}) {
   if (!existsSync(sileroSrc)) {
     throw new Error(`Silero VAD model missing at ${sileroSrc}`);
   }
-  const sileroBytes = readFileSync(sileroSrc);
-  const sileroHash = createHash("sha256").update(sileroBytes).digest("hex");
+  const sileroHash = sha256File(sileroSrc);
   if (sileroHash !== SILERO_EXPECTED_SHA256) {
     throw new Error(
       `Silero VAD checksum mismatch: expected ${SILERO_EXPECTED_SHA256}, got ${sileroHash}`,
@@ -1619,42 +1588,7 @@ export async function build(options = {}) {
   const serverBase = realpathSync(join(resources, "server"));
   assertSelfContained(join(resources, "server"), serverBase);
 
-  // Collect dependency licenses
-  const collected = new Set();
-  function collectLicenses(modules) {
-    if (!existsSync(modules)) return;
-    for (const entry of readdirSync(modules)) {
-      if (entry.startsWith(".")) continue;
-      const packagePath = join(modules, entry);
-      if (entry.startsWith("@")) {
-        collectLicenses(packagePath);
-        continue;
-      }
-      if (!existsSync(join(packagePath, "package.json"))) continue;
-      let metadata;
-      try {
-        metadata = JSON.parse(readFileSync(join(packagePath, "package.json"), "utf8"));
-      } catch (cause) {
-        throw new Error(`Cannot read dependency metadata at ${packagePath}`, { cause });
-      }
-      const id = `${metadata.name}@${metadata.version}`.replaceAll("/", "__");
-      if (collected.has(id)) continue;
-      collected.add(id);
-      for (const name of readdirSync(packagePath).filter((name) =>
-        /^(licen[sc]e|copying|notice)(\.|$)/i.test(name),
-      )) {
-        const destination = join(resources, "licenses/dependencies", id);
-        mkdirSync(destination, { recursive: true });
-        cpSync(join(packagePath, name), join(destination, name), { recursive: true });
-      }
-    }
-  }
   const pnpmRoot = join(root, "node_modules/.pnpm");
-  if (existsSync(pnpmRoot)) {
-    for (const entry of readdirSync(pnpmRoot)) {
-      collectLicenses(join(pnpmRoot, entry, "node_modules"));
-    }
-  }
 
   // 7. Assemble Electron Application Entry in resources/app (unpacked ASAR off)
   mkdirSync(appDir, { recursive: true });
@@ -1756,6 +1690,13 @@ export async function build(options = {}) {
         throw new Error(`Failed to bundle Sparkle updater assets: ${err.message}`, { cause: err });
       }
     }
+
+    // Everything that ships is now in place: record licenses before signing seals Resources.
+    collectShippedLicenses(
+      join(resources, "licenses/dependencies"),
+      [join(resources, "server"), appNodeModules],
+      [pnpmRoot],
+    );
 
     // Stage update-config.json in resources/app with architecture-split feedUrl
     const stagedUpdateConfig = {
@@ -1876,6 +1817,11 @@ export async function build(options = {}) {
     // 8b. Windows / Linux: bundle electron-updater runtime dependency closure
     console.log("Bundling electron-updater runtime dependencies...");
     bundlePackageWithRuntimeDeps("electron-updater", root, appNodeModules);
+    collectShippedLicenses(
+      join(resources, "licenses/dependencies"),
+      [join(resources, "server"), appNodeModules],
+      [pnpmRoot],
+    );
 
     if (existsSync(updateConfigPath)) {
       cpSync(updateConfigPath, join(appDir, "update-config.json"));

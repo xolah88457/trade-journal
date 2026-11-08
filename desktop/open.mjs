@@ -3,6 +3,8 @@ import { existsSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { normalizeArch } from "./lib/common.mjs";
+
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
 /**
@@ -13,7 +15,7 @@ export function getExecutablePath(
   arch = process.arch,
   baseDir = join(root, "dist"),
 ) {
-  const normArch = arch === "arm64" ? "arm64" : "x64";
+  const normArch = normalizeArch(arch);
   if (platform === "darwin") {
     return join(baseDir, "Sumi.app");
   }

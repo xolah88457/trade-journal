@@ -946,7 +946,8 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
       entries[entryName] = await blobToUint8Array(blob);
     }
 
-    const zipBytes = zipSync(entries, { level: 6 });
+    // PNG data is already deflated, so store entries instead of recompressing them.
+    const zipBytes = zipSync(entries, { level: 0 });
     const zipBlob = new Blob([zipBytes as unknown as BlobPart], { type: "application/zip" });
     const filename = `${this.report.date}-daily-report.zip`;
     return { blob: zipBlob, filename };

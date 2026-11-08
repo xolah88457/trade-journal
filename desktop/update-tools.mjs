@@ -910,16 +910,19 @@ export function generateAggregateSha256Sums(
     throw new Error(`Sanitized error: dist directory does not exist at ${distDir}`);
   }
   const selfName = path.basename(outputFile);
-  const allowedExtensions = new Set([
+  const allowedArchiveExtensions = new Set([
     ".zip",
     ".dmg",
     ".exe",
     ".appimage",
     ".deb",
     ".blockmap",
-    ".yml",
-    ".yaml",
-    ".xml",
+  ]);
+  const allowedMetadataFiles = new Set([
+    "latest.yml",
+    "latest-linux.yml",
+    "appcast.xml",
+    "appcast-x64.xml",
   ]);
 
   const entries = fs.readdirSync(distDir, { withFileTypes: true });
@@ -930,8 +933,9 @@ export function generateAggregateSha256Sums(
       if (entry.name.startsWith(".env") || entry.name.startsWith(".secret")) return false;
       if (/\.(db|sqlite)(-shm|-wal|-journal)?$/i.test(entry.name)) return false;
       if (/\.(key|pem|pfx|p12)$/i.test(entry.name)) return false;
+      if (allowedMetadataFiles.has(entry.name)) return true;
       const ext = path.extname(entry.name).toLowerCase();
-      return allowedExtensions.has(ext);
+      return allowedArchiveExtensions.has(ext);
     })
     .map((e) => e.name)
     .sort();

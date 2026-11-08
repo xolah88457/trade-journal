@@ -971,6 +971,74 @@ test("aggregateSha256Sums: generates checksums covering allowlisted release asse
   }
 });
 
+test("aggregateSha256Sums: excludes builder-debug.yml, builder-effective-config.yaml, and random.xml while including all 4 metadata files and installers", () => {
+  const tmp = makeTempDir("sums-metadata-test-");
+  try {
+    // 4 allowed metadata files
+    fs.writeFileSync(path.join(tmp, "latest.yml"), "version: 0.3.1");
+    fs.writeFileSync(path.join(tmp, "latest-linux.yml"), "version: 0.3.1");
+    fs.writeFileSync(path.join(tmp, "appcast.xml"), "<rss>arm</rss>");
+    fs.writeFileSync(path.join(tmp, "appcast-x64.xml"), "<rss>intel</rss>");
+
+    // Allowed installable archives / binaries / blockmaps
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-macos-arm64.zip"), "zip-arm");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-macos-x64.zip"), "zip-x64");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-macos-arm64.dmg"), "dmg-arm");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-macos-x64.dmg"), "dmg-x64");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-win32-x64-setup.exe"), "exe");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-win32-x64-setup.exe.blockmap"), "blockmap");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-linux-x64.AppImage"), "appimage");
+    fs.writeFileSync(path.join(tmp, "Sumi-0.3.1-linux-x64.deb"), "deb");
+
+    // Spurious metadata/yaml/xml files that MUST be excluded (prevent ghost entries)
+    fs.writeFileSync(path.join(tmp, "builder-debug.yml"), "debug: true");
+    fs.writeFileSync(path.join(tmp, "builder-effective-config.yaml"), "config: true");
+    fs.writeFileSync(path.join(tmp, "random.xml"), "<random></random>");
+    fs.writeFileSync(path.join(tmp, "other.yml"), "other: true");
+
+    // Forbidden files
+    fs.writeFileSync(path.join(tmp, ".env.production"), "SECRET=1");
+    fs.writeFileSync(path.join(tmp, "private.key"), "KEY");
+    fs.writeFileSync(path.join(tmp, "journal.db"), "SQLITE");
+
+    const sumsPath = path.join(tmp, "SHA256SUMS.txt");
+    const result = generateAggregateSha256Sums(tmp, sumsPath);
+
+    // Exactly 12 allowed release assets
+    assert.equal(result.count, 12);
+    assert.ok(fs.existsSync(sumsPath));
+    const content = fs.readFileSync(sumsPath, "utf8");
+
+    // All 4 real metadata files must be present
+    assert.ok(result.files.includes("latest.yml"));
+    assert.ok(result.files.includes("latest-linux.yml"));
+    assert.ok(result.files.includes("appcast.xml"));
+    assert.ok(result.files.includes("appcast-x64.xml"));
+    assert.ok(content.includes("latest.yml"));
+    assert.ok(content.includes("latest-linux.yml"));
+    assert.ok(content.includes("appcast.xml"));
+    assert.ok(content.includes("appcast-x64.xml"));
+
+    // Spurious YAML/XML debug configs MUST NOT be included
+    assert.ok(!result.files.includes("builder-debug.yml"));
+    assert.ok(!result.files.includes("builder-effective-config.yaml"));
+    assert.ok(!result.files.includes("random.xml"));
+    assert.ok(!result.files.includes("other.yml"));
+    assert.ok(!content.includes("builder-debug.yml"));
+    assert.ok(!content.includes("builder-effective-config.yaml"));
+    assert.ok(!content.includes("random.xml"));
+    assert.ok(!content.includes("other.yml"));
+
+    // Self and forbidden files excluded
+    assert.ok(!result.files.includes("SHA256SUMS.txt"));
+    assert.ok(!result.files.includes(".env.production"));
+    assert.ok(!result.files.includes("private.key"));
+    assert.ok(!result.files.includes("journal.db"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // stdin EPIPE / early-exit: handled BEFORE write, sanitized reject, late close safe
 // ---------------------------------------------------------------------------

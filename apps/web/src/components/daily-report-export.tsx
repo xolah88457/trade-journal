@@ -741,7 +741,6 @@ export function ReportExport({ source, beforeExport, className, loadRenderer }: 
                                 </div>
                                 <span className="text-[11px] capitalize text-muted-foreground">
                                   {p.kind}
-                                  {p.tradeKey ? ` · ${p.tradeKey}` : ""}
                                 </span>
                                 {hasError && (
                                   <div className="text-[10px] text-destructive">Preview failed</div>

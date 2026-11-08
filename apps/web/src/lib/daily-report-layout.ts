@@ -15,7 +15,6 @@ export const MARGIN_RIGHT = 40;
 export const USABLE_WIDTH = PAGE_WIDTH - MARGIN_LEFT - MARGIN_RIGHT; // 515.28 pt
 export const MARGIN_TOP = 44;
 export const MARGIN_BOTTOM = 44;
-export const USABLE_HEIGHT = PAGE_HEIGHT - MARGIN_TOP - MARGIN_BOTTOM; // 753.89 pt
 
 // Editorial palette: parchment, navy, high-contrast ink, trader green/red
 export const COLORS = {

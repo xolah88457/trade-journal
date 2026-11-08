@@ -356,6 +356,21 @@ export const insertExecutions = (
   return { inserted, duplicates, skipped, skippedReasons, tradeKeys: matchedTradeKeys };
 };
 
+type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+/** Removes an account's trades, their AI review history and its executions, inside `tx`. */
+export const deleteAccountHistory = (accountId: string, tx: Transaction): void => {
+  const tradeKeys = tx
+    .select({ key: trades.key })
+    .from(trades)
+    .where(eq(trades.accountId, accountId))
+    .all()
+    .map((trade) => trade.key);
+  deleteTradeAiReviews(tradeKeys, tx);
+  tx.delete(trades).where(eq(trades.accountId, accountId)).run();
+  tx.delete(executions).where(eq(executions.accountId, accountId)).run();
+};
+
 export const deleteExecutionsForTrades = (
   accountId: string,
   executionIds: string[],

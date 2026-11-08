@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray } from "drizzle-orm";
+import { and, asc, eq, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { matchesFilters, type AnalysisFilters, type AnnotatedTrade } from "@luxalgo/journal-core";
 import { getTimeZone, getMultipliers, getJournalDefaults } from "./settings";
 import { db, trades } from "@/db";
@@ -7,7 +7,7 @@ export type TradeFilters = AnalysisFilters & { accountIds?: string[] };
 
 export type TradeRow = typeof trades.$inferSelect;
 
-const parseJsonArray = (value: string | null): string[] => {
+export const parseJsonArray = (value: string | null | undefined): string[] => {
   if (!value) return [];
   try {
     const parsed = JSON.parse(value) as unknown;
@@ -71,9 +71,70 @@ export const rowToTrade = (row: TradeRow, config = context()): AnnotatedTrade =>
   };
 };
 
+const DAY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
+const shiftDay = (day: string, days: number): string | null => {
+  if (!DAY_PATTERN.test(day)) return null;
+  const time = Date.parse(`${day}T00:00:00Z`);
+  if (Number.isNaN(time) || new Date(time).toISOString().slice(0, 10) !== day) return null;
+  return new Date(time + days * 86_400_000).toISOString().slice(0, 10);
+};
+const splitList = (value: string) =>
+  value
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
 /**
- * Narrow indexed identity fields before decoding rows. The core predicate
- * remains authoritative for timezone, risk and breakeven semantics.
+ * SQL conditions that can only exclude rows the exact predicate (matchesFilters)
+ * would exclude anyway. Anything involving time zones, unicode case folding or
+ * computed values is widened here and re-checked in JS.
+ */
+const narrowingConditions = (filters: AnalysisFilters): Array<SQL | undefined> => {
+  const conditions: Array<SQL | undefined> = [];
+  // Day keys are calendar days in the user's zone (UTC-12..UTC+14), so a UTC
+  // timestamp range widened by a couple of days on each side is a safe superset.
+  const lower = filters.from ? shiftDay(filters.from, -2) : null;
+  const upper = filters.to ? shiftDay(filters.to, 3) : null;
+  if (lower || upper) {
+    const within = (column: SQL) =>
+      and(
+        lower ? sql`${column} >= ${lower}` : undefined,
+        upper ? sql`${column} < ${upper}` : undefined,
+      );
+    conditions.push(
+      or(
+        and(isNotNull(trades.closedAt), within(sql`${trades.closedAt}`)),
+        and(isNull(trades.closedAt), within(sql`${trades.openedAt}`)),
+      ),
+    );
+  }
+  if (filters.status === "open") conditions.push(eq(trades.status, "open"));
+  else if (["closed", "win", "loss", "breakeven"].includes(filters.status ?? ""))
+    conditions.push(ne(trades.status, "open"));
+  if (filters.symbol) {
+    const symbols = splitList(filters.symbol.toUpperCase());
+    // SQLite folds ASCII case only; rows with other characters always go to the JS check.
+    if (symbols.length && symbols.every((symbol) => /^[\x20-\x7e]+$/.test(symbol)))
+      conditions.push(
+        or(
+          sql`upper(${trades.symbol}) IN (${sql.join(
+            symbols.map((symbol) => sql`${symbol}`),
+            sql`, `,
+          )})`,
+          sql`${trades.symbol} GLOB '*[^ -~]*'`,
+        ),
+      );
+  }
+  if (filters.reviewed)
+    conditions.push(
+      filters.reviewed === "yes" ? isNotNull(trades.reviewedAt) : isNull(trades.reviewedAt),
+    );
+  return conditions;
+};
+
+/**
+ * Narrow identity, status and date fields in SQL before decoding rows. The core
+ * predicate remains authoritative for timezone, risk and breakeven semantics.
  */
 export const queryTrades = (
   filters: TradeFilters = {},
@@ -94,9 +155,10 @@ export const queryTrades = (
           ? eq(trades.direction, effective.direction as "long" | "short")
           : undefined,
         effective.assetClass ? eq(trades.assetClass, effective.assetClass) : undefined,
+        ...narrowingConditions(effective),
       ),
     )
-    .orderBy(asc(trades.openedAt))
+    .orderBy(asc(trades.openedAt), asc(sql`${trades}.rowid`))
     .all();
   const timeZone = getTimeZone();
   const config = context();
@@ -112,18 +174,32 @@ export const queryTrades = (
 export const getTradeByKey = (key: string): TradeRow | undefined =>
   db.select().from(trades).where(eq(trades.key, key)).get();
 
+const chronological = (
+  a: { openedAt: string; key: string },
+  b: { openedAt: string; key: string },
+) => {
+  const time = Date.parse(a.openedAt) - Date.parse(b.openedAt);
+  return time || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+};
+
 /** Navigate chronologically within the active filters, with a stable tie-break for equal entries. */
 export const getAdjacentTradeKeys = (
   currentKey: string,
   filters: TradeFilters = {},
   accountId?: string,
 ) => {
-  const ordered = queryTrades(filters)
-    .trades.filter((trade) => !accountId || trade.accountId === accountId)
-    .sort((a, b) => {
-      const time = Date.parse(a.openedAt) - Date.parse(b.openedAt);
-      return time || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
-    });
+  const filtered = Object.values(filters).some(Boolean);
+  // Without filters only key and entry time are needed, so skip decoding full rows.
+  const ordered = filtered
+    ? queryTrades(filters)
+        .trades.filter((trade) => !accountId || trade.accountId === accountId)
+        .map(({ key, openedAt }) => ({ key, openedAt }))
+    : db
+        .select({ key: trades.key, openedAt: trades.openedAt })
+        .from(trades)
+        .where(accountId ? eq(trades.accountId, accountId) : undefined)
+        .all();
+  ordered.sort(chronological);
   const index = ordered.findIndex((trade) => trade.key === currentKey);
   return {
     prevKey: index > 0 ? (ordered[index - 1]?.key ?? null) : null,

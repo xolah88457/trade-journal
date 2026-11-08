@@ -28,7 +28,13 @@ import { listExecutions } from "@/server/executions";
 import { nowIso } from "@/server/ids";
 import { savedEstimates } from "@/server/market-data/estimates";
 import { getTimeZone } from "@/server/settings";
-import { getTradeByKey, queryTrades, rowToTrade, type TradeRow } from "@/server/trades-query";
+import {
+  getTradeByKey,
+  parseJsonArray,
+  queryTrades,
+  rowToTrade,
+  type TradeRow,
+} from "@/server/trades-query";
 import { RequestError, requireValue } from "@/server/api";
 import { listTradeAiReviews } from "@/server/ai-review-history";
 import type {
@@ -170,16 +176,6 @@ function computeTradeRunningPnl(
     }
   }
   return [{ t: trade.openedAt, cumNetPnl: 0 }, ...exitPoints];
-}
-
-function parseJsonArray(value: string | null | undefined): string[] {
-  if (!value) return [];
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    return Array.isArray(parsed) ? (parsed as string[]) : [];
-  } catch {
-    return [];
-  }
 }
 
 interface TradeReportContext {

@@ -165,6 +165,8 @@ export const folders = sqliteTable("folders", {
     .default("user"),
   createdAt: text("created_at").notNull(),
   deletedAt: text("deleted_at"),
+  /** Sidebar order chosen by the user; folders never reordered sort after, by creation. */
+  position: integer("position"),
 });
 
 export const notes = sqliteTable(

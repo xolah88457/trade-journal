@@ -1,8 +1,9 @@
 "use client";
 import { OptionSelect } from "@/components/ui/option-select";
 
-import { Suspense, useRef, useState } from "react";
+import { Suspense, useEffect, useRef, useState } from "react";
 import { ArrowLeft, FolderPlus, Plus, Search, Trash2 } from "lucide-react";
+import { FolderList, applyFolderOrder } from "./folder-list";
 import { FilterBar } from "@/components/filter-bar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -53,6 +54,34 @@ function Notebook() {
   );
   const selected = data?.notes.find((note) => note.id === selectedId) ?? null;
   const currentFolder = data?.folders.find((item) => item.id === folder);
+  // A dragged order shows at once and stays until a load after the save confirms it.
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  const [orderError, setOrderError] = useState("");
+  const savingOrder = useRef(0);
+  useEffect(() => {
+    if (savingOrder.current === 0) setPendingOrder(null);
+  }, [data]);
+  const sidebarFolders = applyFolderOrder(
+    data?.folders.filter((item) => item.id !== "all") ?? [],
+    pendingOrder,
+  );
+
+  const reorderFolders = async (order: string[]) => {
+    setPendingOrder(order);
+    setOrderError("");
+    savingOrder.current += 1;
+    try {
+      await postJson("/api/folders", { order }, "PUT");
+    } catch (error) {
+      setPendingOrder(null);
+      setOrderError(
+        error instanceof Error ? error.message : "Could not save the folder order. Try again.",
+      );
+    } finally {
+      savingOrder.current -= 1;
+      refresh();
+    }
+  };
 
   const requestFolderDelete = (item: FolderRow) => {
     setDeleteError("");
@@ -200,7 +229,7 @@ function Notebook() {
         <div className="notebook-folders min-w-0 space-y-0.5 overflow-y-auto border-r p-2">
           <button
             className={cn(
-              "w-full rounded-md px-2.5 py-1.5 text-left text-sm",
+              "w-full rounded-md py-1.5 pl-3 pr-2 text-left text-sm",
               folder === "all"
                 ? "bg-accent font-medium"
                 : "text-muted-foreground hover:bg-accent/60",
@@ -209,35 +238,18 @@ function Notebook() {
           >
             All notes
           </button>
-          {data?.folders
-            .filter((f) => f.id !== "all")
-            .map((f) => (
-              <div key={f.id} className="flex items-center">
-                <button
-                  className={cn(
-                    "min-w-0 flex-1 break-words rounded-md px-2.5 py-1.5 text-left text-sm",
-                    folder === f.id
-                      ? "bg-accent font-medium"
-                      : "text-muted-foreground hover:bg-accent/60",
-                  )}
-                  onClick={() => setFolder(f.id)}
-                >
-                  {f.name}
-                </button>
-                {f.id !== "my-notes" && (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon"
-                    className="h-8 w-8 shrink-0 text-muted-foreground hover:text-destructive"
-                    aria-label={`Delete folder: ${f.name}`}
-                    onClick={() => requestFolderDelete(f)}
-                  >
-                    <Trash2 />
-                  </Button>
-                )}
-              </div>
-            ))}
+          <FolderList
+            folders={sidebarFolders}
+            selected={folder}
+            onSelect={setFolder}
+            onDelete={requestFolderDelete}
+            onReorder={(order) => void reorderFolders(order)}
+          />
+          {orderError && (
+            <p role="alert" className="px-2.5 py-1 text-xs text-destructive">
+              {orderError}
+            </p>
+          )}
           <Button
             variant="ghost"
             size="sm"
@@ -262,13 +274,11 @@ function Notebook() {
                 className="h-9 min-w-0 flex-1 rounded-lg border bg-card px-2 text-sm"
               >
                 <option value="all">All notes</option>
-                {data?.folders
-                  .filter((item) => item.id !== "all")
-                  .map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.name}
-                    </option>
-                  ))}
+                {sidebarFolders.map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.name}
+                  </option>
+                ))}
               </OptionSelect>
               {currentFolder && currentFolder.id !== "all" && currentFolder.id !== "my-notes" && (
                 <Button

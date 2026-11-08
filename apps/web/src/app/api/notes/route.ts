@@ -1,6 +1,7 @@
-import { asc, desc, eq, isNull } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db, folders, notes } from "@/db";
 import { bad, handler, ok } from "@/server/api";
+import { listFolders } from "@/server/folders";
 import { newId, nowIso } from "@/server/ids";
 
 export const GET = handler(async (request: Request) => {
@@ -38,13 +39,7 @@ export const GET = handler(async (request: Request) => {
         : b.updatedAt.localeCompare(a.updatedAt),
   );
 
-  const folderRows = db
-    .select()
-    .from(folders)
-    .where(isNull(folders.deletedAt))
-    .orderBy(asc(folders.createdAt))
-    .all();
-  return ok({ notes: rows, folders: folderRows });
+  return ok({ notes: rows, folders: listFolders() });
 });
 
 interface CreateNoteBody {

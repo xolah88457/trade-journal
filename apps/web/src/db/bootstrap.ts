@@ -107,7 +107,8 @@ CREATE TABLE IF NOT EXISTS folders (
   name TEXT NOT NULL,
   kind TEXT NOT NULL DEFAULT 'user',
   created_at TEXT NOT NULL,
-  deleted_at TEXT
+  deleted_at TEXT,
+  position INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS notes (
@@ -209,6 +210,9 @@ function migrate(sqlite: Database.Database) {
   sqlite.exec(BOOTSTRAP_SQL);
   if (!hasColumn(sqlite, "folders", "deleted_at")) {
     sqlite.exec("ALTER TABLE folders ADD COLUMN deleted_at TEXT");
+  }
+  if (!hasColumn(sqlite, "folders", "position")) {
+    sqlite.exec("ALTER TABLE folders ADD COLUMN position INTEGER");
   }
   if (!hasColumn(sqlite, "accounts", "ibkr_sync_time_zone")) {
     sqlite.exec("ALTER TABLE accounts ADD COLUMN ibkr_sync_time_zone TEXT");

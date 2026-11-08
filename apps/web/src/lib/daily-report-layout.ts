@@ -1752,6 +1752,10 @@ function addTradePage(
     b.addMarkdown(trade.notes);
   }
 
+  // Documents sit above the AI reviews: a short table, so it rarely lands alone on a page.
+  const docs = trade.attachments.filter((a) => !a.mime.startsWith("image/"));
+  if (docs.length) addDocumentTable(b, `Documents (${docs.length})`, docs);
+
   if (trade.aiReviews.length > 0) {
     b.sectionLabel("AI reviews", undefined, 80);
     for (const rev of trade.aiReviews) {
@@ -1777,9 +1781,6 @@ function addTradePage(
       b.y += 12;
     }
   }
-
-  const docs = trade.attachments.filter((a) => !a.mime.startsWith("image/"));
-  if (docs.length) addDocumentTable(b, `Documents (${docs.length})`, docs);
 
   for (const att of trade.attachments.filter((a) => a.mime.startsWith("image/"))) {
     const norm = images.get(att.id);

@@ -1121,6 +1121,31 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
   });
 
   describe("layout bounds, markdown & caption regressions", () => {
+    it("lists a trade's documents above its AI reviews", async () => {
+      const base = createMockReport();
+      const trade = {
+        ...base.trades[0]!,
+        attachments: [
+          {
+            id: "att-trade-doc",
+            name: "broker-confirmation.pdf",
+            mime: "application/pdf",
+            size: 1024,
+            createdAt: "2026-09-02T10:30:00.000Z",
+          },
+        ],
+      };
+      expect(trade.aiReviews.length).toBeGreaterThan(0);
+      const prepared = await prepareDailyReport({ ...base, attachments: [], trades: [trade] });
+      const labels = (prepared as any).pageLayouts
+        .filter((p: any) => p.kind === "trade")
+        .flatMap((p: any) => p.items.map((i: any) => ({ page: p.pageIndex, y: i.y, text: i.text })))
+        .filter((i: any) => i.text === "DOCUMENTS (1)" || i.text === "AI REVIEWS");
+      expect(labels.map((l: any) => l.text)).toEqual(["DOCUMENTS (1)", "AI REVIEWS"]);
+      const [docs, ai] = labels;
+      expect(docs.page < ai.page || (docs.page === ai.page && docs.y < ai.y)).toBe(true);
+    });
+
     it("renders inline bold as bold runs and trade links as their label", async () => {
       const report = createMockReport({
         note: [

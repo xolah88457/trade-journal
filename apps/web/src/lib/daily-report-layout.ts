@@ -568,6 +568,41 @@ function parseMarkdown(src: string): MarkdownBlock[] {
   return blocks;
 }
 
+interface InlineRun {
+  text: string;
+  bold: boolean;
+}
+
+/** Drops italic and code markers and backslash escapes; there is no italic or mono face. */
+const stripInline = (text: string) =>
+  text
+    .replace(/(?<![*\w\\])\*(?=\S)(.+?)(?<=[^\s\\])\*(?![*\w])/g, "$1")
+    .replace(/`([^`]+)`/g, "$1")
+    .replace(/\\([\\`*_{}[\]()<>#!|~+.-])/g, "$1");
+
+/** Inline markdown -> runs: `**bold**` keeps its weight, links show their label only. */
+function inlineRuns(src: string): InlineRun[] {
+  const text = src.replace(/\[((?:\\.|[^\]\\])*)\]\([^()\s]+\)/g, "$1");
+  const runs: InlineRun[] = [];
+  const add = (part: string, bold: boolean) => {
+    const clean = stripInline(part);
+    if (clean) runs.push({ text: clean, bold });
+  };
+  let last = 0;
+  for (const m of text.matchAll(/(?<!\\)\*\*(?=\S)(.+?)(?<=[^\s\\])\*\*/g)) {
+    add(text.slice(last, m.index), false);
+    add(m[1]!, true);
+    last = m.index + m[0].length;
+  }
+  add(text.slice(last), false);
+  return runs;
+}
+
+const plainInline = (src: string) =>
+  inlineRuns(src)
+    .map((r) => r.text)
+    .join("");
+
 // ---------------------------------------------------------------------------
 // Page Layout Builder
 // ---------------------------------------------------------------------------
@@ -709,6 +744,92 @@ class PageLayoutBuilder {
       bold: o.bold,
       align: o.align,
       maxWidth: o.maxWidth ?? USABLE_WIDTH,
+    });
+  }
+
+  /** Word-wraps mixed-weight runs; each line is a list of segments with their x offset. */
+  wrapRuns(runs: InlineRun[], maxWidth: number, size: number) {
+    type Seg = { text: string; bold: boolean; dx: number };
+    const words: { text: string; bold: boolean; gap: boolean }[] = [];
+    let gap = false;
+    for (const run of runs)
+      for (const part of run.text.split(/(\s+)/)) {
+        if (!part) continue;
+        if (!part.trim()) gap = true;
+        else {
+          words.push({ text: part, bold: run.bold, gap: gap && words.length > 0 });
+          gap = false;
+        }
+      }
+
+    // Synthetic bold (PDF stroke, canvas fake bold) keeps regular advances, so runs use the
+    // plain measure for placement; `width()`'s bold allowance would leave gaps after bold runs.
+    const advance = (text: string) => this.measure(text, size);
+    const lineWidth = (segs: Seg[]) => segs.reduce((sum, s) => sum + advance(s.text), 0);
+    const append = (segs: Seg[], text: string, bold: boolean, withGap: boolean): Seg[] => {
+      const next = segs.map((s) => ({ ...s }));
+      const last = next[next.length - 1];
+      if (last && withGap) last.text += " ";
+      if (last && last.bold === bold) last.text += text;
+      else next.push({ text, bold, dx: 0 });
+      return next;
+    };
+
+    const lines: Seg[][] = [];
+    let line: Seg[] = [];
+    for (const word of words) {
+      const candidate = append(line, word.text, word.bold, word.gap);
+      if (!line.length || lineWidth(candidate) <= maxWidth) {
+        line = candidate;
+        if (lineWidth(line) <= maxWidth) continue;
+      } else {
+        lines.push(line);
+        line = [{ text: word.text, bold: word.bold, dx: 0 }];
+        if (advance(word.text) <= maxWidth) continue;
+      }
+      // A single unbroken token wider than the column: hard-break it like wrapText does.
+      const pieces = wrapText(line[line.length - 1]!.text, maxWidth, size, this.measure);
+      const head = line.slice(0, -1);
+      if (head.length) lines.push(head);
+      for (const piece of pieces.slice(0, -1))
+        lines.push([{ text: piece, bold: word.bold, dx: 0 }]);
+      line = [{ text: pieces[pieces.length - 1]!, bold: word.bold, dx: 0 }];
+    }
+    if (line.length) lines.push(line);
+    for (const segs of lines) {
+      let dx = 0;
+      for (const s of segs) {
+        s.dx = dx;
+        dx += advance(s.text);
+      }
+    }
+    return lines.length ? lines : [[]];
+  }
+
+  /** Wrapped inline-markdown text; continuation lines start at `indent` past `x`. */
+  addRich(
+    runs: InlineRun[],
+    o: {
+      x: number;
+      w: number;
+      size?: number;
+      lineHeight?: number;
+      color?: string;
+      indent?: number;
+    },
+  ): void {
+    const size = o.size ?? SIZE.body;
+    const lineHeight = o.lineHeight ?? size * 1.4;
+    const indent = o.indent ?? 0;
+    this.wrapRuns(runs, o.w - indent, size).forEach((segs, i) => {
+      this.ensureSpace(lineHeight);
+      const x = o.x + (i === 0 ? 0 : indent);
+      for (const s of segs)
+        this.text(x + s.dx, this.y, s.text, size, o.color ?? COLORS.textMain, {
+          bold: s.bold || undefined,
+          maxWidth: o.w - indent - s.dx,
+        });
+      this.y += lineHeight;
     });
   }
 
@@ -1050,11 +1171,7 @@ class PageLayoutBuilder {
     const x0 = this.x0;
     const w = this.w;
 
-    // Inline emphasis markers are not rendered; drop them instead of printing them.
-    const plain = markdownText
-      .replace(/\*\*(.+?)\*\*/g, "$1")
-      .replace(/(?<![*\w])\*(?=\S)(.+?)(?<=\S)\*(?![*\w])/g, "$1");
-    for (const block of parseMarkdown(plain)) {
+    for (const block of parseMarkdown(markdownText)) {
       if (block.type === "divider") {
         this.ensureSpace(14);
         this.hline(this.y + 6);
@@ -1062,10 +1179,10 @@ class PageLayoutBuilder {
       } else if (block.type === "heading") {
         const size = block.level === 1 ? 12 : block.level === 2 ? 10.5 : SIZE.body;
         // Keep a heading with at least two lines of what follows
-        this.ensureSpace(size * 1.4 + 30, block.text);
+        this.ensureSpace(size * 1.4 + 30, plainInline(block.text ?? ""));
         this.y += 4;
         this.addText(
-          block.text ?? "",
+          plainInline(block.text ?? ""),
           size,
           block.level! <= 2 ? COLORS.navyBrand : COLORS.textMain,
           {
@@ -1074,7 +1191,7 @@ class PageLayoutBuilder {
         );
         this.y += 2;
       } else if (block.type === "paragraph") {
-        this.addText(block.text ?? "", SIZE.body, COLORS.textMain);
+        this.addRich(inlineRuns(block.text ?? ""), { x: x0, w });
         this.y += 4;
       } else if (block.type === "list") {
         for (const item of block.items ?? []) {
@@ -1086,19 +1203,12 @@ class PageLayoutBuilder {
               : item.orderedNum
                 ? `${item.orderedNum}. `
                 : "• ";
-          wrapText(`${prefix}${item.text}`, w - 12, SIZE.body, this.measure).forEach((line, i) => {
-            this.ensureSpace(13);
-            this.text(
-              x0 + (i === 0 ? 4 : 16),
-              this.y,
-              line,
-              SIZE.body,
-              item.checked ? COLORS.profitGreen : COLORS.textMain,
-              {
-                maxWidth: w - 16,
-              },
-            );
-            this.y += 13;
+          this.addRich([{ text: prefix, bold: false }, ...inlineRuns(item.text)], {
+            x: x0 + 4,
+            w: w - 4,
+            indent: 12,
+            lineHeight: 13,
+            color: item.checked ? COLORS.profitGreen : COLORS.textMain,
           });
         }
         this.y += 4;
@@ -1115,7 +1225,12 @@ class PageLayoutBuilder {
             stroke: COLORS.baseline,
             lineWidth: 2,
           });
-        for (const line of wrapText(block.text ?? "", w - 20, SIZE.body, this.measure)) {
+        for (const line of wrapText(
+          plainInline(block.text ?? ""),
+          w - 20,
+          SIZE.body,
+          this.measure,
+        )) {
           if (this.y + 13 > this.maxY) {
             bar();
             this.ensureSpace(20, "Quote");
@@ -1153,8 +1268,8 @@ class PageLayoutBuilder {
         this.y += 4;
       } else if (block.type === "table" && block.headers && block.rows) {
         this.table(
-          block.headers.map((header) => ({ header, w: 1 })),
-          block.rows,
+          block.headers.map((header) => ({ header: plainInline(header), w: 1 })),
+          block.rows.map((row) => row.map(plainInline)),
           "Note Table",
         );
       }

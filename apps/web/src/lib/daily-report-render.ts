@@ -414,6 +414,8 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
 
     ctx.save();
     ctx.scale(scale, scale);
+    // pdf-lib draws without kerning and the layout measures that way; match it so runs line up.
+    ctx.fontKerning = "none";
 
     // Draw all layout items
     for (const item of layout.items) {
@@ -793,9 +795,12 @@ async function prepareReport(
     const { default: fontkit } = await import("@pdf-lib/fontkit");
     const parsedFont = (fontkit as any).create(fontBytes);
     if (parsedFont && typeof parsedFont.layout === "function") {
+      // Sum of glyph advances without kerning: exactly what pdf-lib's drawText advances by.
       measure = (text: string, size: number) => {
-        const layout = parsedFont.layout(text);
-        return (layout.advanceWidth / parsedFont.unitsPerEm) * size;
+        const { glyphs } = parsedFont.layout(text);
+        let units = 0;
+        for (const g of glyphs) units += g.advanceWidth;
+        return (units / parsedFont.unitsPerEm) * size;
       };
     }
   } catch {

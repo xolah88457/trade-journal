@@ -1121,6 +1121,35 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
   });
 
   describe("layout bounds, markdown & caption regressions", () => {
+    it("renders inline bold as bold runs and trade links as their label", async () => {
+      const report = createMockReport({
+        note: [
+          "Bias was **cautious short on semis** into the gap, *patience* first.",
+          "- Linked [AMD · short · 2026\\-09\\-17](/trades/acc%7CAMD) and **held** the runner",
+          "Code `x = 1` and an escaped \\*star\\*.",
+        ].join("\n\n"),
+        trades: [],
+        attachments: [],
+      });
+      const prepared = await prepareDailyReport(report);
+      const texts = (prepared as any).pageLayouts
+        .flatMap((p: any) => p.items)
+        .filter((i: any) => i.type === "text");
+      const bold = texts.filter((t: any) => t.bold).map((t: any) => t.text.trim());
+      expect(bold).toContain("cautious short on semis");
+      expect(bold).toContain("held");
+      const all = texts.map((t: any) => t.text).join("");
+      expect(all).toContain("AMD · short · 2026-09-17");
+      expect(all).toContain("patience first");
+      expect(all).toContain("Code x = 1 and an escaped *star*.");
+      expect(all).not.toMatch(/\*\*|\]\(|\/trades\//);
+      // Runs on one line sit left to right without overlapping.
+      const line = texts.filter(
+        (t: any) => Math.abs(t.y - texts.find((u: any) => u.text.includes("cautious")).y) < 0.1,
+      );
+      for (let i = 1; i < line.length; i++) expect(line[i].x).toBeGreaterThan(line[i - 1].x);
+    });
+
     it("wraps long code lines and chunks code blocks across pages with bounded backgrounds", async () => {
       const longCode = Array.from(
         { length: 60 },

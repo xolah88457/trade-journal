@@ -991,6 +991,83 @@ class PageLayoutBuilder {
   }
 }
 
+/** Lists non-image attachments (metadata only) as a table under a section heading. */
+function addDocumentTable(
+  b: PageLayoutBuilder,
+  heading: string,
+  docs: ReportAttachment[],
+  opts: { formatHeader: string; widths: number[]; trailingCell?: string },
+) {
+  b.addSectionHeading(heading);
+  const rows = docs.map((a) => [
+    a.name,
+    a.mime,
+    formatFileSize(a.size),
+    formatDate(a.createdAt),
+    ...(opts.trailingCell === undefined ? [] : [opts.trailingCell]),
+  ]);
+  b.addTable(
+    ["Document Name", opts.formatHeader, "Size", "Date Added"],
+    rows,
+    opts.widths.map((w) => USABLE_WIDTH * w),
+    ["left", "left", "right", "right"],
+  );
+}
+
+/** Body of a dedicated screenshot page: metadata line, aspect-fit image and wrapped caption. */
+function addScreenshotBody(
+  b: PageLayoutBuilder,
+  name: string,
+  norm: NormalizedImage,
+  metaText: string,
+) {
+  b.currentPage.items.push({
+    type: "text",
+    x: MARGIN_LEFT,
+    y: b.cursorY,
+    text: metaText,
+    size: 8,
+    color: COLORS.textMuted,
+  });
+  b.cursorY += 14;
+
+  // Usable image area
+  const maxImgW = USABLE_WIDTH;
+  const maxImgH = PAGE_HEIGHT - b.cursorY - MARGIN_BOTTOM - 25;
+  const scale = Math.min(maxImgW / norm.width, maxImgH / norm.height, 1);
+  const imgW = norm.width * scale;
+  const imgH = norm.height * scale;
+  const imgX = MARGIN_LEFT + (USABLE_WIDTH - imgW) / 2;
+  const imgY = b.cursorY + (maxImgH - imgH) / 2;
+
+  b.currentPage.items.push({
+    type: "image",
+    x: imgX,
+    y: imgY,
+    w: imgW,
+    h: imgH,
+    bytes: norm.bytes,
+    mime: norm.mime,
+    name,
+  });
+  b.cursorY = imgY + imgH + 8;
+
+  const captionText = `Figure: ${name} (${norm.width} × ${norm.height} px, aspect-fit upright)`;
+  for (const line of wrapText(captionText, USABLE_WIDTH, 7.5, b.measure)) {
+    b.currentPage.items.push({
+      type: "text",
+      x: PAGE_WIDTH / 2,
+      y: b.cursorY,
+      text: line,
+      size: 7.5,
+      color: COLORS.textMuted,
+      align: "center",
+      maxWidth: USABLE_WIDTH,
+    });
+    b.cursorY += 10;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main Document Layout Generator
 // ---------------------------------------------------------------------------
@@ -1253,26 +1330,11 @@ export function buildReportLayout(
   // Document Attachments List (PDFs & non-images)
   const dayDocAttachments = report.attachments.filter((a) => !a.mime.startsWith("image/"));
   if (dayDocAttachments.length > 0) {
-    b.addSectionHeading(`Attached Documents (${dayDocAttachments.length})`);
-    const docRows = dayDocAttachments.map((a) => [
-      a.name,
-      a.mime,
-      formatFileSize(a.size),
-      formatDate(a.createdAt),
-      "Listed metadata only",
-    ]);
-    const colDocW = [
-      USABLE_WIDTH * 0.4,
-      USABLE_WIDTH * 0.2,
-      USABLE_WIDTH * 0.15,
-      USABLE_WIDTH * 0.25,
-    ];
-    b.addTable(["Document Name", "Format", "Size", "Date Added"], docRows, colDocW, [
-      "left",
-      "left",
-      "right",
-      "right",
-    ]);
+    addDocumentTable(b, `Attached Documents (${dayDocAttachments.length})`, dayDocAttachments, {
+      formatHeader: "Format",
+      widths: [0.4, 0.2, 0.15, 0.25],
+      trailingCell: "Listed metadata only",
+    });
   }
 
   // Written Daily Reflection & Notes (Flows to continuation pages if long)
@@ -1299,52 +1361,12 @@ export function buildReportLayout(
         `daily-screenshot-${imgAtt.id}`,
       );
       b.addSectionHeading(`Day Screenshot · ${imgAtt.name}`);
-      b.currentPage.items.push({
-        type: "text",
-        x: MARGIN_LEFT,
-        y: b.cursorY,
-        text: `Size: ${formatFileSize(imgAtt.size)}   •   Format: ${imgAtt.mime}   •   Uploaded: ${formatDate(imgAtt.createdAt)}`,
-        size: 8,
-        color: COLORS.textMuted,
-      });
-      b.cursorY += 14;
-
-      // Usable image area
-      const maxImgW = USABLE_WIDTH;
-      const maxImgH = PAGE_HEIGHT - b.cursorY - MARGIN_BOTTOM - 25;
-      const scale = Math.min(maxImgW / norm.width, maxImgH / norm.height, 1);
-      const imgW = norm.width * scale;
-      const imgH = norm.height * scale;
-      const imgX = MARGIN_LEFT + (USABLE_WIDTH - imgW) / 2;
-      const imgY = b.cursorY + (maxImgH - imgH) / 2;
-
-      b.currentPage.items.push({
-        type: "image",
-        x: imgX,
-        y: imgY,
-        w: imgW,
-        h: imgH,
-        bytes: norm.bytes,
-        mime: norm.mime,
-        name: imgAtt.name,
-      });
-      b.cursorY = imgY + imgH + 8;
-
-      const captionText = `Figure: ${imgAtt.name} (${norm.width} × ${norm.height} px, aspect-fit upright)`;
-      const wrappedCaption = wrapText(captionText, USABLE_WIDTH, 7.5, b.measure);
-      for (const line of wrappedCaption) {
-        b.currentPage.items.push({
-          type: "text",
-          x: PAGE_WIDTH / 2,
-          y: b.cursorY,
-          text: line,
-          size: 7.5,
-          color: COLORS.textMuted,
-          align: "center",
-          maxWidth: USABLE_WIDTH,
-        });
-        b.cursorY += 10;
-      }
+      addScreenshotBody(
+        b,
+        imgAtt.name,
+        norm,
+        `Size: ${formatFileSize(imgAtt.size)}   •   Format: ${imgAtt.mime}   •   Uploaded: ${formatDate(imgAtt.createdAt)}`,
+      );
     }
   }
 
@@ -1596,25 +1618,12 @@ export function buildReportLayout(
     // Document Attachments (PDFs)
     const tradeDocAttachments = trade.attachments.filter((a) => !a.mime.startsWith("image/"));
     if (tradeDocAttachments.length > 0) {
-      b.addSectionHeading(`Trade Document Attachments (${tradeDocAttachments.length})`);
-      const docRows = tradeDocAttachments.map((a) => [
-        a.name,
-        a.mime,
-        formatFileSize(a.size),
-        formatDate(a.createdAt),
-      ]);
-      const colDocW = [
-        USABLE_WIDTH * 0.45,
-        USABLE_WIDTH * 0.2,
-        USABLE_WIDTH * 0.15,
-        USABLE_WIDTH * 0.2,
-      ];
-      b.addTable(["Document Name", "MIME Type", "Size", "Date Added"], docRows, colDocW, [
-        "left",
-        "left",
-        "right",
-        "right",
-      ]);
+      addDocumentTable(
+        b,
+        `Trade Document Attachments (${tradeDocAttachments.length})`,
+        tradeDocAttachments,
+        { formatHeader: "MIME Type", widths: [0.45, 0.2, 0.15, 0.2] },
+      );
     }
 
     // Dedicated Trade Screenshot Pages
@@ -1629,52 +1638,12 @@ export function buildReportLayout(
           `trade-${trade.key}-screenshot-${imgAtt.id}`,
         );
         b.addSectionHeading(`Screenshot · Trade ${trade.symbol} (${trade.status.toUpperCase()})`);
-        b.currentPage.items.push({
-          type: "text",
-          x: MARGIN_LEFT,
-          y: b.cursorY,
-          text: `File: ${imgAtt.name}   •   Size: ${formatFileSize(imgAtt.size)}   •   Format: ${imgAtt.mime}   •   Uploaded: ${formatDate(imgAtt.createdAt)}`,
-          size: 8,
-          color: COLORS.textMuted,
-        });
-        b.cursorY += 14;
-
-        // Image fit
-        const maxImgW = USABLE_WIDTH;
-        const maxImgH = PAGE_HEIGHT - b.cursorY - MARGIN_BOTTOM - 25;
-        const scale = Math.min(maxImgW / norm.width, maxImgH / norm.height, 1);
-        const imgW = norm.width * scale;
-        const imgH = norm.height * scale;
-        const imgX = MARGIN_LEFT + (USABLE_WIDTH - imgW) / 2;
-        const imgY = b.cursorY + (maxImgH - imgH) / 2;
-
-        b.currentPage.items.push({
-          type: "image",
-          x: imgX,
-          y: imgY,
-          w: imgW,
-          h: imgH,
-          bytes: norm.bytes,
-          mime: norm.mime,
-          name: imgAtt.name,
-        });
-        b.cursorY = imgY + imgH + 8;
-
-        const captionText = `Figure: ${imgAtt.name} (${norm.width} × ${norm.height} px, aspect-fit upright)`;
-        const wrappedCaption = wrapText(captionText, USABLE_WIDTH, 7.5, b.measure);
-        for (const line of wrappedCaption) {
-          b.currentPage.items.push({
-            type: "text",
-            x: PAGE_WIDTH / 2,
-            y: b.cursorY,
-            text: line,
-            size: 7.5,
-            color: COLORS.textMuted,
-            align: "center",
-            maxWidth: USABLE_WIDTH,
-          });
-          b.cursorY += 10;
-        }
+        addScreenshotBody(
+          b,
+          imgAtt.name,
+          norm,
+          `File: ${imgAtt.name}   •   Size: ${formatFileSize(imgAtt.size)}   •   Format: ${imgAtt.mime}   •   Uploaded: ${formatDate(imgAtt.createdAt)}`,
+        );
       }
     }
   }

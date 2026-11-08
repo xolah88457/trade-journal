@@ -2,7 +2,7 @@
   "name": "trade-journal-monorepo",
   "version": "0.3.1",
   "private": true,
-  "description": "The open-source trade journal. Broker sync, deep analytics, daily journaling, and AI-native reflection. Self-hosted, free forever.",
+  "description": "Sumi: a local-first desktop trade journal. Broker sync, deep analytics, daily journaling, and optional AI reflection.",
   "license": "MIT",
   "repository": {
     "type": "git",

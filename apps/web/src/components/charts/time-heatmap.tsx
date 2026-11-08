@@ -105,8 +105,10 @@ export function TimeHeatmap({
       <ChartFrame height={height - pnlHeight}>
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={data} syncId={SYNC_ID} margin={{ ...margin, top: 4, bottom: 4 }}>
+            {/* Band scale centres the points under the bars of the pane above. */}
             <XAxis
               dataKey="hour"
+              scale="band"
               tick={tickStyle}
               tickLine={false}
               axisLine={{ stroke: t.baseline }}

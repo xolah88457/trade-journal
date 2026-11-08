@@ -15,7 +15,7 @@ pnpm format       # prettier
 ## The gates
 
 CI runs `pnpm format:check`, `pnpm typecheck`, `pnpm test`, the dependency license
-gate, and builds the packages and the app. Run them locally before pushing.
+gate, and builds the app. Run them locally before pushing.
 
 ## Ground rules
 

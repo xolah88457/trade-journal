@@ -7,13 +7,13 @@ import {
   ChevronRight,
   Download,
   FileText,
-  ImageIcon,
   Info,
   Loader2,
   RotateCcw,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ExportButtons } from "@/components/export-buttons";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -418,34 +418,11 @@ export function ReportExport({ source, beforeExport, className, loadRenderer }: 
 
   return (
     <div className={cn("space-y-2", className)}>
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={loading || concealed}
-          onClick={() => void startExport("pdf")}
-        >
-          <Download />
-          Export PDF
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={loading || concealed}
-          onClick={() => void startExport("png")}
-        >
-          <ImageIcon />
-          Export PNG
-        </Button>
-      </div>
-
-      {concealed && (
-        <p className="text-xs text-muted-foreground">
-          Turn off privacy mode to export financial figures.
-        </p>
-      )}
+      <ExportButtons
+        disabled={loading}
+        concealed={concealed}
+        onExport={(format) => void startExport(format)}
+      />
 
       {error && !open && (
         <p role="alert" className="text-xs text-destructive">

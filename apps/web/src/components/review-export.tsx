@@ -1,7 +1,7 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { Download, ImageIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { ExportButtons } from "@/components/export-buttons";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { exportPdf, exportPng, type ReviewDocument } from "@/lib/export-review";
 import { usePrivacy } from "./privacy";
@@ -54,33 +54,11 @@ export function ReviewExport({
   }
   return (
     <div className="space-y-2">
-      <div className="flex flex-wrap gap-2">
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={busy || concealed}
-          onClick={() => void run(false)}
-        >
-          <Download />
-          Export PDF
-        </Button>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          disabled={busy || concealed}
-          onClick={() => void run(true)}
-        >
-          <ImageIcon />
-          Export PNG
-        </Button>
-      </div>
-      {concealed && (
-        <p className="text-xs text-muted-foreground">
-          Turn off privacy mode to export financial figures.
-        </p>
-      )}
+      <ExportButtons
+        disabled={busy}
+        concealed={concealed}
+        onExport={(format) => void run(format === "png")}
+      />
       {error && (
         <p role="alert" className="text-xs text-destructive">
           {error}

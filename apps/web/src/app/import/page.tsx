@@ -486,24 +486,11 @@ function FileImport() {
                       {field}
                       {field === "fee" ? " (optional)" : ""}
                     </Label>
-                    <Select
-                      value={mapping[field] ?? "none"}
-                      onValueChange={(value) =>
-                        setMapping((m) => ({ ...m, [field]: value === "none" ? "" : value }))
-                      }
-                    >
-                      <SelectTrigger className="h-8 text-xs">
-                        <SelectValue placeholder="column" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        <SelectItem value="none">—</SelectItem>
-                        {preview.headers!.map((header) => (
-                          <SelectItem key={header} value={header}>
-                            {header}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <ColumnSelect
+                      headers={preview.headers!}
+                      value={mapping[field]}
+                      onChange={(value) => setMapping((m) => ({ ...m, [field]: value }))}
+                    />
                   </div>
                 ))}
               </div>
@@ -528,24 +515,11 @@ function FileImport() {
                           }[field]
                         }
                       </Label>
-                      <Select
-                        value={mapping[field] || "none"}
-                        onValueChange={(value) =>
-                          setMapping((m) => ({ ...m, [field]: value === "none" ? "" : value }))
-                        }
-                      >
-                        <SelectTrigger className="h-8 text-xs">
-                          <SelectValue placeholder="column" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="none">—</SelectItem>
-                          {preview.headers!.map((header) => (
-                            <SelectItem key={header} value={header}>
-                              {header}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
+                      <ColumnSelect
+                        headers={preview.headers!}
+                        value={mapping[field]}
+                        onChange={(value) => setMapping((m) => ({ ...m, [field]: value }))}
+                      />
                     </div>
                   ))}
                 </div>
@@ -819,5 +793,32 @@ function BrokerConnect() {
         )}
       </CardContent>
     </Card>
+  );
+}
+
+/** Source-column picker for manual mapping; "—" (empty string) leaves the field unmapped. */
+function ColumnSelect({
+  headers,
+  value,
+  onChange,
+}: {
+  headers: string[];
+  value: string | undefined;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <Select value={value || "none"} onValueChange={(v) => onChange(v === "none" ? "" : v)}>
+      <SelectTrigger className="h-8 text-xs">
+        <SelectValue placeholder="column" />
+      </SelectTrigger>
+      <SelectContent>
+        <SelectItem value="none">—</SelectItem>
+        {headers.map((header) => (
+          <SelectItem key={header} value={header}>
+            {header}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
   );
 }

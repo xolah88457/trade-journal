@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { spawn, execFileSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -71,22 +71,7 @@ async function start(dataDirectory) {
   }
 }
 
-test("the app package is verified, structurally compliant, and contains no development journal", (t) => {
-  if (process.platform === "darwin" && existsSync(layout.executable)) {
-    // Detect whether dist/Sumi.app is still the legacy Swift wrapper from earlier builds.
-    try {
-      const linked = execFileSync("otool", ["-L", layout.executable], { encoding: "utf8" });
-      if (linked.includes("libswiftCore")) {
-        if (t && typeof t.skip === "function") {
-          t.skip(
-            "Old native Swift bundle detected in dist/; awaiting fresh Electron desktop:build.",
-          );
-          return;
-        }
-      }
-    } catch {}
-  }
-
+test("the app package is verified, structurally compliant, and contains no development journal", () => {
   verifyPackageForPlatform({ root });
 });
 

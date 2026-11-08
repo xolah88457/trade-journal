@@ -878,15 +878,6 @@ test("update-tools: buildSignCommand and buildAppcastCommand use STDIN for priva
   assert.ok(appcastCmd.includes("dist/releases"));
 });
 
-test("update-tools: DEFAULT_ACCOUNT is local.sumi.journal for idempotent Keychain ops", () => {
-  // This validates the constant used by keyprep - module already imported at top
-  // The constant is not exported but we can verify the plan output mentions it
-  // by checking the source or testing the plan-keyprep output
-  // For now, verify the module loads without error
-  assert.ok(typeof resolveSparkleBinary === "function");
-  assert.ok(typeof validateUpdateConfig === "function");
-});
-
 test("createUpdateService: cancellation - dispose during check cleans up", async () => {
   const originalEnv = { ...process.env };
   const originalPlatform = process.platform;

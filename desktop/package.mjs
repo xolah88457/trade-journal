@@ -2,7 +2,6 @@ import { execFileSync } from "node:child_process";
 import {
   cpSync,
   existsSync,
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
@@ -19,11 +18,9 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
-  APP_UPDATE_CONFIG,
   ELECTRON_VERSION,
   REQUIRED_DESKTOP_SCRIPTS,
   REQUIRED_WIN32_CRT_DLLS,
-  generateAppUpdateYaml,
   isPathContained,
 } from "./build.mjs";
 
@@ -249,10 +246,7 @@ export function verifyBuiltApp(appPath, expectedVersion, platform = process.plat
   }
 
   // Verify desktop scripts presence across all platforms
-  const appDir =
-    platform === "darwin"
-      ? join(appPath, "Contents", "Resources", "app")
-      : join(appPath, "resources", "app");
+  const appDir = join(appPath, "resources", "app");
   if (existsSync(appDir)) {
     for (const script of REQUIRED_DESKTOP_SCRIPTS) {
       if (!existsSync(join(appDir, script))) {

@@ -296,7 +296,7 @@ pnpm desktop:package
 
 Automated via `.github/workflows/electron-release.yml`:
 
-- **Triggers**: Executed strictly on tags matching `electron-v*` (e.g. `electron-v0.3.1`) or via manual `workflow_dispatch`.
+- **Triggers**: Pushes to the `electron` branch run build, verification, and smoke checks only; publishing runs strictly on tags matching `electron-v*` (e.g. `electron-v0.3.1`). There is no manual `workflow_dispatch` trigger.
 - **Ancestry & Version Verification**: Enforces that the release commit descends from or is an ancestor of `origin/electron` and verifies tag version parity with root `package.json`.
 - **Artifact Isolation**: Publishes strictly verified binaries, installers, feeds, and checksums. Development caches, `.env` files, databases, and heavy model weights are strictly blocked from release assets.
 - **CI Publishing Policy**: The main branch and official releases publish only after all native platform build and verification jobs pass.

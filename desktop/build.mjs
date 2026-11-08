@@ -18,7 +18,7 @@ import {
 import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { tmpdir } from "node:os";
-import path, { basename, dirname, join, relative, resolve } from "node:path";
+import path, { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 export const ELECTRON_VERSION = "45.2.3";

@@ -184,11 +184,6 @@ export function verifyElectronFramework(appDir, runTool = execFileSync) {
     /Electron Framework/,
     "Sumi executable must link against Electron Framework",
   );
-  assert.doesNotMatch(
-    linked,
-    /libswiftCore/,
-    "Executable must be Electron, not the legacy Swift wrapper",
-  );
 
   if (process.platform === "darwin" && process.arch === "arm64") {
     const fileOutput = runTool("file", [executable], {

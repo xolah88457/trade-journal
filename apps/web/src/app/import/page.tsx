@@ -179,6 +179,17 @@ function FileImport() {
     setError(null);
   };
 
+  const run = async (fallback: string, task: () => Promise<void>) => {
+    setBusy(true);
+    try {
+      await task();
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : fallback);
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const onFile = async (file: File) => {
     if (!validTimeZone) return;
     setStatementTimeZone(timeZone);
@@ -191,8 +202,7 @@ function FileImport() {
     setMapping({});
     setMappingApplied(false);
     setError(null);
-    setBusy(true);
-    try {
+    await run("Import preview failed", async () => {
       const pdf = /\.pdf$/i.test(file.name);
       const xlsx = /\.xlsx$/i.test(file.name);
       if (pdf && !aiEnabled) throw new Error("Enable AI parsing to upload a PDF statement.");
@@ -240,20 +250,15 @@ function FileImport() {
           ...(fileEncoding === "xlsx" ? { encoding: fileEncoding } : {}),
         }),
       );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Import preview failed");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   const previewFile = async () => {
     if (!content || !validTimeZone || (aiEnabled && !aiReady)) return;
     setPreview(null);
     setAiReviewed(false);
-    setBusy(true);
     setError(null);
-    try {
+    await run("Import preview failed", async () => {
       setPreview(
         await postJson<PreviewResponse>("/api/import", {
           mode: "preview",
@@ -267,18 +272,13 @@ function FileImport() {
           ...(aiEnabled ? { ai: aiOptions } : {}),
         }),
       );
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Import preview failed");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   const previewWithMapping = async () => {
     if (!content || !validTimeZone) return;
-    setBusy(true);
     setError(null);
-    try {
+    await run("Import preview failed", async () => {
       setPreview(
         await postJson<PreviewResponse>("/api/import", {
           mode: "preview",
@@ -288,17 +288,12 @@ function FileImport() {
         }),
       );
       setMappingApplied(true);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Import preview failed");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   const commit = async () => {
     if (!content || !accountId || !preview) return;
-    setBusy(true);
-    try {
+    await run("Import failed", async () => {
       const result = await postJson<{
         inserted: number;
         duplicates: number;
@@ -333,11 +328,7 @@ function FileImport() {
         `Imported ${result.inserted} executions (${result.duplicates} duplicates skipped, ${result.corrected ?? 0} fee corrections).${skippedNote}`,
       );
       router.push(`/?accounts=${encodeURIComponent(accountId)}`);
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : "Import failed");
-    } finally {
-      setBusy(false);
-    }
+    });
   };
 
   const mappingFields = ["symbol", "side", "quantity", "price", "fee", "timestamp"] as const;

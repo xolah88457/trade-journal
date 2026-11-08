@@ -2,10 +2,6 @@
 
 Statement and export parsers for [Trade Journal](https://github.com/LuxAlgo/trade-journal), LuxAlgo's open-source trade journal. Zero runtime dependencies beyond `@luxalgo/journal-core`. Runs in Node and the browser.
 
-```bash
-npm install @luxalgo/journal-importers
-```
-
 ## What it does
 
 Turns broker and journal exports into normalized executions, ready for `buildRoundTrips`.

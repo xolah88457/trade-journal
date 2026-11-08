@@ -36,7 +36,6 @@
     "electron-sparkle": "0.2.0",
     "jsdom": "^26.1.0",
     "prettier": "^3.6.0",
-    "tsup": "^8.5.1",
     "typescript": "^5.9.0",
     "vitest": "^3.2.0"
   }

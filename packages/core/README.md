@@ -2,10 +2,6 @@
 
 The pure domain engine behind [Trade Journal](https://github.com/LuxAlgo/trade-journal), LuxAlgo's open-source trade journal. No IO, no framework, zero runtime dependencies. Runs identically in Node and the browser.
 
-```bash
-npm install @luxalgo/journal-core
-```
-
 ## What it does
 
 Feed it raw executions (fills); it gives you everything a journal displays.

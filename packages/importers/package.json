@@ -1,5 +1,6 @@
 {
   "name": "@luxalgo/journal-importers",
+  "private": true,
   "version": "0.1.0",
   "description": "Statement and export importers for the trade journal: broker CSVs, MetaTrader HTML statements, and one-click migration from TradeZella and Tradervue.",
   "license": "MIT",
@@ -9,52 +10,11 @@
   "exports": {
     ".": "./src/index.ts"
   },
-  "files": [
-    "dist"
-  ],
   "sideEffects": false,
-  "engines": {
-    "node": ">=18.17"
-  },
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/LuxAlgo/trade-journal.git",
-    "directory": "packages/importers"
-  },
-  "homepage": "https://www.luxalgo.com/trade-journal/",
-  "keywords": [
-    "trading",
-    "trade-journal",
-    "csv",
-    "import",
-    "tradezella",
-    "tradervue",
-    "broker-statement"
-  ],
   "scripts": {
-    "typecheck": "tsc --noEmit",
-    "build": "tsup src/index.ts --format esm,cjs --dts --clean",
-    "prepublishOnly": "pnpm build"
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@luxalgo/journal-core": "workspace:*"
-  },
-  "publishConfig": {
-    "access": "public",
-    "main": "./dist/index.cjs",
-    "module": "./dist/index.js",
-    "types": "./dist/index.d.ts",
-    "exports": {
-      ".": {
-        "import": {
-          "types": "./dist/index.d.ts",
-          "default": "./dist/index.js"
-        },
-        "require": {
-          "types": "./dist/index.d.cts",
-          "default": "./dist/index.cjs"
-        }
-      }
-    }
   }
 }

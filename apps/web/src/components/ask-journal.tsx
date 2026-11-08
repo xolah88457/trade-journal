@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useState } from "react";
 import { Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,7 +9,7 @@ import { postJson } from "@/lib/use-api";
 import { AiNotice } from "./ai-notice";
 import { AiPreviewDialog } from "./ai-preview-dialog";
 import { useFilters } from "./filter-bar";
-import { useAiRequest, type AiScope } from "@/lib/use-ai-request";
+import { useAiPreview, useAiRequest, type AiScope } from "@/lib/use-ai-request";
 import type { AnalysisFilters } from "@luxalgo/journal-core";
 import type { AiContextPreview } from "@/server/ai-prompt";
 
@@ -31,35 +31,22 @@ function ScopedAskJournal({ filters, timeZone }: { filters: AnalysisFilters; tim
   const { run, busy, error, dismiss } = useAiRequest();
   const [lastQuestion, setLastQuestion] = useState("");
 
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewData, setPreviewData] = useState<AiContextPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const preview = useAiPreview("Couldn’t generate preview.");
   const [pendingQuestion, setPendingQuestion] = useState("");
-  const busyRef = useRef(false);
 
   const prepareAsk = async (q: string) => {
-    if (busy || previewLoading || busyRef.current || !q.trim()) return;
-    busyRef.current = true;
+    if (busy || !q.trim()) return;
     q = q.trim();
-    setPendingQuestion(q);
-    setPreviewError(null);
-    setPreviewLoading(true);
-    setPreviewOpen(true);
-    try {
+    await preview.prepare(async () => {
+      setPendingQuestion(q);
       const res = await postJson<{ preview: AiContextPreview; scope: AiScope }>("/api/ai/ask", {
         question: q,
         filters,
         timeZone,
         preview: true,
       });
-      setPreviewData(res.preview);
-    } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : "Couldn’t generate preview.");
-    } finally {
-      setPreviewLoading(false);
-      busyRef.current = false;
-    }
+      return res.preview;
+    });
   };
 
   const confirmSend = async (fingerprint?: string) => {
@@ -67,7 +54,7 @@ function ScopedAskJournal({ filters, timeZone }: { filters: AnalysisFilters; tim
     if (!q) return;
     setLastQuestion(q);
     setAnswer(null);
-    setPreviewOpen(false);
+    preview.setOpen(false);
     await run(
       () =>
         postJson<{ answer: string; scope: AiScope }>("/api/ai/ask", {
@@ -103,16 +90,16 @@ function ScopedAskJournal({ filters, timeZone }: { filters: AnalysisFilters; tim
               onChange={(event) => setQuestion(event.target.value)}
               placeholder="Why do my Monday shorts keep failing?"
             />
-            <Button type="submit" disabled={busy || previewLoading || !question.trim()}>
+            <Button type="submit" disabled={busy || preview.loading || !question.trim()}>
               <Sparkles />
-              {busy || previewLoading ? "Thinking…" : "Ask"}
+              {busy || preview.loading ? "Thinking…" : "Ask"}
             </Button>
           </form>
           <div className="flex flex-wrap gap-1.5">
             {SUGGESTIONS.map((suggestion) => (
               <button
                 key={suggestion}
-                disabled={busy || previewLoading}
+                disabled={busy || preview.loading}
                 className="rounded-full border px-2.5 py-1 text-xs text-muted-foreground hover:bg-accent disabled:cursor-wait disabled:opacity-50"
                 onClick={() => {
                   setQuestion(suggestion);
@@ -123,13 +110,13 @@ function ScopedAskJournal({ filters, timeZone }: { filters: AnalysisFilters; tim
               </button>
             ))}
           </div>
-          {(error || previewError) && (
+          {(error || preview.error) && (
             <AiNotice
-              error={error || previewError!}
+              error={error || preview.error!}
               onRetry={() => void prepareAsk(lastQuestion || question)}
               onDismiss={() => {
                 dismiss();
-                setPreviewError(null);
+                preview.setError(null);
               }}
             />
           )}
@@ -143,12 +130,12 @@ function ScopedAskJournal({ filters, timeZone }: { filters: AnalysisFilters; tim
       </Card>
 
       <AiPreviewDialog
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
+        open={preview.open}
+        onOpenChange={preview.setOpen}
         title="Ask Journal Preview"
-        preview={previewData}
-        loading={previewLoading}
-        error={previewError}
+        preview={preview.data}
+        loading={preview.loading}
+        error={preview.error}
         sending={busy}
         onConfirm={confirmSend}
         onRefresh={() => void prepareAsk(pendingQuestion)}

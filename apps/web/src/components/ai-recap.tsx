@@ -1,13 +1,12 @@
 "use client";
 
-import { useRef, useState } from "react";
 import { Sparkles } from "lucide-react";
 import type { AnalysisFilters } from "@luxalgo/journal-core";
 import { Button } from "./ui/button";
 import { AiNotice } from "./ai-notice";
 import { AiPreviewDialog } from "./ai-preview-dialog";
 import { postJson } from "@/lib/use-api";
-import { useAiRequest, type AiScope } from "@/lib/use-ai-request";
+import { useAiPreview, useAiRequest, type AiScope } from "@/lib/use-ai-request";
 import type { AiContextPreview } from "@/server/ai-prompt";
 
 /** The parent keys this component by date, filters and timezone. */
@@ -25,36 +24,23 @@ export function AiRecap({
   onRecap: (result: { recap: string; scope: AiScope }) => void;
 }) {
   const { run, busy, error, dismiss } = useAiRequest();
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewData, setPreviewData] = useState<AiContextPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
-  const busyRef = useRef(false);
+  const preview = useAiPreview("Couldn’t generate recap preview.");
 
   const prepareRecap = async () => {
-    if (busy || previewLoading || busyRef.current || disabled) return;
-    busyRef.current = true;
-    setPreviewError(null);
-    setPreviewLoading(true);
-    setPreviewOpen(true);
-    try {
+    if (busy || disabled) return;
+    await preview.prepare(async () => {
       const res = await postJson<{ preview: AiContextPreview; scope: AiScope }>("/api/ai/recap", {
         date,
         filters,
         timeZone,
         preview: true,
       });
-      setPreviewData(res.preview);
-    } catch (err) {
-      setPreviewError(err instanceof Error ? err.message : "Couldn’t generate recap preview.");
-    } finally {
-      setPreviewLoading(false);
-      busyRef.current = false;
-    }
+      return res.preview;
+    });
   };
 
   const confirmSend = async (fingerprint?: string) => {
-    setPreviewOpen(false);
+    preview.setOpen(false);
     await run(
       () =>
         postJson<{ recap: string; scope: AiScope }>("/api/ai/recap", {
@@ -73,29 +59,29 @@ export function AiRecap({
         variant="outline"
         size="sm"
         onClick={() => void prepareRecap()}
-        disabled={busy || disabled || previewLoading}
+        disabled={busy || disabled || preview.loading}
       >
         <Sparkles />
-        {busy || previewLoading ? "Writing…" : "AI recap"}
+        {busy || preview.loading ? "Writing…" : "AI recap"}
       </Button>
-      {(error || previewError) && (
+      {(error || preview.error) && (
         <AiNotice
-          error={error || previewError!}
+          error={error || preview.error!}
           onRetry={() => void prepareRecap()}
           onDismiss={() => {
             dismiss();
-            setPreviewError(null);
+            preview.setError(null);
           }}
         />
       )}
 
       <AiPreviewDialog
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
+        open={preview.open}
+        onOpenChange={preview.setOpen}
         title="Session Recap Preview"
-        preview={previewData}
-        loading={previewLoading}
-        error={previewError}
+        preview={preview.data}
+        loading={preview.loading}
+        error={preview.error}
         sending={busy}
         onConfirm={confirmSend}
         onRefresh={() => void prepareRecap()}

@@ -7,6 +7,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 import { AiNotice } from "./ai-notice";
 import { AiPreviewDialog } from "./ai-preview-dialog";
 import { postJson, useApi } from "@/lib/use-api";
+import { useAiPreview } from "@/lib/use-ai-request";
 import type { AiContextPreview } from "@/server/ai-prompt";
 import type { SavedTradeAiReview } from "@/server/ai-review-history";
 
@@ -46,10 +47,7 @@ export function TradeCritiqueSection({ tradeKey }: TradeCritiqueProps) {
   const [localReviews, setLocalReviews] = useState<SavedTradeAiReview[] | null>(null);
   const [showEarlier, setShowEarlier] = useState(false);
 
-  const [previewOpen, setPreviewOpen] = useState(false);
-  const [previewData, setPreviewData] = useState<AiContextPreview | null>(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const preview = useAiPreview("Couldn’t generate critique preview.");
 
   const activeKeyRef = useRef(tradeKey);
   const earlierSectionId = useId();
@@ -69,10 +67,7 @@ export function TradeCritiqueSection({ tradeKey }: TradeCritiqueProps) {
     setCritique(null);
     setLocalReviews(null);
     setShowEarlier(false);
-    setPreviewOpen(false);
-    setPreviewData(null);
-    setPreviewError(null);
-    setPreviewLoading(false);
+    preview.reset();
   }, [tradeKey]);
 
   // Sync fetched history into local display state with append-only id-dedup merge.
@@ -98,31 +93,20 @@ export function TradeCritiqueSection({ tradeKey }: TradeCritiqueProps) {
   const openPreview = async () => {
     const targetKey = tradeKey;
     setError(null);
-    setPreviewError(null);
-    setPreviewLoading(true);
-    setPreviewOpen(true);
-    try {
+    await preview.prepare(async () => {
       const res = await postJson<{ preview: AiContextPreview }>("/api/ai/critique", {
         key: targetKey,
         preview: true,
       });
-      if (activeKeyRef.current !== targetKey) return;
-      setPreviewData(res.preview);
-    } catch (err) {
-      if (activeKeyRef.current !== targetKey) return;
-      setPreviewError(err instanceof Error ? err.message : "Couldn’t generate critique preview.");
-    } finally {
-      if (activeKeyRef.current === targetKey) {
-        setPreviewLoading(false);
-      }
-    }
+      return res.preview;
+    });
   };
 
   const confirmSend = async (fingerprint?: string) => {
     const targetKey = tradeKey;
     setBusy(true);
     setError(null);
-    setPreviewError(null);
+    preview.setError(null);
     try {
       const result = await postJson<{
         critique: string;
@@ -151,12 +135,12 @@ export function TradeCritiqueSection({ tradeKey }: TradeCritiqueProps) {
           );
         });
       }
-      setPreviewOpen(false);
+      preview.setOpen(false);
     } catch (err) {
       if (activeKeyRef.current !== targetKey) return;
       const msg = err instanceof Error ? err.message : "AI critique failed";
       setError(msg);
-      setPreviewError(msg);
+      preview.setError(msg);
     } finally {
       if (activeKeyRef.current === targetKey) {
         setBusy(false);
@@ -182,7 +166,7 @@ export function TradeCritiqueSection({ tradeKey }: TradeCritiqueProps) {
             variant="outline"
             size="sm"
             onClick={openPreview}
-            disabled={busy || previewLoading}
+            disabled={busy || preview.loading}
           >
             <Sparkles />
             {busy ? "Thinking…" : "Critique this trade"}
@@ -266,12 +250,12 @@ export function TradeCritiqueSection({ tradeKey }: TradeCritiqueProps) {
       </Card>
 
       <AiPreviewDialog
-        open={previewOpen}
-        onOpenChange={setPreviewOpen}
+        open={preview.open}
+        onOpenChange={preview.setOpen}
         title="Trade Critique Preview"
-        preview={previewData}
-        loading={previewLoading}
-        error={previewError}
+        preview={preview.data}
+        loading={preview.loading}
+        error={preview.error}
         sending={busy}
         onConfirm={confirmSend}
         onRefresh={openPreview}

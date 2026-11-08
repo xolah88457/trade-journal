@@ -512,13 +512,13 @@ jobs:
           - **Installer**: `Sumi-${{ steps.release_info.outputs.version }}-win32-x64-setup.exe`
           - **Standalone Archive**: `Sumi-${{ steps.release_info.outputs.version }}-win32-x64.zip`
           - **Updater Metadata**: `latest.yml`
-          - **Windows Note**: This preview build is currently unsigned. Windows SmartScreen may display an "Unknown Publisher" warning upon launch; select "More info" and "Run anyway" to proceed. In-app updater handling is verified via local automated unit tests and headless updater checks; first real production upgrade transitions remain pending validation on subsequent releases. App-local Visual C++ Runtime CRT dependencies are bundled; no global Visual Studio installation is required on user systems.
+          - **Windows Note**: This preview build is currently unsigned. Windows SmartScreen may display an "Unknown Publisher" warning upon launch; select "More info" and "Run anyway" to proceed. In-app updater handling is verified via sandboxed packaged Electron SDK import and unit manual flow; first real upgrade untested. App-local Visual C++ Runtime CRT dependencies are bundled; no global Visual Studio installation is required on user systems.
 
           #### Linux (x64)
           - **AppImage**: `Sumi-${{ steps.release_info.outputs.version }}-linux-x64.AppImage`
           - **Debian Package**: `Sumi-${{ steps.release_info.outputs.version }}-linux-x64.deb`
           - **Updater Metadata**: `latest-linux.yml`
-          - **Linux Note**: Built on Ubuntu 22.04 LTS (oldest advertised baseline, GLIBC 2.35). AppImage runs with standard unprivileged user namespaces. Debian package installs the official Electron sandbox (`chrome-sandbox`) with setuid root under `/opt/Sumi` without `--no-sandbox`.
+          - **Linux Note**: Built on Ubuntu 22.04 LTS (oldest advertised baseline, GLIBC 2.35). AppImage runs with standard unprivileged user namespaces. Debian package installs the official Electron sandbox (`chrome-sandbox`) with root-owned 4755 or 0755 with working unprivileged user namespaces, neither --no-sandbox nor permission workaround.
 
           #### Local Voice Engine & Models
           - Voice activity detection is handled locally via the bundled, verified MIT Silero VAD model (1.2 MB).

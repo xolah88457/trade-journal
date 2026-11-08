@@ -552,6 +552,65 @@ test("release: SPARKLE_PRIVATE_KEY mismatching config publicEdKey is rejected BE
   }
 });
 
+test("release: rejects when --version does not match rootVersion", async () => {
+  const { tmp, distDir, configPath, privateKey } = makeReleaseFixture("0.3.0");
+  try {
+    await assert.rejects(
+      runRelease({
+        version: "0.3.1",
+        rootVersion: "0.3.0",
+        distDir,
+        configPath,
+        privateKey,
+        resolveTool: async (name) => `/fake/${name}`,
+        runTool: async () => ({ code: 0, signal: null, stdout: "", stderr: "" }),
+      }),
+      /--version does not match the root package\.json version/,
+    );
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release: dynamically reads version from root package.json when version is not injected", async () => {
+  const rootPkgVersion = JSON.parse(
+    fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8"),
+  ).version;
+  const { tmp, distDir, configPath, privateKey } = makeReleaseFixture(rootPkgVersion, "arm64");
+  const zipName = `Sumi-${rootPkgVersion}-macos-arm64.zip`;
+  const producedAppcast = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">',
+    "  <channel>",
+    `    <item><enclosure url="https://example.test/electron-v${rootPkgVersion}/${zipName}" sparkle:edSignature="c2ln" sparkle:version="${rootPkgVersion}" sparkle:shortVersionString="${rootPkgVersion}" type="application/octet-stream"/></item>`,
+    "  </channel>",
+    "</rss>",
+  ].join("\n");
+  const runTool = async (bin, args) => {
+    if (bin.includes("sign-update")) {
+      return { code: 0, signal: null, stdout: "signed", stderr: "" };
+    }
+    const releaseDir = args[args.length - 1];
+    fs.writeFileSync(path.join(releaseDir, "appcast.xml"), producedAppcast, "utf8");
+    return { code: 0, signal: null, stdout: "1 update processed", stderr: "" };
+  };
+  try {
+    const result = await runRelease({
+      // neither version nor rootVersion passed -> reads dynamically from root package.json
+      distDir,
+      configPath,
+      privateKey,
+      resolveTool: async (name) => `/fake/${name}`,
+      runTool,
+    });
+    assert.equal(result.plan.version, rootPkgVersion);
+    assert.equal(result.appcastPath, path.join(distDir, "appcast.xml"));
+    assert.ok(fs.existsSync(result.appcastPath));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
 test("release: publishes only the tool-produced appcast.xml (validated, signed), never stdout diagnostics", async () => {
   const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture("0.3.0");
   const calls = [];
@@ -608,11 +667,15 @@ test("release: publishes only the tool-produced appcast.xml (validated, signed),
 });
 
 test("release: missing tool-produced appcast.xml fails sanitized and publishes nothing", async () => {
-  const { tmp, distDir, configPath, privateKey, version } = makeReleaseFixture("0.3.0");
+  const { tmp, distDir, configPath, privateKey, version, arch } = makeReleaseFixture(
+    "0.3.0",
+    "arm64",
+  );
   try {
     await assert.rejects(
       runRelease({
         version,
+        arch,
         distDir,
         configPath,
         rootVersion: version,
@@ -628,7 +691,54 @@ test("release: missing tool-produced appcast.xml fails sanitized and publishes n
   }
 });
 
-test("release: x64 Intel signs x64 ZIP and produces appcast-x64.xml without multiarch feed ambiguity", async () => {
+test("release: x64 Intel signs x64 ZIP and accepts tool-produced appcast-x64.xml (actual Sparkle SUFeedURL derivation)", async () => {
+  const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture(
+    "0.3.0",
+    "x64",
+  );
+  const calls = [];
+  const producedAppcast = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">',
+    "  <channel>",
+    `    <item><enclosure url="https://example.test/electron-v${version}/${zipName}" sparkle:edSignature="c2lnSW50ZWw=" sparkle:version="${version}" sparkle:shortVersionString="${version}" type="application/octet-stream"/></item>`,
+    "  </channel>",
+    "</rss>",
+  ].join("\n");
+  const runTool = async (bin, args, opts) => {
+    calls.push({ bin, args: [...args], input: opts && opts.input != null ? "[stdin]" : null });
+    if (bin.includes("sign-update")) {
+      return { code: 0, signal: null, stdout: "signed", stderr: "" };
+    }
+    // Official Sparkle 2.9.6 on Intel writes appcast-x64.xml (derived from SUFeedURL in Info.plist)
+    const releaseDir = args[args.length - 1];
+    fs.writeFileSync(path.join(releaseDir, "appcast-x64.xml"), producedAppcast, "utf8");
+    return { code: 0, signal: null, stdout: "1 update processed", stderr: "" };
+  };
+  try {
+    const result = await runRelease({
+      version,
+      arch: "x64",
+      distDir,
+      configPath,
+      rootVersion: version,
+      privateKey,
+      resolveTool: async (name) => `/fake/x64/${name}`,
+      runTool,
+    });
+    assert.equal(result.appcastPath, path.join(distDir, "appcast-x64.xml"));
+    assert.equal(fs.existsSync(path.join(distDir, "appcast-x64.xml")), true);
+    assert.equal(result.plan.arch, "x64");
+    assert.equal(result.plan.appcastPath, path.join(distDir, "appcast-x64.xml"));
+    const content = fs.readFileSync(result.appcastPath, "utf8");
+    assert.ok(content.includes(`Sumi-${version}-macos-x64.zip`));
+    assert.ok(content.includes("sparkle:edSignature"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release: x64 Intel accepts legacy fallback appcast.xml if tool outputs appcast.xml", async () => {
   const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture(
     "0.3.0",
     "x64",
@@ -667,6 +777,162 @@ test("release: x64 Intel signs x64 ZIP and produces appcast-x64.xml without mult
     const content = fs.readFileSync(result.appcastPath, "utf8");
     assert.ok(content.includes(`Sumi-${version}-macos-x64.zip`));
     assert.ok(content.includes("sparkle:edSignature"));
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release: missing tool-produced appcast on x64 fails sanitized and publishes nothing", async () => {
+  const { tmp, distDir, configPath, privateKey, version } = makeReleaseFixture("0.3.0", "x64");
+  try {
+    await assert.rejects(
+      runRelease({
+        version,
+        arch: "x64",
+        distDir,
+        configPath,
+        rootVersion: version,
+        privateKey,
+        resolveTool: async (name) => `/fake/x64/${name}`,
+        runTool: async () => ({ code: 0, signal: null, stdout: "no file written", stderr: "" }),
+      }),
+      /did not produce appcast-x64\.xml/,
+    );
+    assert.equal(fs.existsSync(path.join(distDir, "appcast-x64.xml")), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release: 0-byte tool-produced appcast file is rejected as missing/invalid", async () => {
+  const { tmp, distDir, configPath, privateKey, version } = makeReleaseFixture("0.3.0", "x64");
+  const runTool = async (bin, args) => {
+    if (bin.includes("sign-update")) {
+      return { code: 0, signal: null, stdout: "signed", stderr: "" };
+    }
+    const releaseDir = args[args.length - 1];
+    fs.writeFileSync(path.join(releaseDir, "appcast-x64.xml"), "", "utf8");
+    return { code: 0, signal: null, stdout: "wrote 0 bytes", stderr: "" };
+  };
+  try {
+    await assert.rejects(
+      runRelease({
+        version,
+        arch: "x64",
+        distDir,
+        configPath,
+        rootVersion: version,
+        privateKey,
+        resolveTool: async (name) => `/fake/x64/${name}`,
+        runTool,
+      }),
+      /did not produce appcast-x64\.xml/,
+    );
+    assert.equal(fs.existsSync(path.join(distDir, "appcast-x64.xml")), false);
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+});
+
+test("release: stale appcast in distDir is never used as fallback on failure and overwritten on success", async () => {
+  const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture(
+    "0.3.0",
+    "x64",
+  );
+  const staleAppcastPath = path.join(distDir, "appcast-x64.xml");
+  const staleContent =
+    '<rss version="2.0"><channel><item sparkle:version="0.2.0">STALE_FEED</item></channel></rss>';
+  fs.writeFileSync(staleAppcastPath, staleContent, "utf8");
+
+  // Case A: tool run fails to produce an appcast -> MUST reject and MUST NOT use stale file
+  await assert.rejects(
+    runRelease({
+      version,
+      arch: "x64",
+      distDir,
+      configPath,
+      rootVersion: version,
+      privateKey,
+      resolveTool: async (name) => `/fake/x64/${name}`,
+      runTool: async (bin) => {
+        if (bin.includes("sign-update"))
+          return { code: 0, signal: null, stdout: "signed", stderr: "" };
+        return { code: 0, signal: null, stdout: "no output", stderr: "" };
+      },
+    }),
+    /did not produce appcast-x64\.xml/,
+  );
+  // Stale content remains untouched and was not treated as a valid release
+  assert.equal(fs.readFileSync(staleAppcastPath, "utf8"), staleContent);
+
+  // Case B: tool run succeeds -> stale content is cleanly overwritten with new validated feed
+  const freshAppcast = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">',
+    "  <channel>",
+    `    <item><enclosure url="https://example.test/electron-v${version}/${zipName}" sparkle:edSignature="c2lnRnJlc2g=" sparkle:version="${version}" sparkle:shortVersionString="${version}" type="application/octet-stream"/></item>`,
+    "  </channel>",
+    "</rss>",
+  ].join("\n");
+
+  const result = await runRelease({
+    version,
+    arch: "x64",
+    distDir,
+    configPath,
+    rootVersion: version,
+    privateKey,
+    resolveTool: async (name) => `/fake/x64/${name}`,
+    runTool: async (bin, args) => {
+      if (bin.includes("sign-update"))
+        return { code: 0, signal: null, stdout: "signed", stderr: "" };
+      const releaseDir = args[args.length - 1];
+      fs.writeFileSync(path.join(releaseDir, "appcast-x64.xml"), freshAppcast, "utf8");
+      return { code: 0, signal: null, stdout: "done", stderr: "" };
+    },
+  });
+
+  assert.equal(result.appcastPath, staleAppcastPath);
+  const updatedContent = fs.readFileSync(staleAppcastPath, "utf8");
+  assert.ok(updatedContent.includes("c2lnRnJlc2g="));
+  assert.ok(!updatedContent.includes("STALE_FEED"));
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test("release: tool stdout containing XML is ignored if no file was written to release directory", async () => {
+  const { tmp, distDir, configPath, zipName, privateKey, version } = makeReleaseFixture(
+    "0.3.0",
+    "x64",
+  );
+  const xmlOnStdout = [
+    '<?xml version="1.0" encoding="utf-8"?>',
+    '<rss version="2.0" xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle">',
+    "  <channel>",
+    `    <item><enclosure url="https://example.test/electron-v${version}/${zipName}" sparkle:edSignature="c2ln" sparkle:version="${version}" sparkle:shortVersionString="${version}" type="application/octet-stream"/></item>`,
+    "  </channel>",
+    "</rss>",
+  ].join("\n");
+
+  try {
+    await assert.rejects(
+      runRelease({
+        version,
+        arch: "x64",
+        distDir,
+        configPath,
+        rootVersion: version,
+        privateKey,
+        resolveTool: async (name) => `/fake/x64/${name}`,
+        runTool: async (bin) => {
+          if (bin.includes("sign-update"))
+            return { code: 0, signal: null, stdout: "signed", stderr: "" };
+          // stdout has valid XML, but NO file written to release dir
+          return { code: 0, signal: null, stdout: xmlOnStdout, stderr: "" };
+        },
+      }),
+      /did not produce appcast-x64\.xml/,
+    );
+    assert.equal(fs.existsSync(path.join(distDir, "appcast-x64.xml")), false);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

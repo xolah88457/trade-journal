@@ -96,9 +96,9 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 // Valid raw 32-byte base64 Ed25519 public key for tests
 const VALID_TEST_ED_KEY = Buffer.from(new Uint8Array(32).fill(7)).toString("base64");
 
-test("root package.json establishes version 0.3.0 single source of truth and script boundaries", () => {
+test("root package.json establishes version 0.3.1 single source of truth and script boundaries", () => {
   const rootPkg = JSON.parse(readFileSync(join(root, "package.json"), "utf8"));
-  assert.equal(rootPkg.version, "0.3.0", "Root package.json version must be 0.3.0");
+  assert.equal(rootPkg.version, "0.3.1", "Root package.json version must be 0.3.1");
   assert.equal(rootPkg.scripts["desktop:build"], "node desktop/build.mjs");
   assert.equal(rootPkg.scripts["desktop:open"], "node desktop/open.mjs");
   assert.equal(rootPkg.scripts["desktop:check"], "node --test desktop/check.test.mjs");
@@ -416,24 +416,24 @@ test("Mac architecture feed split separates ARM and x64 feeds while preserving p
 });
 
 test("artifact naming resolves version, architecture, and platform bound outputs", () => {
-  const arm64Names = resolveArtifactNames("0.3.0", "arm64", "darwin");
-  assert.equal(arm64Names.zipName, "Sumi-0.3.0-macos-arm64.zip");
-  assert.equal(arm64Names.dmgName, "Sumi-0.3.0-macos-arm64.dmg");
+  const arm64Names = resolveArtifactNames("0.3.1", "arm64", "darwin");
+  assert.equal(arm64Names.zipName, "Sumi-0.3.1-macos-arm64.zip");
+  assert.equal(arm64Names.dmgName, "Sumi-0.3.1-macos-arm64.dmg");
 
-  const x64Names = resolveArtifactNames("0.3.0", "x64", "darwin");
-  assert.equal(x64Names.zipName, "Sumi-0.3.0-macos-x64.zip");
-  assert.equal(x64Names.dmgName, "Sumi-0.3.0-macos-x64.dmg");
+  const x64Names = resolveArtifactNames("0.3.1", "x64", "darwin");
+  assert.equal(x64Names.zipName, "Sumi-0.3.1-macos-x64.zip");
+  assert.equal(x64Names.dmgName, "Sumi-0.3.1-macos-x64.dmg");
 
-  const winNames = resolveArtifactNames("0.3.0", "x64", "win32");
-  assert.equal(winNames.nsisName, "Sumi-0.3.0-win32-x64-setup.exe");
-  assert.equal(winNames.zipName, "Sumi-0.3.0-win32-x64.zip");
+  const winNames = resolveArtifactNames("0.3.1", "x64", "win32");
+  assert.equal(winNames.nsisName, "Sumi-0.3.1-win32-x64-setup.exe");
+  assert.equal(winNames.zipName, "Sumi-0.3.1-win32-x64.zip");
 
-  const linuxNames = resolveArtifactNames("0.3.0", "x64", "linux");
-  assert.equal(linuxNames.appImageName, "Sumi-0.3.0-linux-x64.AppImage");
-  assert.equal(linuxNames.debName, "Sumi-0.3.0-linux-x64.deb");
+  const linuxNames = resolveArtifactNames("0.3.1", "x64", "linux");
+  assert.equal(linuxNames.appImageName, "Sumi-0.3.1-linux-x64.AppImage");
+  assert.equal(linuxNames.debName, "Sumi-0.3.1-linux-x64.deb");
 
   const meta = getReleaseMetadata();
-  assert.equal(meta.version, "0.3.0");
+  assert.equal(meta.version, "0.3.1");
   assert.equal(meta.platform, process.platform);
 });
 
@@ -854,31 +854,31 @@ test("bundlePackageWithRuntimeDeps bundles electron-updater production dependenc
 test("release metadata resolves full configuration across macOS, Windows, and Linux", () => {
   // macOS metadata
   const macMeta = getReleaseMetadata(root, "darwin", "arm64");
-  assert.equal(macMeta.version, "0.3.0");
+  assert.equal(macMeta.version, "0.3.1");
   assert.equal(macMeta.platform, "darwin");
   assert.equal(macMeta.arch, "arm64");
-  assert.equal(macMeta.zipName, "Sumi-0.3.0-macos-arm64.zip");
-  assert.equal(macMeta.dmgName, "Sumi-0.3.0-macos-arm64.dmg");
+  assert.equal(macMeta.zipName, "Sumi-0.3.1-macos-arm64.zip");
+  assert.equal(macMeta.dmgName, "Sumi-0.3.1-macos-arm64.dmg");
   assert.ok(typeof macMeta.isBuilt === "boolean");
   assert.ok(typeof macMeta.isPackaged === "boolean");
 
   // Windows metadata
   const winMeta = getReleaseMetadata(root, "win32", "x64");
-  assert.equal(winMeta.version, "0.3.0");
+  assert.equal(winMeta.version, "0.3.1");
   assert.equal(winMeta.platform, "win32");
   assert.equal(winMeta.arch, "x64");
-  assert.equal(winMeta.nsisName, "Sumi-0.3.0-win32-x64-setup.exe");
-  assert.equal(winMeta.zipName, "Sumi-0.3.0-win32-x64.zip");
+  assert.equal(winMeta.nsisName, "Sumi-0.3.1-win32-x64-setup.exe");
+  assert.equal(winMeta.zipName, "Sumi-0.3.1-win32-x64.zip");
   assert.ok(typeof winMeta.isBuilt === "boolean");
   assert.ok(typeof winMeta.isPackaged === "boolean");
 
   // Linux metadata
   const linuxMeta = getReleaseMetadata(root, "linux", "x64");
-  assert.equal(linuxMeta.version, "0.3.0");
+  assert.equal(linuxMeta.version, "0.3.1");
   assert.equal(linuxMeta.platform, "linux");
   assert.equal(linuxMeta.arch, "x64");
-  assert.equal(linuxMeta.appImageName, "Sumi-0.3.0-linux-x64.AppImage");
-  assert.equal(linuxMeta.debName, "Sumi-0.3.0-linux-x64.deb");
+  assert.equal(linuxMeta.appImageName, "Sumi-0.3.1-linux-x64.AppImage");
+  assert.equal(linuxMeta.debName, "Sumi-0.3.1-linux-x64.deb");
   assert.ok(typeof linuxMeta.isBuilt === "boolean");
   assert.ok(typeof linuxMeta.isPackaged === "boolean");
 });

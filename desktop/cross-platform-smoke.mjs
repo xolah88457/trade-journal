@@ -6,6 +6,8 @@ import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
 /**
  * Parses DevTools CDP port from Electron's stderr output.
  */
@@ -146,6 +148,23 @@ export const waitForOrigin = (cdp, ms = 60000) =>
     ms,
     250,
     "loopback origin",
+  );
+
+/**
+ * Awaits full DOM readiness and trusted loopback origin in the renderer.
+ * Guards against executing DOM-dependent evaluations (e.g. Blob anchor clicks)
+ * while a page reload is in-flight or before document.body is attached.
+ */
+export const waitForDomReady = (cdp, expectedOrigin = null, ms = 20000) =>
+  waitForCondition(
+    cdp,
+    `Boolean(document && document.body) && ` +
+      `(document.readyState === 'complete' || document.readyState === 'interactive') && ` +
+      `typeof window.location?.origin === 'string' && ` +
+      (expectedOrigin
+        ? `window.location.origin === ${JSON.stringify(expectedOrigin)}`
+        : `window.location.origin.startsWith('http://127.0.0.1:')`),
+    ms,
   );
 
 export const waitForFileContent = (file, pred, ms = 15000) =>
@@ -397,8 +416,11 @@ export async function runSmokeTest(customAppPath) {
     const bridgeKeys = await cdp1.eval("Object.keys(window.sumiDesktop || {}).sort()");
     assert.deepEqual(bridgeKeys, ["checkForUpdates", "getInfo", "preferences", "savePreferences"]);
 
+    const rootPkg = JSON.parse(fs.readFileSync(path.join(root, "package.json"), "utf8"));
+    const expectedAppVersion = rootPkg.version;
+
     const info = await cdp1.eval("window.sumiDesktop.getInfo()");
-    assert.equal(info.version, "0.3.0", "info.version mismatch");
+    assert.equal(info.version, expectedAppVersion, "info.version mismatch");
     assert.equal(info.platform, process.platform, "info.platform mismatch");
     assert.equal(info.arch, process.arch, "info.arch mismatch");
     assert.ok(
@@ -446,10 +468,25 @@ export async function runSmokeTest(customAppPath) {
       10000,
     );
 
-    await cdp1.eval("location.reload();").catch(() => {});
+    // Mark pre-reload state to prevent stale evaluation race
+    await cdp1.eval("window.__sumiSmokePreReload = true;").catch(() => {});
+    try {
+      await cdp1.send("Page.reload");
+    } catch {
+      await cdp1.eval("location.reload();").catch(() => {});
+    }
+
+    // Await navigation completion: fresh context (no pre-reload marker), trusted loopback origin,
+    // DOM readiness (document.body present), and restored preferences in localStorage and bridge
     await waitForCondition(
       cdp1,
-      "window.sumiDesktop && localStorage.getItem('journal-theme-v1') === 'dark' && window.sumiDesktop.preferences['journal-theme-v1'] === 'dark'",
+      `!window.__sumiSmokePreReload && ` +
+        `window.location.origin === ${JSON.stringify(origin1)} && ` +
+        `Boolean(document && document.body) && ` +
+        `(document.readyState === 'complete' || document.readyState === 'interactive') && ` +
+        `Boolean(window.sumiDesktop) && ` +
+        `localStorage.getItem('journal-theme-v1') === 'dark' && ` +
+        `window.sumiDesktop.preferences?.['journal-theme-v1'] === 'dark'`,
       15000,
     );
     console.log(
@@ -457,15 +494,20 @@ export async function runSmokeTest(customAppPath) {
     );
 
     // Stage 5: Native download flow via DOM Blob anchor click
+    await waitForDomReady(cdp1, origin1, 15000);
     const downloadFileName = "smoke-export.txt";
     const downloadText = "sumi-cross-platform-smoke-download-verified";
     await cdp1.eval(`(() => {
+      const target = document.body || document.documentElement;
+      if (!target) {
+        throw new Error("Cannot append download anchor: document body is null");
+      }
       const blob = new Blob([${JSON.stringify(downloadText)}], { type: "text/plain" });
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
       a.download = ${JSON.stringify(downloadFileName)};
-      document.body.appendChild(a);
+      target.appendChild(a);
       a.click();
       a.remove();
       setTimeout(() => URL.revokeObjectURL(url), 5000);

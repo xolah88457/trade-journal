@@ -8,7 +8,7 @@ This branch (`electron`) transitions Sumi to a modern, cross-platform Electron a
   - macOS 14.0+ (Sonoma or newer) on Apple Silicon (`arm64`) & Intel (`x64`).
   - 64-bit Windows 10/11 (`x64`).
   - 64-bit Linux (`x64`, Ubuntu 22.04+ baseline / glibc 2.35+).
-- **Version Truth**: Single source of truth is root `package.json` (`v0.3.0`), stable tag `electron-v0.3.0`, fixed public fork `xolah88457/trade-journal` (no app store wrappers).
+- **Version Truth**: Single source of truth is root `package.json` (`v0.3.1`), stable tag `electron-v0.3.1`, fixed public fork `xolah88457/trade-journal` (no app store wrappers).
 - **Bundled Runtimes**: Electron 45.2.3, official separate Node.js 26.13.0 bundled automatically; end users require neither Node.js nor an external browser.
 - **In-App Updates**:
   - macOS: Native Sparkle 2.9.6 updater with independent Ed25519 signature verification.
@@ -232,7 +232,7 @@ Sumi is distributed independently without paid code-signing certificates:
 - **Windows**: Unsigned (no Authenticode certificate). Windows Defender SmartScreen may display an "Unrecognized app" prompt on first launch:
   1. Click **More info**.
   2. Click **Run anyway**.
-- **Linux**: Install via `.deb` using standard system package tools (`sudo apt install ./Sumi-0.3.0-linux-x64.deb`).
+- **Linux**: Install via `.deb` using standard system package tools (`sudo apt install ./Sumi-0.3.1-linux-x64.deb`).
 
 _(Note: Managed enterprise workstations governed by strict corporate MDM profiles requiring commercial code signing may restrict ad-hoc binaries.)_
 
@@ -280,15 +280,15 @@ pnpm desktop:package
 ### Generated Artifacts in `dist/`
 
 - **macOS**:
-  - `dist/Sumi-0.3.0-macos-arm64.dmg` & `dist/Sumi-0.3.0-macos-arm64.zip`
-  - `dist/Sumi-0.3.0-macos-x64.dmg` & `dist/Sumi-0.3.0-macos-x64.zip`
+  - `dist/Sumi-0.3.1-macos-arm64.dmg` & `dist/Sumi-0.3.1-macos-arm64.zip`
+  - `dist/Sumi-0.3.1-macos-x64.dmg` & `dist/Sumi-0.3.1-macos-x64.zip`
   - `dist/appcast.xml` (Apple Silicon feed) & `dist/appcast-x64.xml` (Intel feed)
 - **Windows**:
-  - `dist/Sumi-0.3.0-win32-x64-setup.exe` (NSIS installer)
-  - `dist/Sumi-0.3.0-win32-x64.zip` (Portable standalone zip)
+  - `dist/Sumi-0.3.1-win32-x64-setup.exe` (NSIS installer)
+  - `dist/Sumi-0.3.1-win32-x64.zip` (Portable standalone zip)
 - **Linux**:
-  - `dist/Sumi-0.3.0-linux-x64.deb` (Debian/Ubuntu package, primary)
-  - `dist/Sumi-0.3.0-linux-x64.AppImage` (Standalone AppImage, secondary)
+  - `dist/Sumi-0.3.1-linux-x64.deb` (Debian/Ubuntu package, primary)
+  - `dist/Sumi-0.3.1-linux-x64.AppImage` (Standalone AppImage, secondary)
 - **Checksums**:
   - `dist/SHA256SUMS.txt` (SHA-256 hashes of all release artifacts)
 
@@ -296,7 +296,7 @@ pnpm desktop:package
 
 Automated via `.github/workflows/electron-release.yml`:
 
-- **Triggers**: Executed strictly on tags matching `electron-v*` (e.g. `electron-v0.3.0`) or via manual `workflow_dispatch`.
+- **Triggers**: Executed strictly on tags matching `electron-v*` (e.g. `electron-v0.3.1`) or via manual `workflow_dispatch`.
 - **Ancestry & Version Verification**: Enforces that the release commit descends from or is an ancestor of `origin/electron` and verifies tag version parity with root `package.json`.
 - **Artifact Isolation**: Publishes strictly verified binaries, installers, feeds, and checksums. Development caches, `.env` files, databases, and heavy model weights are strictly blocked from release assets.
 - **CI Publishing Policy**: The main branch and official releases publish only after all native platform build and verification jobs pass.

@@ -12,6 +12,8 @@ import {
   poll,
   runSmokeTest,
   verifyPackagedUpdaterClosure,
+  waitForCondition,
+  waitForDomReady,
 } from "./cross-platform-smoke.mjs";
 
 test("parseDevToolsPort extracts CDP port from various stderr outputs", () => {
@@ -265,4 +267,85 @@ test("runSmokeTest asserts strict contract on SUMI_SMOKE_APP environment variabl
       process.env.SUMI_SMOKE_APP = origEnv;
     }
   }
+});
+
+test("waitForDomReady resolves when document.body is ready on trusted loopback origin", async () => {
+  let bodyReady = false;
+  let readyState = "loading";
+  const mockCdp = {
+    async eval(expr) {
+      if (expr.includes("document && document.body")) {
+        return bodyReady && (readyState === "complete" || readyState === "interactive");
+      }
+      return false;
+    },
+  };
+  setTimeout(() => {
+    bodyReady = true;
+    readyState = "complete";
+  }, 20);
+
+  const res = await waitForDomReady(mockCdp, "http://127.0.0.1:12345", 1000);
+  assert.equal(res, true);
+});
+
+test("waitForDomReady rejects when document.body remains null or origin mismatches", async () => {
+  const mockCdp = {
+    async eval() {
+      return false;
+    },
+  };
+  await assert.rejects(
+    async () => {
+      await waitForDomReady(mockCdp, "http://127.0.0.1:12345", 100);
+    },
+    { message: /Timed out waiting for/ },
+  );
+});
+
+test("reload sequence guards against premature evaluation on pre-reload context", async () => {
+  // Simulate browser state transition during reload:
+  // 1. Initial pre-reload state: window.__sumiSmokePreReload is set
+  // 2. Navigation begins: document.body becomes null while loading
+  // 3. Navigation completes: fresh context where __sumiSmokePreReload is undefined and document.body exists
+  let step = 1;
+  const mockCdp = {
+    async send(method) {
+      if (method === "Page.reload") {
+        step = 2; // reload initiated
+        setTimeout(() => {
+          step = 3; // reloaded page ready
+        }, 30);
+      }
+    },
+    async eval(expr) {
+      if (expr.includes("__sumiSmokePreReload = true")) {
+        return true;
+      }
+      if (expr.includes("!window.__sumiSmokePreReload")) {
+        if (step === 1) {
+          // Pre-reload state: marker is true, so !marker is false
+          return false;
+        }
+        if (step === 2) {
+          // Reloading state: DOM body is null
+          return false;
+        }
+        if (step === 3) {
+          // New page context: marker is cleared and body is ready
+          return true;
+        }
+      }
+      return false;
+    },
+  };
+
+  await mockCdp.eval("window.__sumiSmokePreReload = true;");
+  await mockCdp.send("Page.reload");
+
+  const guardExpr =
+    "!window.__sumiSmokePreReload && Boolean(document && document.body) && window.sumiDesktop";
+  const completed = await waitForCondition(mockCdp, guardExpr, 1000);
+  assert.equal(completed, true);
+  assert.equal(step, 3, "Guard must only resolve once new document context has fully loaded");
 });

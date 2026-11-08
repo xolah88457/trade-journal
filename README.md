@@ -4,7 +4,7 @@ Sumi is an independent, local-first desktop trading journal for **macOS 14+** (A
 
 **[Desktop architecture, platform setup, updates, and data architecture →](desktop/README.md)**
 
-### Platform Support Matrix (v0.3.0)
+### Platform Support Matrix (v0.3.1)
 
 | Platform                               | Architectures                          | Packages & Installers                    | In-App Updates                                              |
 | :------------------------------------- | :------------------------------------- | :--------------------------------------- | :---------------------------------------------------------- |
@@ -48,11 +48,11 @@ node desktop/release.mjs
 
 ### Installation & First-Launch Security Notes
 
-Sumi is distributed independently via GitHub Releases ([`xolah88457/trade-journal`](https://github.com/xolah88457/trade-journal/releases), stable tag `electron-v0.3.0`) without proprietary app store wrappers.
+Sumi is distributed independently via GitHub Releases ([`xolah88457/trade-journal`](https://github.com/xolah88457/trade-journal/releases), stable tag `electron-v0.3.1`) without proprietary app store wrappers.
 
 - **macOS**: Ad-hoc signed (`codesign --sign -`) without a paid Apple Developer ID. If Gatekeeper blocks opening on first launch, right-click (control-click) `Sumi.app` in Finder and select **Open**, or visit **System Settings → Privacy & Security** and click **Open Anyway**.
 - **Windows**: Unsigned (no Authenticode certificate). Windows Defender SmartScreen may display an unrecognized application prompt on first launch. Click **More info**, then select **Run anyway**.
-- **Linux**: Install the `.deb` package with `sudo apt install ./Sumi-0.3.0-linux-x64.deb` (or `sudo dpkg -i`). For the `.AppImage`, ensure execute permissions are set (`chmod +x Sumi-*.AppImage`) and system `libfuse2` is available. **Security policy**: Never run Sumi with `--no-sandbox` or disable web security; if unprivileged user namespace or FUSE constraints prevent AppImage execution on your system (such as strict Ubuntu 24.04 AppArmor defaults), install the primary `.deb` package. Portable unpacked Linux tarballs do not self-update.
+- **Linux**: Install the `.deb` package with `sudo apt install ./Sumi-0.3.1-linux-x64.deb` (or `sudo dpkg -i`). For the `.AppImage`, ensure execute permissions are set (`chmod +x Sumi-*.AppImage`) and system `libfuse2` is available. **Security policy**: Never run Sumi with `--no-sandbox` or disable web security; if unprivileged user namespace or FUSE constraints prevent AppImage execution on your system (such as strict Ubuntu 24.04 AppArmor defaults), install the primary `.deb` package. Portable unpacked Linux tarballs do not self-update.
 
 ### User Data & Upgrades
 
@@ -62,7 +62,7 @@ All user databases, encrypted credentials, preferences, and downloaded voice wei
 - **Windows**: `%APPDATA%\Sumi` (e.g. `C:\Users\<User>\AppData\Roaming\Sumi`)
 - **Linux**: `$XDG_CONFIG_HOME/Sumi` (or `~/.config/Sumi` if `$XDG_CONFIG_HOME` is unset)
 
-**Backups**: To take a complete manual backup, quit Sumi completely and copy the whole folder, including the generated `.secret` encryption key. Never erase or merge an existing journal directory. If you are currently running v0.2.0, your active application and existing journal data remain completely untouched until you explicitly install or update to v0.3.0.
+**Backups**: To take a complete manual backup, quit Sumi completely and copy the whole folder, including the generated `.secret` encryption key. Never erase or merge an existing journal directory. If you are currently running v0.2.0, your active application and existing journal data remain completely untouched until you explicitly install or update to v0.3.1.
 
 The original upstream documentation follows below for feature reference. Sumi is not affiliated with or endorsed by LuxAlgo or Tw93.
 

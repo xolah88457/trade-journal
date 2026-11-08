@@ -766,10 +766,11 @@ export function parseCliFlag(args, name) {
  * - The SPARKLE_PRIVATE_KEY secret is verified against the configured publicEdKey
  *   (verifyPrivateKeyMatchesPublic) BEFORE any sign/key-use; mismatch halts.
  * - The private key is only ever piped via STDIN (--ed-key-file -), never argv.
- * - generate_appcast writes appcast.xml INTO the release directory; its stdout is
- *   diagnostics and is NEVER published as the feed. The tool-produced appcast.xml is
- *   read back and validated (RSS structure, sparkle:edSignature, ZIP + version) before
- *   being copied to dist/appcast.xml (or dist/appcast-x64.xml).
+ * - generate_appcast writes the feed INTO the release directory (appcast.xml for arm64,
+ *   or appcast-x64.xml for Intel derived from SUFeedURL in Info.plist); its stdout is
+ *   diagnostics and is NEVER published as the feed. The tool-produced feed is read back
+ *   and validated (RSS structure, sparkle:edSignature, ZIP + version) before being copied
+ *   to dist/appcast.xml (or dist/appcast-x64.xml).
  *
  * Injectable for tests: resolveTool, runTool, configPath, distDir, privateKey, rootVersion.
  */
@@ -782,16 +783,19 @@ export async function runRelease(options = {}) {
   const distDir = options.distDir || "dist";
 
   // Root package.json is the source of truth for the version when not injected
-  let rootVersion = options.rootVersion || "0.3.0";
-  if (!options.rootVersion) {
+  let rootVersion = options.rootVersion;
+  if (!rootVersion) {
     try {
       rootVersion =
         JSON.parse(fs.readFileSync(path.join(__dirname, "..", "package.json"), "utf8")).version ||
-        rootVersion;
+        null;
     } catch {}
   }
   const version = options.version || rootVersion;
-  if (options.version && options.version !== rootVersion) {
+  if (!version) {
+    throw new Error("Sanitized error: Could not determine release version.");
+  }
+  if (options.version && rootVersion && options.version !== rootVersion) {
     throw new Error("Sanitized error: --version does not match the root package.json version.");
   }
 
@@ -851,11 +855,20 @@ export async function runRelease(options = {}) {
     );
     assertToolSuccess(appcastResult, "Sanitized error: Failed to generate appcast.");
 
-    // generate_appcast writes appcast.xml into the release directory; stdout is diagnostics only
-    const producedAppcastPath = path.join(tempReleaseDir, "appcast.xml");
-    if (!fs.existsSync(producedAppcastPath) || fs.statSync(producedAppcastPath).size === 0) {
+    // generate_appcast derives output filename from SUFeedURL in Info.plist (e.g. appcast-x64.xml
+    // for Intel, appcast.xml for ARM) or defaults to appcast.xml; stdout is diagnostics only.
+    const expectedPath = path.join(tempReleaseDir, plan.appcastName);
+    const defaultPath = path.join(tempReleaseDir, "appcast.xml");
+    const producedAppcastPath =
+      fs.existsSync(expectedPath) && fs.statSync(expectedPath).size > 0
+        ? expectedPath
+        : fs.existsSync(defaultPath) && fs.statSync(defaultPath).size > 0
+          ? defaultPath
+          : null;
+
+    if (!producedAppcastPath) {
       throw new Error(
-        "Sanitized error: generate_appcast did not produce appcast.xml in the release directory.",
+        `Sanitized error: generate_appcast did not produce ${plan.appcastName} in the release directory.`,
       );
     }
     const appcastXml = fs.readFileSync(producedAppcastPath, "utf8");
@@ -870,7 +883,7 @@ export async function runRelease(options = {}) {
     ]) {
       if (!appcastXml.includes(required)) {
         throw new Error(
-          "Sanitized error: Generated appcast.xml is missing required feed/signature content.",
+          `Sanitized error: Generated ${plan.appcastName} is missing required feed/signature content.`,
         );
       }
     }

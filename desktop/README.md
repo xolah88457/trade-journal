@@ -1,8 +1,8 @@
 # Sumi Desktop (Electron: macOS, Windows & Linux)
 
-Sumi is an independent, local-first trading journal combining LuxAlgo's journal screens, automated broker sync, statement importers, deep analytics, SQLite persistence, and on-device voice dictation, styled with Tw93's Kami-inspired aesthetic.
+Sumi is an independent, local-first desktop trading journal with broker sync, statement importers, analytics, SQLite persistence and on-device voice dictation, styled with Tw93's Kami-inspired aesthetic. It is based on [LuxAlgo's MIT-licensed trade-journal](https://github.com/LuxAlgo/trade-journal); see the [root README](../README.md) for the product overview.
 
-This branch (`electron`) transitions Sumi to a modern, cross-platform Electron architecture (Electron v45.2.3) hosting the full Next.js standalone application backed by an isolated, official Node.js runtime and platform-native acceleration.
+The desktop app is an Electron shell (Electron v45.2.3) hosting the Next.js standalone application, backed by an isolated, official Node.js runtime. Sumi is desktop-only; there is no Docker or hosted web distribution. Developers can still run the web app alone with `pnpm dev`.
 
 - **Target Platforms**:
   - macOS 14.0+ (Sonoma or newer) on Apple Silicon (`arm64`) & Intel (`x64`).
@@ -44,7 +44,7 @@ To ensure stability and predictable native execution, Sumi defines explicit arch
   - Linux: `build-essential`, `python3`, `dpkg` / `fakeroot` (for `.deb` generation).
 - **Internet Access**: Required during initial build to download verified official Electron and Node archives.
 
-From the repository root (`trade-journal-main/`):
+From the repository root:
 
 ```sh
 # 1. Install dependencies with exact lockfile
@@ -76,7 +76,7 @@ The resulting application is self-contained:
 - Windows: `dist/sumi-win32-x64/Sumi.exe`
 - Linux: `dist/sumi-linux-x64/sumi`
 
-Once built or installed, Sumi requires neither an active terminal, nor a separately installed Node, pnpm, Docker, or external browser.
+Once built or installed, Sumi requires neither an active terminal, nor a separately installed Node, pnpm, or external browser.
 
 ---
 
@@ -297,7 +297,7 @@ pnpm desktop:package
 Automated via `.github/workflows/electron-release.yml`:
 
 - **Triggers**: Pushes to the `electron` branch run build, verification, and smoke checks only; publishing runs strictly on tags matching `electron-v*` (e.g. `electron-v0.3.1`). There is no manual `workflow_dispatch` trigger.
-- **Ancestry & Version Verification**: Enforces that the release commit descends from or is an ancestor of `origin/electron` and verifies tag version parity with root `package.json`.
+- **Ancestry & Version Verification**: Enforces that the release commit is an ancestor of `origin/electron` and verifies tag version parity with root `package.json`.
 - **Artifact Isolation**: Publishes strictly verified binaries, installers, feeds, and checksums. Development caches, `.env` files, databases, and heavy model weights are strictly blocked from release assets.
 - **CI Publishing Policy**: The main branch and official releases publish only after all native platform build and verification jobs pass.
 

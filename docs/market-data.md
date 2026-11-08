@@ -1,8 +1,10 @@
 # Historical market data
 
-Market data is an optional, user-configured input. Vela remains the chart renderer;
-broker sync remains responsible for executions. No provider is enabled or selected
-by default. No API key or provider history is shipped with the project.
+Market data is an optional, user-configured input used to estimate MAE and MFE for
+closed trades. Broker sync remains responsible for executions. No provider is enabled
+or selected by default. No API key or provider history is shipped with the project.
+Free keys are available from London Strategic Edge, Alpaca and OANDA; Binance and
+Coinbase public candles need no key, and local candle CSV files need no account.
 
 ## Connect and use
 
@@ -10,18 +12,17 @@ by default. No API key or provider history is shipped with the project.
    candle CSV. Configure or enable a connection only if you want to use it, then
    select **Test connection**. Environment credentials, when deliberately configured,
    take precedence over saved credentials.
-2. Open a closed trade. Select a provider, its exact symbol, and candle resolution.
-   Select a feed where required; an optional dataset can disambiguate instruments.
-   Broker-specific symbols are not silently translated.
-3. Select **Load market data**. This makes provider requests and uses your plan's
-   allowance. Replay supports restart, play/pause, step, speed and scrubbing.
+2. Choose a provider, its exact symbol, and candle resolution. Select a feed where
+   required; an optional dataset can disambiguate instruments. Broker-specific
+   symbols are not silently translated.
+3. Request the estimate. This makes provider requests and uses your plan's
+   allowance. In **Reports → Trade explorer**, use **Calculate missing estimates**.
 4. To enable monetary excursion estimates, first verify that the provider's
    instrument, price adjustment basis and quote currency match the executions and
    account currency. Derivatives also require a contract multiplier in Settings.
 
-Before history is explicitly loaded, Vela displays a price path from recorded
-fills for every asset class. Opening a trade never automatically contacts a market
-data provider, including public crypto feeds.
+Opening a trade or Reports never automatically contacts a market data provider,
+including public crypto feeds.
 
 ## What MAE and MFE mean here
 
@@ -51,12 +52,6 @@ candle price range trigger a mismatch warning, with estimates and fill overlays
 withheld. This catches conspicuous demo-data or price-basis mismatches; it is not
 a substitute for verifying the instrument and currency yourself.
 
-Replay reveals a completed candle at each step, with fills through its close time.
-Unrevealed candles and future fill labels are not passed to Vela, and final excursion
-amounts are hidden while replaying. Boundary candles may include prices outside the
-holding period. This is trade-review playback, not tick simulation or a blind backtest;
-the rest of the trade detail page still contains the original trade's outcome.
-
 ## Architecture and credential handling
 
 - `lib/market-data.ts`: normalized UTC candles, resolution and result contracts.
@@ -64,19 +59,21 @@ the rest of the trade detail page still contains the original trade's outcome.
 - `server/market-data/connections.ts`: adapter registry and encrypted key storage.
 - `server/market-data/london-strategic-edge.ts`: LSE REST transport and normalization.
 - `lib/excursions.ts`: deterministic provider-independent calculation.
-- `lib/trade-replay.ts`: chart input sliced at the replay cursor.
-- `components/trade-market-data.tsx`: source controls and Vela rendering.
+- `server/market-data/estimates.ts`: loads candles for a trade and saves valid estimates.
+- `components/report-market-estimates.tsx`: batch calculation controls in Reports.
+- `components/market-data-settings.tsx` and `components/market-csv-settings.tsx`: Settings → Market data.
 
 Add another adapter to the registry to expose it through the same connection and
 trade controls. Provider-specific authentication and normalization stay in the adapter.
 The current generic interface covers candles and connection tests; symbol discovery,
-tick replay, option contracts, and exchange-calendar coverage are future capabilities.
+tick data, option contracts, and exchange-calendar coverage are future capabilities.
 
 Saved keys use the journal's AES-256-GCM credential storage. Browser status responses
 contain only configuration state. Requests go from the server to fixed provider origins
 using provider-specific authentication headers; redirects are rejected and provider error bodies are never relayed.
 The application's existing optional password gate also protects these endpoints.
-Set `JOURNAL_PASSWORD` when serving the journal beyond your trusted local environment.
+Set `JOURNAL_PASSWORD` when running the web app (`pnpm dev`) anywhere other than your
+own machine.
 Keys and candles are excluded from journal exports; candles are not persisted or shared
 through a global cache. Use provider data within the permissions of your own account.
 
@@ -97,7 +94,7 @@ user-supplied key. Permissions and instrument coverage remain specific to each a
 
 ## Reports and saved estimates
 
-Confirmed, valid MAE/MFE estimates are saved locally when a trade's history loads.
+Confirmed, valid MAE/MFE estimates are saved locally when they are calculated.
 Reports → Trade explorer offers MAE vs net P&L, MFE vs net P&L, and MAE vs MFE presets,
 as well as excursion axis selectors. MAE is a positive adverse amount; dot colors
 always describe final net P&L, not the sign of an excursion. Excursions are gross,
@@ -114,14 +111,13 @@ account currency; no FX conversion is applied.
 
 Saved results are excluded when the underlying executions, trade identity, account
 currency or contract multiplier changes. Deleting a trade deletes its derived result.
-Existing estimates calculated before persistence was added need to be loaded once
-again. Unchecking the calculation box loads candles/replay only and does not erase
-an earlier saved estimate. Replay starts at 4× speed.
+Existing estimates calculated before persistence was added need to be calculated once
+again.
 
 ## Supported sources
 
 Configure these under **Settings → Market data**. Connections are used only for
-market prices; they do not create broker-sync accounts, place orders, or change Vela.
+market prices; they do not create broker-sync accounts or place orders.
 Public sources require an explicit Enable source action. No source is contacted just
 because Settings or Reports is opened.
 
@@ -144,7 +140,7 @@ have bounded pages, a 20,000-candle result limit, timeouts and abort support. Al
 follows `next_page_token`; Coinbase, Binance and OANDA use windows below their candle
 limits. Limits produce truncated history and unavailable estimates, not false zeroes.
 Known quote-currency mismatches block monetary estimates even if the confirmation is
-checked. In particular, USDT is not treated as USD. Candles can still be replayed.
+checked. In particular, USDT is not treated as USD.
 API failures return sanitized errors rather than upstream bodies or credentials.
 
 ### Market-data CSV format
@@ -216,6 +212,4 @@ Report calculations request estimates and metadata without transferring candles,
 and do not impose a one-second pause after every trade. They remain sequential
 and cancellable, and stop after three consecutive unavailable results. Saved
 estimate reads batch currencies and execution records while retaining fingerprint
-invalidation. Replay reuses each computed frame, coalesces chart updates during
-rapid scrubbing, and stops advancing while the page is hidden. Vela still renders
-the charts, with 4× replay speed as the default.
+invalidation.

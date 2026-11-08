@@ -1,8 +1,8 @@
 # Design notes
 
 Dark-first trading terminal. Tokens live in `apps/web/src/app/globals.css`; charts
-resolve them at runtime (`components/charts/tokens.ts`) so chart marks and tooltips
-match the active theme.
+resolve them at runtime (`components/charts/tokens.ts`) so Recharts SVG props can
+use the same theme values as the rest of the interface.
 
 ## P&L color is never load-bearing
 
@@ -16,8 +16,7 @@ color pure reinforcement:
 - Win/loss ship as **text chips** (`WIN` / `LOSS`), never colored dots alone
 - Calendar cells print the number and trade count; the background tint scales with
   **magnitude** (lightness survives CVD), while sign lives in the printed number
-- Trade markers differ by **shape and position**: entries ▲ below the bar, exits ▼
-  above (Vela's native convention)
+- Markers differ by **shape and position** rather than color alone
 
 ## Palette
 

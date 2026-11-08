@@ -31,6 +31,12 @@ const EXCEPTIONS = {
   // jsdom's test-only CSS helper: reviewed MIT No Attribution license grants
   // unrestricted use, modification and redistribution, without attribution.
   "@csstools/color-helpers": ["MIT-0"],
+  // js-yaml's argument parser, pulled in by electron-updater (ships in the
+  // Windows and Linux builds). Reviewed: PSF-style permissive license.
+  argparse: ["Python-2.0"],
+  // sanitize-filename helper used by electron-builder at build time only.
+  // Reviewed: WTFPL is a permissive public-domain-style license.
+  "truncate-utf8-bytes": ["WTFPL"],
 };
 
 const allowedExpression = (expression) => {

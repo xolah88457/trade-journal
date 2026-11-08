@@ -15,23 +15,6 @@ const SLASH_DATE =
  */
 const TZ_ABBREVIATION = /\s+(E[SD]T|C[SD]T|M[SD]T|P[SD]T|UTC|GMT)$/i;
 
-export function detectSlashDateOrder(samples: readonly string[]): {
-  order: SlashDateOrder | null;
-  proven: boolean;
-} {
-  let sawSlash = false;
-  for (const raw of samples) {
-    const match = raw.trim().replace(TZ_ABBREVIATION, "").match(SLASH_DATE);
-    if (!match) continue;
-    sawSlash = true;
-    const first = Number(match[1]);
-    const second = Number(match[2]);
-    if (first > 12 && second <= 12) return { order: "DMY", proven: true };
-    if (second > 12 && first <= 12) return { order: "MDY", proven: true };
-  }
-  return sawSlash ? { order: "MDY", proven: false } : { order: null, proven: false };
-}
-
 /** Parse a history timestamp to epoch milliseconds UTC; NaN when unparseable. */
 export function parseImportTimestamp(
   raw: string,

@@ -4,29 +4,16 @@
 
 import type { Execution } from "./reconstruct";
 /*
-  Canonical trade model of the import pipeline. Every source format - pasted
-  R-series, TradingView strategy exports, MetaTrader statements, generic
-  broker/journal CSVs - is converted into ImportedTrade before anything else
-  touches it, so source-specific assumptions never leak into the simulator.
+  Canonical trade model of the import pipeline. Every source format -
+  TradingView strategy exports and MetaTrader statements - is converted into
+  ImportedTrade before anything else touches it, so source-specific
+  assumptions never leak into the journal.
 
-  The pipeline never invents data: a field a source does not carry is null,
-  and an R-multiple that cannot be derived from the file (plus an explicit,
-  user-chosen RiskSpec) stays null with rSource "unavailable".
+  The pipeline never invents data: a field a source does not carry is null.
 */
 
 /** Canonical direction. Sources say buy/sell/long/short/±1; we say this. */
 export type TradeDirection = "long" | "short";
-
-/**
- * Where a trade's R-multiple came from - the trust ladder callers surface:
- * - "explicit":   the file carried an R column; validated, not recomputed.
- * - "calculated": derived from data in the file itself (P&L ÷ risk amount,
- *                 or P&L ÷ stop-distance risk).
- * - "inferred":   derived using a user-supplied RiskSpec (e.g. "I risked $50
- *                 per trade") because the file has P&L but no risk info.
- * - "unavailable": not derivable without fabricating a number; r stays null.
- */
-export type RSource = "explicit" | "calculated" | "inferred" | "unavailable";
 
 /** One reconstructed trade in canonical form. Currency fields share the file's account currency. */
 export interface ImportedTrade {
@@ -51,11 +38,6 @@ export interface ImportedTrade {
   fees: number | null;
   /** Initial stop-loss price when the file carries one. */
   stopPrice: number | null;
-  /** Initial risk in account currency (from a risk column, stop distance, or RiskSpec). */
-  riskAmount: number | null;
-  /** Trade result in R-multiples; null when rSource is "unavailable". */
-  r: number | null;
-  rSource: RSource;
   /** Open positions are reported but excluded from simulation inputs. */
   status: "closed" | "open";
   /** 1-based line numbers in the source file this trade was built from. */
@@ -70,31 +52,17 @@ export type ImportIssueCode =
   | "input-truncated"
   | "malformed-csv"
   | "no-header"
-  | "unmapped-required-fields"
   | "ambiguous-mapping"
   | "row-skipped"
   | "row-recovered"
   | "duplicate-rows"
-  | "open-trade-excluded"
-  | "unmatched-entry"
   | "unmatched-exit"
   | "cancelled-row-ignored"
   | "non-trade-row-ignored"
-  | "date-order-assumed-mdy"
   | "trade-id-reused"
   | "exit-before-entry"
   | "direction-pnl-mismatch"
   | "pnl-derived-from-prices"
-  | "futures-multiplier-unknown"
-  | "formula-like-cell"
-  | "invalid-number"
-  | "r-explicit-suspect"
-  | "r-needs-risk"
-  | "r-partial"
-  | "r-stop-side-suspect"
-  | "r-stop-too-close"
-  | "too-few-trades"
-  | "template-coverage"
   | "unsupported-format";
 
 /** One diagnostic. Errors block using the affected trade (or the whole import); warnings do not. */
@@ -115,7 +83,7 @@ export type DetectionConfidence = "exact" | "high" | "low";
 export interface DetectedFormat {
   /**
    * - "r-series":       plain numbers / JSON array of R-multiples
-   * - an adapter id:    a recognized source ("tradingview", "metatrader", "generic-csv", ...)
+   * - an adapter id:    a recognized source ("tradingview", "metatrader", "mt5-deals")
    * - "unknown":        tabular but not interpretable without manual mapping
    */
   kind: string;

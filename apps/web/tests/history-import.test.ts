@@ -94,12 +94,12 @@ describe("history imports use the existing preview, commit and rebuild pipeline"
       rating: 5,
     });
   });
-  it("retains legitimately identical generic fills and deduplicates reimports", () => {
-    const content = `Timestamp,Ticker,Buy/Sell,Fill Quantity,Execution Price
-2026-01-05 09:00,AAPL,buy,1,100
-2026-01-05 09:00,AAPL,buy,1,100
-2026-01-05 10:00,AAPL,sell,2,101`;
-    const parsed = parseHistory(content, { adapterId: "generic-csv" })!;
+  it("retains legitimately identical fills and deduplicates reimports", () => {
+    const content = `Time,Deal,Symbol,Type,Direction,Volume,Price,Order,Commission,Fee,Swap,Profit
+2026.01.05 09:00,1,AAPL,buy,in,1,100,101,0,0,0,0
+2026.01.05 09:00,2,AAPL,buy,in,1,100,102,0,0,0,0
+2026.01.05 10:00,3,AAPL,sell,out,2,101,103,0,0,0,2`;
+    const parsed = parseHistory(content)!;
     expect(insertExecutions("test", parsed.executions, "import")).toMatchObject({
       inserted: 3,
       duplicates: 0,
@@ -137,9 +137,8 @@ describe("history imports use the existing preview, commit and rebuild pipeline"
       .values({ key: "multipliers", value: JSON.stringify({ AAPL: 100 }) })
       .run();
     const parsed = parseHistory(
-      `Position,Symbol,Direction,Open Time,Close Time,Entry Price,Exit Price,Quantity,PnL,Fees
-1,AAPL,long,2026-01-05 09:00,2026-01-05 10:00,100,101,1,1,0`,
-      { adapterId: "generic-csv" },
+      `Time,Position,Symbol,Type,Volume,Price,S / L,T / P,Time,Price,Commission,Swap,Profit
+2026.01.05 09:00,1001,AAPL,buy,1,100,0,0,2026.01.05 10:00,101,0,0,1`,
     )!;
     insertExecutions("test", parsed.executions, "import");
     rebuildAccount("test");

@@ -36,10 +36,6 @@ const partFormatter = (timeZone: string): Intl.DateTimeFormat => {
 export const dayKeyOf = (iso: string, timeZone = "UTC"): string =>
   dateFormatter(timeZone).format(new Date(iso));
 
-/** "YYYY-MM" in the given timezone. */
-export const monthKeyOf = (iso: string, timeZone = "UTC"): string =>
-  dayKeyOf(iso, timeZone).slice(0, 7);
-
 export const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
 export type Weekday = (typeof WEEKDAYS)[number];
 

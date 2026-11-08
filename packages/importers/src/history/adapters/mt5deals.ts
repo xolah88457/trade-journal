@@ -131,7 +131,7 @@ export const mt5DealsAdapter: SourceAdapter = {
         continue;
       }
       const direction = parseDirectionValue(type);
-      const time = parseImportTimestamp(cells[columns.time] ?? "", ctx.dateOrder, ctx.timeZone);
+      const time = parseImportTimestamp(cells[columns.time] ?? "", "MDY", ctx.timeZone);
       const price = parseNumericCell(cells[columns.price] ?? "");
       const quantity = parseVolume(cells[columns.volume] ?? "");
       const symbol = sanitizeRetainedText(cells[columns.symbol] ?? "").value;

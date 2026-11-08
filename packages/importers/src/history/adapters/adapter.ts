@@ -13,7 +13,6 @@
 import type { Execution } from "../reconstruct";
 import type { CsvRecord } from "../csv";
 import type { ColumnMapping, DetectionConfidence, ImportIssue, ImportedTrade } from "../model";
-import type { SlashDateOrder } from "../timestamps";
 
 /** Parsed tabular input handed to adapters: header row + data records. */
 export interface CsvTable {
@@ -31,10 +30,6 @@ export interface AdapterMatch {
 
 export interface AdapterContext {
   timeZone?: string;
-  /** Manual column-mapping overrides (canonical field → 0-based column index). */
-  mappingOverride?: ColumnMapping | undefined;
-  /** Explicit slash-date order ("03/04/2025"): month-first or day-first. */
-  dateOrder?: SlashDateOrder | undefined;
 }
 
 export interface AdapterParseResult {
@@ -53,7 +48,7 @@ export interface AdapterParseResult {
 }
 
 export interface SourceAdapter {
-  /** Stable id, used as DetectedFormat.kind and for ImportOptions.adapterId. */
+  /** Stable id, used as DetectedFormat.kind. */
   id: string;
   label: string;
   /** Null when this adapter does not recognize the table. Must be deterministic. */

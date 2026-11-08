@@ -125,7 +125,7 @@ export const tradingViewAdapter: SourceAdapter = {
       const direction = parseDirectionValue(match[2]!);
       const id = sanitizeRetainedText(cells[columns.tradeId] ?? "").value;
       const timeRaw = (cells[columns.time] ?? "").trim();
-      const time = parseImportTimestamp(timeRaw, ctx.dateOrder, ctx.timeZone);
+      const time = parseImportTimestamp(timeRaw, "MDY", ctx.timeZone);
 
       // A still-open trade: the exit row reads "Open" with a placeholder price.
       if (kind === "exit" && !Number.isFinite(time)) {
@@ -182,7 +182,6 @@ export const tradingViewAdapter: SourceAdapter = {
         pnl: Number.isFinite(pnl) ? pnl : null,
         fees: Number.isFinite(fees) && fees !== 0 ? fees : null,
         stopPrice: null,
-        r: null,
       });
     }
 

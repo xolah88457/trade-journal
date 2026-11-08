@@ -66,7 +66,6 @@ export const metaTraderAdapter: SourceAdapter = {
   parse(table: CsvTable, ctx: AdapterContext): AdapterParseResult {
     const issues: ImportIssue[] = [];
     const { mapping } = mapHeaders(table.header, table.records);
-    if (ctx.mappingOverride !== undefined) Object.assign(mapping, ctx.mappingOverride);
     const cell = (record: { cells: string[] }, field: keyof typeof mapping): string => {
       const index = mapping[field];
       return index === undefined ? "" : (record.cells[index] ?? "").trim();
@@ -128,12 +127,8 @@ export const metaTraderAdapter: SourceAdapter = {
       }
 
       const direction = parseDirectionValue(typeRaw);
-      const entryTime = parseImportTimestamp(
-        cell(record, "entryTime"),
-        ctx.dateOrder,
-        ctx.timeZone,
-      );
-      const exitTime = parseImportTimestamp(cell(record, "exitTime"), ctx.dateOrder, ctx.timeZone);
+      const entryTime = parseImportTimestamp(cell(record, "entryTime"), "MDY", ctx.timeZone);
+      const exitTime = parseImportTimestamp(cell(record, "exitTime"), "MDY", ctx.timeZone);
       const entryPrice = parseNumericCell(cell(record, "entryPrice"));
       const exitPrice = parseNumericCell(cell(record, "exitPrice"));
       const quantity = parseNumericCell(cell(record, "quantity"));
@@ -180,9 +175,6 @@ export const metaTraderAdapter: SourceAdapter = {
         // credit stays inside the (net) P&L, so nothing is lost or invented.
         fees: adjustments !== 0 ? Math.max(0, -adjustments) : null,
         stopPrice: Number.isFinite(stop) && stop !== 0 ? stop : null,
-        riskAmount: null,
-        r: null,
-        rSource: "unavailable",
         status: stillOpen ? "open" : "closed",
         sourceRows: [record.line],
       };

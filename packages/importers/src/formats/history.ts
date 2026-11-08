@@ -1,13 +1,6 @@
 import { importTradeHistory } from "../history/import";
-import { normalizeHeader } from "../history/aliases";
 import type { ImportResult } from "../history/model";
 import type { ImportFormat, ImportOptions, ImportedExecution, ParsedImport } from "../types";
-
-/** Options for the history path; `adapterId` is the only way to use the generic alias mapper. */
-export interface HistoryParseOptions extends ImportOptions {
-  /** Force a history adapter (for example "generic-csv"); never set by automatic detection. */
-  adapterId?: string;
-}
 
 const symbolFrom = (content: string, options: ImportOptions): string | undefined => {
   if (options.symbol?.trim()) return options.symbol.trim().toUpperCase();
@@ -22,57 +15,14 @@ const symbolFrom = (content: string, options: ImportOptions): string | undefined
   return preamble?.[1]?.split(":").pop()?.toUpperCase();
 };
 
-/**
- * A history result is usable when a documented signature matched. The generic
- * alias mapper only appears here when selected explicitly, and even then it
- * must have resolved the execution facts the journal needs.
- */
-const recognizable = (result: ImportResult): boolean => {
-  if (result.format.kind !== "generic-csv") return result.format.kind !== "unknown";
-  const m = result.mapping;
-  return (
-    !!m &&
-    m.entryTime !== undefined &&
-    m.entryPrice !== undefined &&
-    m.quantity !== undefined &&
-    (m.direction !== undefined || m.eventType !== undefined || !!result.executions?.length)
-  );
-};
+/** A history result is usable when a documented signature matched. */
+const recognizable = (result: ImportResult): boolean => result.format.kind !== "unknown";
 
 const issueMessages = (result: ImportResult) =>
-  result.issues
-    .filter((item) => item.severity === "warning" && !item.code.startsWith("r-"))
-    .map((item) => item.message);
+  result.issues.filter((item) => item.severity === "warning").map((item) => item.message);
 
-type PnlBasis = "net" | "gross";
-
-/**
- * Decide whether a generic file's P&L column is net or gross of fees without
- * guessing: "net"/"netto"/"Net P&L"/"Net profit" say net, "gross" says gross,
- * and a bare "Profit"/"P&L" beside a commission column follows MetaTrader
- * semantics (gross). A bare column with no fee column is used as net, flagged
- * as not explicit so the caller can warn.
- */
-export const pnlBasisFor = (
-  header: string,
-  hasFeeColumn: boolean,
-): { basis: PnlBasis; explicit: boolean } => {
-  const normalized = normalizeHeader(header);
-  if (normalized.includes("gross")) return { basis: "gross", explicit: true };
-  if (normalized.includes("net")) return { basis: "net", explicit: true };
-  // MetaTrader semantics: a bare "Profit"/"P&L" beside a Commission column is gross.
-  if (hasFeeColumn) return { basis: "gross", explicit: true };
-  return { basis: "net", explicit: false };
-};
-
-export const parseHistory = (
-  content: string,
-  options: HistoryParseOptions = {},
-): ParsedImport | null => {
-  const history = importTradeHistory(content, {
-    timeZone: options.timeZone,
-    ...(options.adapterId !== undefined ? { adapterId: options.adapterId } : {}),
-  });
+export const parseHistory = (content: string, options: ImportOptions = {}): ParsedImport | null => {
+  const history = importTradeHistory(content, { timeZone: options.timeZone });
   if (!recognizable(history)) return null;
   const warnings = issueMessages(history);
   const errors = history.issues
@@ -168,19 +118,6 @@ export const parseHistory = (
       });
     }
   } else {
-    const pnlHeader = history.header?.[history.mapping?.pnl ?? -1] ?? "";
-    const hasFeeColumn = history.mapping?.fees !== undefined || history.mapping?.swap !== undefined;
-    // Signature adapters already normalize their P&L to net; only the generic
-    // mapper reads an arbitrary column whose basis the header must state.
-    const basis =
-      history.format.kind === "generic-csv"
-        ? pnlBasisFor(pnlHeader, hasFeeColumn)
-        : { basis: "net" as PnlBasis, explicit: true };
-    if (!basis.explicit && history.mapping?.pnl !== undefined) {
-      warnings.push(
-        `The "${pnlHeader}" column does not say whether it is net or gross of fees; it was used as net because the file has no commission column.`,
-      );
-    }
     for (const trade of history.trades) {
       const symbol = (trade.symbol || fallbackSymbol)?.trim().toUpperCase();
       if (!symbol) needsSymbol = true;
@@ -218,12 +155,11 @@ export const parseHistory = (
       // Fees are costs: a net credit becomes a zero fee and stays in the P&L.
       const rawFee = trade.fees ?? 0;
       const fee = Math.max(0, rawFee);
-      const credit = rawFee < 0 ? -rawFee : 0;
       let reportedGrossPnl: number | undefined;
       if (trade.pnlReported && trade.pnl !== null) {
-        // net = gross - fee, so a net figure gains the fee back and a gross
-        // figure is used as is; a credit already sits inside the net figure.
-        reportedGrossPnl = basis.basis === "gross" ? trade.pnl + credit : trade.pnl + fee;
+        // Signature adapters report net P&L (net = gross - fee), so the fee is
+        // added back; a credit already sits inside the net figure.
+        reportedGrossPnl = trade.pnl + fee;
       }
       const preserveFee = trade.fees !== null || reportedGrossPnl !== undefined;
       const side = trade.direction === "long" ? "buy" : "sell";

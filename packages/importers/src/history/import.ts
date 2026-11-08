@@ -13,7 +13,6 @@ import type {
   CsvTable,
   SourceAdapter,
 } from "./adapters/adapter";
-import { genericCsvAdapter } from "./adapters/generic";
 import { metaTraderAdapter } from "./adapters/metatrader";
 import { mt5DealsAdapter } from "./adapters/mt5deals";
 import { tradingViewAdapter } from "./adapters/tradingview";
@@ -35,34 +34,23 @@ import {
   GENERIC_FORMAT_ADVICE,
   issue,
   sortTrades,
-  type ColumnMapping,
   type DetectedFormat,
   type ImportIssue,
   type ImportResult,
   type ImportedTrade,
 } from "./model";
-import type { SlashDateOrder } from "./timestamps";
 
 /**
- * Registered source adapters, checked in order. The generic alias-mapped
- * adapter is listed so it can be selected explicitly (adapterId), but it is
- * never chosen automatically: a file either matches a documented signature or
- * is handed to the user's column mapper.
+ * Registered source adapters, checked in order. A file either matches a
+ * documented signature or is handed to the user's column mapper.
  */
 export const ADAPTERS: readonly SourceAdapter[] = [
   tradingViewAdapter,
   metaTraderAdapter,
   mt5DealsAdapter,
-  genericCsvAdapter,
 ];
 
 export interface ImportOptions extends CsvLimits {
-  /** Force a specific adapter (an id from ADAPTERS) instead of detection; the only way to use "generic-csv". */
-  adapterId?: string;
-  /** Manual column-mapping overrides (canonical field → 0-based column index). */
-  mapping?: ColumnMapping;
-  /** Slash-date order for ambiguous "03/04/2025"-style dates. */
-  dateOrder?: SlashDateOrder;
   timeZone?: string;
 }
 
@@ -224,11 +212,10 @@ function chooseStatementSection(
     };
   };
 
-  const signatureAdapters = ADAPTERS.filter((a) => a.id !== genericCsvAdapter.id);
   for (const candidate of candidates) {
     const section = sectionOf(candidate);
     if (section.records.length === 0) continue;
-    for (const adapter of signatureAdapters) {
+    for (const adapter of ADAPTERS) {
       const match = adapter.detect({
         delimiter: ",",
         header: section.header,
@@ -332,23 +319,8 @@ export function importTradeHistory(rawText: string, options: ImportOptions = {})
     );
   }
 
-  if (options.adapterId !== undefined && !ADAPTERS.some((a) => a.id === options.adapterId)) {
-    issues.push(
-      issue(
-        "error",
-        "unsupported-format",
-        `Unknown adapter "${options.adapterId}". Available: ${ADAPTERS.map((a) => a.id).join(", ")}.`,
-      ),
-    );
-    return emptyResult(
-      { kind: "unknown", label: "Unknown adapter", confidence: "exact", signals: [] },
-      issues,
-    );
-  }
-
-  // Header (and preamble) location. A manual mapping may address columns by
-  // index, so a missing header is only fatal without one. HTML statements
-  // already carry their chosen section's header.
+  // Header (and preamble) location. HTML statements already carry their
+  // chosen section's header.
   const located = statementSection === null ? locateHeader(allRecords) : null;
   let header: string[];
   let records: CsvRecord[];
@@ -374,9 +346,6 @@ export function importTradeHistory(rawText: string, options: ImportOptions = {})
       const trimmed = truncateAtSectionBoundary(records, (cells) => headerScore(cells) >= 2);
       records = trimmed.records;
     }
-  } else if (options.mapping !== undefined) {
-    header = allRecords[0]!.cells.map((_, i) => `column ${i + 1}`);
-    records = [...allRecords];
   } else {
     issues.push(
       issue(
@@ -395,27 +364,14 @@ export function importTradeHistory(rawText: string, options: ImportOptions = {})
   }
 
   const table: CsvTable = { delimiter, header, records };
-  const ctx: AdapterContext = {
-    mappingOverride: options.mapping,
-    dateOrder: options.dateOrder,
-    timeZone: options.timeZone,
-  };
+  const ctx: AdapterContext = { timeZone: options.timeZone };
 
-  // Adapter selection: forced id, then the statement section's adapter, then
-  // signature detection. No signature match means "unknown": the generic
+  // Adapter selection: the statement section's adapter, then signature
+  // detection. No signature match means "unknown": the generic
   // alias mapper is never an automatic route (importers never guess).
   let adapter: SourceAdapter;
   let format: DetectedFormat;
-  if (options.adapterId !== undefined) {
-    // Validated above; the id is known.
-    adapter = ADAPTERS.find((a) => a.id === options.adapterId)!;
-    format = {
-      kind: adapter.id,
-      label: adapter.label,
-      confidence: "exact",
-      signals: ["selected manually"],
-    };
-  } else if (statementSection?.adapter != null) {
+  if (statementSection?.adapter != null) {
     adapter = statementSection.adapter;
     format = {
       kind: adapter.id,
@@ -426,7 +382,6 @@ export function importTradeHistory(rawText: string, options: ImportOptions = {})
   } else {
     let match: { adapter: SourceAdapter; signals: string[] } | null = null;
     for (const candidate of ADAPTERS) {
-      if (candidate.id === genericCsvAdapter.id) continue;
       const detection = candidate.detect(table);
       if (detection !== null) {
         match = { adapter: candidate, signals: detection.signals };
@@ -467,30 +422,6 @@ export function importTradeHistory(rawText: string, options: ImportOptions = {})
 
   const parsed: AdapterParseResult = adapter.parse(table, ctx);
   issues.push(...parsed.issues);
-
-  // An explicitly selected generic mapper keeps its confidence only if the
-  // mapping actually supports interpretation; otherwise the import is an
-  // honest failure.
-  if (
-    format.kind === "generic-csv" &&
-    parsed.closed.length === 0 &&
-    parsed.open.length === 0 &&
-    !parsed.executions?.length
-  ) {
-    const mapped = parsed.mapping === null ? [] : Object.keys(parsed.mapping);
-    issues.push(
-      issue(
-        "error",
-        "unmapped-required-fields",
-        `A header row was detected (${header.join(", ")}), but no trades could be built from it. ` +
-          `Recognized columns: ${mapped.length > 0 ? mapped.join(", ") : "none"}. ` +
-          "A usable file needs either an R column, a P&L column, entry/exit prices, or fill rows " +
-          "(side, quantity, price). Map the columns manually if they are named unusually. " +
-          GENERIC_FORMAT_ADVICE,
-      ),
-    );
-    format = { ...format, confidence: "low" };
-  }
 
   // Duplicate-trade removal (skipped for execution sources, where identical
   // rows can be legitimate fills).

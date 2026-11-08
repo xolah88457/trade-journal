@@ -33,8 +33,6 @@ export interface TradeEvent {
   pnl: number | null;
   fees: number | null;
   stopPrice: number | null;
-  /** Explicit R carried by this event. */
-  r: number | null;
 }
 
 export interface ReconstructionResult {
@@ -55,9 +53,6 @@ function blankTrade(): ImportedTrade {
     pnl: null,
     fees: null,
     stopPrice: null,
-    riskAmount: null,
-    r: null,
-    rSource: "unavailable",
     status: "closed",
     sourceRows: [],
   };
@@ -116,12 +111,6 @@ function buildTradeFromGroup(
   trade.quantity = sumOrNull(entries.map((e) => e.quantity));
   trade.fees = sumOrNull(all.map((e) => e.fees));
   trade.stopPrice = entries.find((e) => e.stopPrice !== null)?.stopPrice ?? null;
-
-  const explicitR = all.filter((e) => e.r !== null).map((e) => e.r as number);
-  if (explicitR.length > 0) {
-    trade.r = explicitR[explicitR.length - 1]!;
-    trade.rSource = "explicit";
-  }
 
   const exitPnl = sumOrNull(exits.map((e) => e.pnl));
   const entryPnl = sumOrNull(entries.map((e) => e.pnl));

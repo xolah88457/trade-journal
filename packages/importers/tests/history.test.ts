@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { buildRoundTrips, type Execution } from "@luxalgo/journal-core";
 import { FORMATS, detectFormat, parseAuto } from "../src/detect";
-import { parseHistory, pnlBasisFor } from "../src/formats/history";
 import { importTradeHistory } from "../src/history/import";
 import { parseImportTimestamp } from "../src/history/timestamps";
-import { directionFromEvent } from "../src/history/adapters/generic";
 import { parseWithMapping } from "../src/formats/generic";
 import type { ImportOptions, ParsedImport } from "../src/types";
 
@@ -19,14 +17,6 @@ const trips = (parsed: ParsedImport) =>
   );
 const parse = (text: string, options?: ImportOptions) => {
   const result = parseAuto(text, options);
-  expect(result).not.toBeNull();
-  expect(result?.errors).toBeUndefined();
-  return result!;
-};
-/** The generic alias mapper is never an automatic route; it is only reachable by explicit choice. */
-const parseGeneric = (text: string, options?: ImportOptions) => {
-  expect(parseAuto(text, options)).toBeNull();
-  const result = parseHistory(text, { ...options, adapterId: "generic-csv" });
   expect(result).not.toBeNull();
   expect(result?.errors).toBeUndefined();
   return result!;
@@ -89,23 +79,6 @@ describe("simulator history formats extend the journal import path", () => {
         .sort(),
     ).toEqual([1, 2]);
   });
-  it("keeps separately reported trades stable even when they open and close at the same timestamp", () => {
-    const result = parseGeneric(GENERIC);
-    const roundTrips = trips(result);
-    expect(roundTrips).toHaveLength(2);
-    expect(roundTrips.every((t) => t.direction === "long" && t.status === "win")).toBe(true);
-    expect(new Set(roundTrips.map((t) => t.key)).size).toBe(2);
-    expect(
-      buildRoundTrips(
-        result.executions.toReversed().map((e, i) => ({
-          ...e,
-          id: String(i),
-          accountId: "fixture",
-          source: "import" as const,
-        })),
-      ).map((t) => t.key),
-    ).toEqual(roundTrips.map((t) => t.key));
-  });
   it("preserves MetaTrader statement P&L, signed swap and duplicated Time/Price columns", () => {
     const result = parse(MT5);
     expect(result.format).toBe("history-metatrader");
@@ -125,12 +98,6 @@ describe("simulator history formats extend the journal import path", () => {
     const [trade] = trips(result);
     expect(trade?.fees).toBe(0);
     expect(trade?.netPnl).toBe(23); // 20 profit - 2 commission + 5 swap credit
-    // The same money through the generic mapper (Profit beside Commission and Swap).
-    const generic =
-      parseGeneric(`Open Time,Close Time,Symbol,Direction,Quantity,Entry Price,Exit Price,Profit,Commission,Swap
-2026-01-05 09:00,2026-01-05 10:00,EURUSD,long,0.1,1.1,1.102,20,-2,5`);
-    expect(generic.executions.every((e) => e.fee >= 0)).toBe(true);
-    expect(trips(generic)[0]?.netPnl).toBe(23);
   });
   it("the totals row at the end of a MetaTrader report does not produce a warning", () => {
     const result = parse(`${MT5}\n,,,,,,,,,,-4,-0.5,0`);
@@ -165,39 +132,6 @@ describe("simulator history formats extend the journal import path", () => {
     expect(result.executions).toHaveLength(0);
     expect(result.warnings.join(" ")).toContain("no matching position");
   });
-  it("handles generic pipe-separated fills and preserves original partial-exit quantities", () => {
-    const result =
-      parseGeneric(`Export from platform\nTimestamp|Ticker|Buy/Sell|Fill Quantity|Execution Price|Fees|State
-2026-01-05 09:00|AAPL|buy|10|100|1|Filled
-2026-01-05 10:00|AAPL|sell|4|110|1|Filled
-2026-01-05 11:00|AAPL|sell|6|120|1|Filled
-2026-01-05 12:00|AAPL|buy|100|1|0|Cancelled`);
-    expect(result.executions).toHaveLength(3);
-    expect(trips(result)[0]?.netPnl).toBe(157);
-  });
-  it("reads generic quoted money without mistaking percentages or cumulative totals for P&L", () => {
-    const result =
-      parseGeneric(`Open Time,Close Time,Symbol,Direction,Quantity,Entry Price,Exit Price,Net PnL USD,Return %,Cumulative PnL USD,Commission
-2026-01-05 09:00,2026-01-05 10:00,AAPL,long,100,100,112.5,"1,247.50",12.475,9000,2.5`);
-    expect(trips(result)[0]?.netPnl).toBe(1247.5);
-    expect(trips(result)[0]?.grossPnl).toBe(1250);
-  });
-  it("uses configured multipliers when the source carries prices but no reported P&L", () => {
-    const result =
-      parseGeneric(`Opened At,Closed At,Ticker,Direction,Quantity,Entry Price,Exit Price,Fees
-2026-01-05 09:00,2026-01-05 10:00,ES,long,2,5000,5001,4`);
-    const roundTrips = buildRoundTrips(
-      result.executions.map((e, i) => ({
-        ...e,
-        id: String(i),
-        accountId: "a",
-        source: "import" as const,
-      })),
-      { multipliers: { ES: 50 } },
-    );
-    expect(roundTrips[0]?.netPnl).toBe(96);
-    expect(result.executions[1]?.importMetadata?.reportedGrossPnl).toBeUndefined();
-  });
   it("leaves incomplete strategy positions out until both actual legs are available", () => {
     const result = parse(
       `${TV}\n3,Entry long,2026-01-06 09:00,open,100,1,0,0,0\n3,Exit long,Open,close,—,1,0,0,0`,
@@ -219,50 +153,7 @@ describe("simulator history formats extend the journal import path", () => {
   });
 });
 
-describe("gross and net P&L are read from the header, never guessed", () => {
-  it("a MetaTrader-style Commission column beside a bare Profit column means net = profit - commission", () => {
-    const result =
-      parseGeneric(`Open Time,Close Time,Symbol,Direction,Quantity,Entry Price,Exit Price,Profit,Commission
-2026-01-05 09:00,2026-01-05 10:00,AAPL,long,1,100,110,10,2`);
-    const [trade] = trips(result);
-    expect(trade?.grossPnl).toBe(10);
-    expect(trade?.fees).toBe(2);
-    expect(trade?.netPnl).toBe(8);
-    expect(result.warnings).toEqual([]);
-  });
-  it("a Net P&L column stays net and the commission is only added back to the gross figure", () => {
-    const result =
-      parseGeneric(`Opened At,Closed At,Symbol,Direction,Quantity,Entry Price,Exit Price,Net P&L,Commission
-2026-01-05 09:00,2026-01-05 10:00,AAPL,long,1,100,110,8,2`);
-    const [trade] = trips(result);
-    expect(trade?.netPnl).toBe(8);
-    expect(trade?.grossPnl).toBe(10);
-    expect(result.warnings).toEqual([]);
-  });
-  it("a bare P&L column with no commission column is used as net and the user is told so", () => {
-    const result =
-      parseGeneric(`Open Time,Close Time,Symbol,Direction,Quantity,Entry Price,Exit Price,P&L
-2026-01-05 09:00,2026-01-05 10:00,AAPL,long,1,100,110,8`);
-    expect(trips(result)[0]?.netPnl).toBe(8);
-    expect(result.warnings.join(" ")).toContain("net or gross");
-    expect(pnlBasisFor("Gross P&L", true)).toEqual({ basis: "gross", explicit: true });
-    expect(pnlBasisFor("Netto", true)).toEqual({ basis: "net", explicit: true });
-    expect(pnlBasisFor("Net profit", false)).toEqual({ basis: "net", explicit: true });
-    expect(pnlBasisFor("PnL", false)).toEqual({ basis: "net", explicit: false });
-  });
-});
-
 describe("paired history quantities", () => {
-  it("allocates one exit across multiple entries without losing quantity or reported P&L", () => {
-    const result = parseGeneric(`Event,Symbol,Direction,Time,Price,Quantity,Net PnL,Fees
-entry,AAPL,long,2026-01-05 09:00,100,1,,1
-entry,AAPL,long,2026-01-05 09:10,100,2,,2
-exit,AAPL,long,2026-01-05 10:00,110,3,27,0`);
-    const roundTrips = trips(result);
-    expect(roundTrips.reduce((sum, t) => sum + t.quantity, 0)).toBe(3);
-    expect(roundTrips.reduce((sum, t) => sum + t.netPnl, 0)).toBe(27);
-    expect(roundTrips.reduce((sum, t) => sum + t.fees, 0)).toBe(3);
-  });
   it("blocks a trade whose exits exceed its recorded entries", () => {
     const result = parseAuto(
       `Trade number,Type,Date and time,Price USD,Size (qty),Net PnL USD
@@ -289,23 +180,6 @@ exit,AAPL,long,2026-01-05 10:00,110,3,27,0`);
     expect(trips(twice)).toHaveLength(2);
     expect(twice.warnings.join(" ")).toContain("duplicate");
   });
-  it("SellToClose closes a long and BuyToClose closes a short", () => {
-    expect(directionFromEvent("SellToClose", true)).toBe("long");
-    expect(directionFromEvent("BuyToClose", true)).toBe("short");
-    expect(directionFromEvent("BuyToOpen", false)).toBe("long");
-    expect(directionFromEvent("SellToOpen", false)).toBe("short");
-    expect(directionFromEvent("Exit short", true)).toBe("short");
-    const result = parseGeneric(`Trade,Event,Symbol,Time,Price,Quantity
-1,BuyToOpen,AAPL,2026-01-05 09:00,100,1
-1,SellToClose,AAPL,2026-01-05 10:00,110,1
-2,SellToOpen,MSFT,2026-01-05 09:00,100,1
-2,BuyToClose,MSFT,2026-01-05 10:00,90,1`);
-    const roundTrips = trips(result);
-    expect(roundTrips.map((t) => [t.symbol, t.direction, t.netPnl])).toEqual([
-      ["AAPL", "long", 10],
-      ["MSFT", "short", 10],
-    ]);
-  });
 });
 
 describe("history timestamps preserve journal timezone semantics", () => {
@@ -324,20 +198,9 @@ describe("history timestamps preserve journal timezone semantics", () => {
       parse(TV, { symbol: "AAPL", timeZone: "America/New_York" }).executions[0]?.executedAt,
     ).toBe("2026-01-05T14:00:00.000Z");
   });
-  it("selects one slash-date order for the whole file and rejects invalid dates", () => {
-    const result =
-      parseGeneric(`Open Time,Close Time,Ticker,Direction,Quantity,Entry Price,Exit Price
-04/03/2026 09:00,04/03/2026 10:00,AAPL,long,1,100,101
-14/03/2026 09:00,14/03/2026 10:00,MSFT,long,1,100,101`);
-    expect(result.executions[0]?.executedAt).toBe("2026-03-04T09:00:00.000Z");
+  it("rejects invalid dates", () => {
     expect(parseImportTimestamp("2026-02-30 09:00")).toBeNaN();
     expect(parseImportTimestamp("2026-01-05 24:30")).toBeNaN();
-    const ambiguous = importTradeHistory(
-      `Open Time,Close Time,Ticker,Direction,Quantity,Entry Price,Exit Price
-04/03/2026 09:00,04/03/2026 10:00,AAPL,long,1,100,101`,
-      { adapterId: "generic-csv" },
-    );
-    expect(ambiguous.issues.map((i) => i.code)).toContain("date-order-assumed-mdy");
   });
   it("history timestamps accept EST suffixes and long-form dates exactly like the legacy importers", () => {
     expect(parseImportTimestamp("2026-01-05 09:31:00 EST", "MDY", "America/New_York")).toBe(
@@ -348,15 +211,6 @@ describe("history timestamps preserve journal timezone semantics", () => {
     );
     expect(parseImportTimestamp("1/5/26 09:31")).toBe(Date.parse("2026-01-05T09:31:00Z"));
     expect(parseImportTimestamp("1/5/99 09:31")).toBe(Date.parse("2099-01-05T09:31:00Z"));
-    const result = parseGeneric(
-      `Opened At,Closed At,Symbol,Direction,Quantity,Entry Price,Exit Price,Net PnL
-"Jan 5, 2026 09:31:00 EST","Jan 5, 2026 10:15:00 EST",AAPL,long,1,100,110,10`,
-      { timeZone: "America/New_York" },
-    );
-    expect(result.executions.map((e) => e.executedAt)).toEqual([
-      "2026-01-05T14:31:00.000Z",
-      "2026-01-05T15:15:00.000Z",
-    ]);
   });
 });
 
@@ -416,8 +270,6 @@ describe("new detection preserves existing import routes", () => {
     expect(direct.ok).toBe(false);
     expect(direct.format.kind).toBe("unknown");
     expect(direct.issues.map((i) => i.code)).toContain("unsupported-format");
-    // The adapter still works when a caller asks for it by name.
-    expect(importTradeHistory(GENERIC, { adapterId: "generic-csv" }).trades).toHaveLength(2);
   });
   it("keeps the explicit column mapper available and unchanged", () => {
     const content = "When,Ticker,Way,Amount,Cost\n2026-01-05 09:00,AAPL,bought,2,100";

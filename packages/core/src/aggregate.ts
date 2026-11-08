@@ -1,6 +1,6 @@
 import type { AnnotatedTrade } from "./types";
 import { dailyStats, type DayStats } from "./equity";
-import { WEEKDAYS, dayKeyOf, hourOf, weekdayOf } from "./time";
+import { WEEKDAYS, hourOf, weekdayOf } from "./time";
 
 export interface BucketStats {
   key: string;
@@ -67,9 +67,6 @@ export const byMistake = (trades: AnnotatedTrade[]): BucketStats[] =>
 export const byPlaybook = (trades: AnnotatedTrade[]): BucketStats[] =>
   groupInto(trades, (t) => (t.annotations?.playbook ? [t.annotations.playbook] : []));
 
-export const byAssetClass = (trades: AnnotatedTrade[]): BucketStats[] =>
-  groupInto(trades, (t) => [t.assetClass ?? "other"]);
-
 export const byDirection = (trades: AnnotatedTrade[]): BucketStats[] =>
   groupInto(trades, (t) => [t.direction]);
 
@@ -111,12 +108,6 @@ export const byDuration = (trades: AnnotatedTrade[]): BucketStats[] => {
       DURATION_BUCKETS.findIndex((d) => d.key === b.key),
   );
 };
-
-export const byMonth = (trades: AnnotatedTrade[], timeZone = "UTC"): BucketStats[] =>
-  groupInto(
-    trades.filter((t) => t.closedAt),
-    (t) => [dayKeyOf(t.closedAt!, timeZone).slice(0, 7)],
-  ).sort((a, b) => a.key.localeCompare(b.key));
 
 export interface CalendarWeek {
   /** Seven cells Sun→Sat; null = day outside the month or no trading. */

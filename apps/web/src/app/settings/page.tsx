@@ -47,7 +47,7 @@ const sections = [
     id: "market-data",
     label: "Market data",
     icon: ChartCandlestick,
-    description: "Connect price history or upload candles for replay and trade analysis.",
+    description: "Connect price history or upload candles for MAE/MFE estimates.",
   },
   {
     id: "ai-settings",

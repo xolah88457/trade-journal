@@ -22,9 +22,9 @@ export function MarketDataSettings() {
       </CardHeader>
       <CardContent className="space-y-4">
         <p className="text-sm text-muted-foreground">
-          Connect historical prices for estimated MAE/MFE and candle replay on closed trades. Vela
-          renders the charts. No data source is enabled or selected by default. Choose a connection
-          or upload your own candles. Market data connections are separate from broker sync and AI.
+          Connect historical prices for estimated MAE/MFE on closed trades. No data source is
+          enabled or selected by default. Choose a connection or upload your own candles. Market
+          data connections are separate from broker sync and AI.
         </p>
         {error && (
           <p role="alert" className="text-sm text-destructive">

@@ -103,7 +103,8 @@ export async function resolveAsrModelPath(): Promise<string | null> {
 /**
  * Checks for Silero VAD weights:
  * 1. JOURNAL_DATA_DIR/voice/silero-vad-v6.2-F32.gguf
- * 2. models/silero-vad-v6.2-F32.gguf in repo root
+ * 2. models/silero-vad-v6.2-F32.gguf in the repo root (the single bundled copy;
+ *    found from the repo root, apps/web or the packaged server layout)
  * 3. Fallback to installed Pi Voice models directory
  * Returns the resolved path or null if missing/corrupt.
  */

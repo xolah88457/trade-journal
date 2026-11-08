@@ -47,7 +47,7 @@ export const POST = handler(
       body.estimateOnly === undefined || typeof body.estimateOnly === "boolean",
       "Invalid response mode.",
     );
-    requireValue(Boolean(row.closedAt), "Market replay is available for closed trades only.");
+    requireValue(Boolean(row.closedAt), "Market data is available for closed trades only.");
     requireValue(
       row.assetClass !== "option",
       "Option contract history is not supported by this connector yet. An underlying's candles cannot stand in for option prices.",

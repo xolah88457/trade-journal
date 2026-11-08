@@ -106,8 +106,8 @@ const generateExecutions = (): ImportedExecution[] => {
     }
   }
 
-  // A handful of crypto round trips: these chart on real candles (Vela's
-  // keyless Binance/Coinbase providers), so the demo shows that path too.
+  // A handful of crypto round trips: these can load real candles from the
+  // keyless Binance/Coinbase providers, so the demo shows that path too.
   const CRYPTO = [
     { symbol: "BTCUSDT", price: 96000, qty: () => Number((0.05 + rnd() * 0.3).toFixed(3)) },
     { symbol: "ETHUSDT", price: 4400, qty: () => Number((0.5 + rnd() * 3).toFixed(2)) },

@@ -883,6 +883,22 @@ test("release metadata resolves full configuration across macOS, Windows, and Li
   assert.ok(typeof linuxMeta.isPackaged === "boolean");
 });
 
+/**
+ * Creates an isolated Windows environment for CRT candidate discovery tests,
+ * preventing host Visual Studio (vswhere, Redist) and System32 paths from leaking
+ * into test fixtures on Windows build runners.
+ */
+function makeIsolatedCrtEnv(emptyDir, overrides = {}) {
+  return {
+    ProgramFiles: emptyDir,
+    "ProgramFiles(x86)": emptyDir,
+    SystemRoot: emptyDir,
+    WINDIR: emptyDir,
+    VCToolsRedistDir: "",
+    ...overrides,
+  };
+}
+
 test("REQUIRED_WIN32_CRT_DLLS defines required app-local runtime libraries and resolveWindowsCrtDlls resolves them", () => {
   assert.deepEqual(REQUIRED_WIN32_CRT_DLLS, [
     "msvcp140.dll",
@@ -892,13 +908,14 @@ test("REQUIRED_WIN32_CRT_DLLS defines required app-local runtime libraries and r
   assert.deepEqual(MIN_WIN32_CRT_FILEVERSION, [14, 40, 0, 0]);
 
   const mockRedist = mkdtempSync(join(tmpdir(), "vc-redist-mock-"));
+  const emptyDir = mkdtempSync(join(tmpdir(), "crt-empty-"));
   try {
     writeFileSync(join(mockRedist, "msvcp140.dll"), "msvcp");
     writeFileSync(join(mockRedist, "vcruntime140.dll"), "vcruntime");
     writeFileSync(join(mockRedist, "vcruntime140_1.dll"), "vcruntime1");
 
     const resolved = resolveWindowsCrtDlls({
-      env: { VC_REDIST_X64_DIR: mockRedist },
+      env: makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: mockRedist }),
       readFileVersion: () => [14, 44, 35111, 0],
     });
     assert.equal(resolved["msvcp140.dll"], join(mockRedist, "msvcp140.dll"));
@@ -906,6 +923,7 @@ test("REQUIRED_WIN32_CRT_DLLS defines required app-local runtime libraries and r
     assert.equal(resolved["vcruntime140_1.dll"], join(mockRedist, "vcruntime140_1.dll"));
   } finally {
     rmSync(mockRedist, { recursive: true, force: true });
+    rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 
@@ -938,6 +956,7 @@ test("readDllFileVersion parses PowerShell FileVersionInfo output via injectable
 test("resolveWindowsCrtDlls picks the NEWEST FILEVERSION across candidate dirs, not discovery order", () => {
   const oldDir = mkdtempSync(join(tmpdir(), "crt-old-"));
   const sysRoot = mkdtempSync(join(tmpdir(), "crt-sysroot-"));
+  const emptyDir = mkdtempSync(join(tmpdir(), "crt-empty-"));
   const sys32 = join(sysRoot, "System32");
   try {
     mkdirSync(sys32, { recursive: true });
@@ -954,7 +973,7 @@ test("resolveWindowsCrtDlls picks the NEWEST FILEVERSION across candidate dirs, 
       if (!v) throw new Error("no version for " + p);
       return v;
     };
-    const env = { VC_REDIST_X64_DIR: oldDir, SystemRoot: sysRoot };
+    const env = makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: oldDir, SystemRoot: sysRoot });
     const resolved = resolveWindowsCrtDlls({ env, readFileVersion });
     for (const dll of REQUIRED_WIN32_CRT_DLLS) {
       // Newest (System32) wins even though the older VC_REDIST_X64_DIR is listed first
@@ -977,7 +996,7 @@ test("resolveWindowsCrtDlls picks the NEWEST FILEVERSION across candidate dirs, 
       versions2.set(join(v143, dll), [14, 43, 32605, 0]);
     }
     const resolved2 = resolveWindowsCrtDlls({
-      env: { VCToolsRedistDir: vcTools, SystemRoot: mkdtempSync(join(tmpdir(), "crt-empty-")) },
+      env: makeIsolatedCrtEnv(emptyDir, { VCToolsRedistDir: vcTools }),
       readFileVersion: (p) => versions2.get(p),
     });
     for (const dll of REQUIRED_WIN32_CRT_DLLS) {
@@ -987,16 +1006,18 @@ test("resolveWindowsCrtDlls picks the NEWEST FILEVERSION across candidate dirs, 
   } finally {
     rmSync(oldDir, { recursive: true, force: true });
     rmSync(sysRoot, { recursive: true, force: true });
+    rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 
 test("resolveWindowsCrtDlls fails closed when only below-floor CRT candidates exist (never bundles old)", () => {
   const dir = mkdtempSync(join(tmpdir(), "crt-oldonly-"));
+  const emptyDir = mkdtempSync(join(tmpdir(), "crt-empty-"));
   try {
     for (const dll of REQUIRED_WIN32_CRT_DLLS) {
       writeFileSync(join(dir, dll), "old");
     }
-    const env = { VC_REDIST_X64_DIR: dir };
+    const env = makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: dir });
     const readFileVersion = () => [14, 29, 27139, 5]; // msvcp140 < 14.40: std::mutex ABI crash risk
     const sel = selectWindowsCrtDlls({ env, readFileVersion });
     assert.deepEqual(sel.resolved, {});
@@ -1007,16 +1028,18 @@ test("resolveWindowsCrtDlls fails closed when only below-floor CRT candidates ex
     assert.deepEqual(resolveWindowsCrtDlls({ env, readFileVersion }), {});
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 
 test("resolveWindowsCrtDlls fails closed on a partial set (one DLL only available below floor)", () => {
   const dir = mkdtempSync(join(tmpdir(), "crt-partial-"));
+  const emptyDir = mkdtempSync(join(tmpdir(), "crt-empty-"));
   try {
     for (const dll of REQUIRED_WIN32_CRT_DLLS) {
       writeFileSync(join(dir, dll), "x");
     }
-    const env = { VC_REDIST_X64_DIR: dir };
+    const env = makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: dir });
     const readFileVersion = (p) =>
       p.toLowerCase().includes("msvcp140") ? [14, 44, 0, 0] : [14, 38, 0, 0];
     const sel = selectWindowsCrtDlls({ env, readFileVersion });
@@ -1024,27 +1047,31 @@ test("resolveWindowsCrtDlls fails closed on a partial set (one DLL only availabl
     assert.deepEqual([...sel.missing].sort(), ["vcruntime140.dll", "vcruntime140_1.dll"]);
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 
 test("CRT floor boundary: exactly 14.40.0.0 accepted, 14.39.x rejected", () => {
   const dir = mkdtempSync(join(tmpdir(), "crt-floor-"));
+  const emptyDir = mkdtempSync(join(tmpdir(), "crt-empty-"));
   try {
     for (const dll of REQUIRED_WIN32_CRT_DLLS) {
       writeFileSync(join(dir, dll), "x");
     }
-    const env = { VC_REDIST_X64_DIR: dir };
+    const env = makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: dir });
     const at = resolveWindowsCrtDlls({ env, readFileVersion: () => [14, 40, 0, 0] });
     assert.equal(at["msvcp140.dll"], join(dir, "msvcp140.dll"));
     assert.deepEqual(resolveWindowsCrtDlls({ env, readFileVersion: () => [14, 39, 99999, 0] }), {});
   } finally {
     rmSync(dir, { recursive: true, force: true });
+    rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 
 test("bundleWindowsCrt fails closed with throw before copy/swap when required DLLs missing or below floor", () => {
   const tmp = mkdtempSync(join(tmpdir(), "crt-bundle-fail-"));
   const oldDir = mkdtempSync(join(tmpdir(), "crt-bundle-old-"));
+  const emptyDir = mkdtempSync(join(tmpdir(), "crt-empty-"));
   try {
     const resources = join(tmp, "resources");
     mkdirSync(resources, { recursive: true });
@@ -1054,7 +1081,7 @@ test("bundleWindowsCrt fails closed with throw before copy/swap when required DL
       writeFileSync(join(oldDir, dll), "old-dll-bytes");
     }
 
-    const env = { VC_REDIST_X64_DIR: oldDir };
+    const env = makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: oldDir });
     const readFileVersion = () => [14, 29, 27139, 5]; // msvcp140 < 14.40: std::mutex ABI crash risk
 
     // Must throw fail-closed BEFORE any copy or staging occurs
@@ -1074,7 +1101,7 @@ test("bundleWindowsCrt fails closed with throw before copy/swap when required DL
       for (const dll of REQUIRED_WIN32_CRT_DLLS) {
         writeFileSync(join(validDir, dll), `valid-${dll}`);
       }
-      const validEnv = { VC_REDIST_X64_DIR: validDir };
+      const validEnv = makeIsolatedCrtEnv(emptyDir, { VC_REDIST_X64_DIR: validDir });
       const validReadFileVersion = () => [14, 44, 35111, 0];
 
       const bundled = bundleWindowsCrt(resources, "win32-x64-msvc", {
@@ -1101,6 +1128,7 @@ test("bundleWindowsCrt fails closed with throw before copy/swap when required DL
   } finally {
     rmSync(tmp, { recursive: true, force: true });
     rmSync(oldDir, { recursive: true, force: true });
+    rmSync(emptyDir, { recursive: true, force: true });
   }
 });
 

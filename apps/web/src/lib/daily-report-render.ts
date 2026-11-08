@@ -23,6 +23,7 @@ import { loadFontBytes } from "./pdf-font";
 import {
   PAGE_WIDTH,
   PAGE_HEIGHT,
+  USABLE_WIDTH,
   COLORS,
   buildReportLayout,
   buildTradeReportLayout,
@@ -179,12 +180,58 @@ async function fetchAttachmentImage(
   return new Uint8Array(buf);
 }
 
+/** Target print density for embedded report images. */
+export const REPORT_IMAGE_DPI = 200;
+/** Largest box (in PDF points) an image can be drawn in: usable page width by the tallest screenshot area. */
+const IMAGE_BOX_PT = { width: USABLE_WIDTH, height: 700 };
+const IMAGE_BOX_PX = {
+  width: Math.round((IMAGE_BOX_PT.width * REPORT_IMAGE_DPI) / 72),
+  height: Math.round((IMAGE_BOX_PT.height * REPORT_IMAGE_DPI) / 72),
+};
+const REPORT_JPEG_QUALITY = 0.85;
+
+/** Aspect-fit the image into the ~200 DPI pixel box of the page; never upscales. */
+export function fitImageSize(width: number, height: number): { width: number; height: number } {
+  if (!(width > 0) || !(height > 0)) return { width, height };
+  const scale = Math.min(IMAGE_BOX_PX.width / width, IMAGE_BOX_PX.height / height, 1);
+  if (scale >= 1) return { width, height };
+  return {
+    width: Math.max(1, Math.round(width * scale)),
+    height: Math.max(1, Math.round(height * scale)),
+  };
+}
+
+/** JPEG only for fully opaque images where it is actually smaller than the lossless PNG. */
+export function chooseImageEncoding(opts: {
+  hasAlpha: boolean;
+  pngSize: number;
+  jpegSize: number | null;
+}): "png" | "jpeg" {
+  if (opts.hasAlpha || opts.jpegSize === null) return "png";
+  return opts.jpegSize < opts.pngSize ? "jpeg" : "png";
+}
+
+function canvasHasAlpha(ctx: CanvasRenderingContext2D, w: number, h: number): boolean {
+  try {
+    const data = ctx.getImageData(0, 0, w, h).data;
+    for (let i = 3; i < data.length; i += 4) {
+      if (data[i]! < 255) return true;
+    }
+    return false;
+  } catch {
+    // Unreadable canvas: stay lossless.
+    return true;
+  }
+}
+
 /**
  * Normalizes image bytes and decodes EXIF orientation consistently with browser gallery.
  * In a browser with Canvas/createImageBitmap, the decoded bitmap is auto-oriented,
  * preserving natural upright aspect ratio and crisp readability.
  */
 async function normalizeImage(rawBytes: Uint8Array, mime: string): Promise<NormalizedImage> {
+  // width/height describe the (possibly downscaled) embedded raster; originalWidth/originalHeight
+  // carry the uploaded image's oriented pixel size for captions.
   // Real browser environment with native createImageBitmap support
   if (
     typeof window !== "undefined" &&
@@ -196,18 +243,27 @@ async function normalizeImage(rawBytes: Uint8Array, mime: string): Promise<Norma
     let h = 600;
     let canvas: HTMLCanvasElement | null = null;
     let bitmap: ImageBitmap | null = null;
+    let hasAlpha = false;
+    let origW = w;
+    let origH = h;
 
     try {
       // Modern browser auto-orients based on EXIF tag
       bitmap = await createImageBitmap(blob, { imageOrientation: "from-image" });
-      w = bitmap.width;
-      h = bitmap.height;
+      const size = fitImageSize(bitmap.width, bitmap.height);
+      origW = bitmap.width;
+      origH = bitmap.height;
+      w = size.width;
+      h = size.height;
       canvas = document.createElement("canvas");
       canvas.width = w;
       canvas.height = h;
       const ctx = canvas.getContext("2d");
       if (ctx) {
-        ctx.drawImage(bitmap, 0, 0);
+        ctx.imageSmoothingEnabled = true;
+        ctx.imageSmoothingQuality = "high";
+        ctx.drawImage(bitmap, 0, 0, w, h);
+        hasAlpha = canvasHasAlpha(ctx, w, h);
       }
     } catch (err) {
       throw new Error(
@@ -220,14 +276,34 @@ async function normalizeImage(rawBytes: Uint8Array, mime: string): Promise<Norma
     }
 
     if (canvas) {
-      const outBlob = await new Promise<Blob | null>((resolve) =>
+      const pngBlob = await new Promise<Blob | null>((resolve) =>
         canvas.toBlob(resolve, "image/png"),
       );
+      let jpegBlob: Blob | null = null;
+      if (pngBlob && !hasAlpha) {
+        jpegBlob = await new Promise<Blob | null>((resolve) =>
+          canvas.toBlob(resolve, "image/jpeg", REPORT_JPEG_QUALITY),
+        );
+      }
       canvas.width = 0;
       canvas.height = 0;
-      if (outBlob) {
+      if (pngBlob) {
+        const choice = chooseImageEncoding({
+          hasAlpha,
+          pngSize: pngBlob.size,
+          // Some engines silently fall back to PNG when JPEG is unsupported.
+          jpegSize: jpegBlob && jpegBlob.type === "image/jpeg" ? jpegBlob.size : null,
+        });
+        const outBlob = choice === "jpeg" && jpegBlob ? jpegBlob : pngBlob;
         const outBytes = await blobToUint8Array(outBlob);
-        return { bytes: outBytes, mime: "image/png", width: w, height: h };
+        return {
+          bytes: outBytes,
+          mime: choice === "jpeg" && jpegBlob ? "image/jpeg" : "image/png",
+          width: w,
+          height: h,
+          originalWidth: origW,
+          originalHeight: origH,
+        } as NormalizedImage;
       }
       throw new Error(`Failed to export normalized image to PNG (${mime})`);
     }
@@ -599,7 +675,10 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
           await this.drawTextInPdf(pdfPage, pdfDoc, font, supportedChars, item);
         } else if (item.type === "image") {
           try {
-            const img = await pdfDoc.embedPng(item.bytes);
+            const img =
+              item.mime === "image/jpeg"
+                ? await pdfDoc.embedJpg(item.bytes)
+                : await pdfDoc.embedPng(item.bytes);
             const pdfY = PAGE_HEIGHT - item.y - item.h;
             pdfPage.drawImage(img, {
               x: item.x,

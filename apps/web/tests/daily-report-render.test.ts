@@ -10,6 +10,8 @@ import {
   prepareDailyReport,
   prepareTradeReport,
   type DailyReportPage,
+  fitImageSize,
+  chooseImageEncoding,
 } from "../src/lib/daily-report-render";
 import {
   PAGE_WIDTH,
@@ -1455,5 +1457,26 @@ describe("Trade report export (single trade, same design as the daily trade page
     expect(texts).toContain("OPEN");
     expect(texts.some((t: string) => t.includes("– open"))).toBe(true);
     prepared.dispose();
+  });
+});
+
+describe("report image downscaling", () => {
+  it("caps retina screenshots at ~200 DPI of the page box and keeps aspect", () => {
+    const out = fitImageSize(2880, 1800);
+    expect(out.width).toBe(1431);
+    expect(out.height).toBe(Math.round((1800 * 1431) / 2880));
+  });
+  it("caps very tall images by height and never upscales", () => {
+    const tall = fitImageSize(1000, 6000);
+    expect(tall.height).toBeLessThanOrEqual(1945);
+    expect(tall.width).toBeLessThan(1000);
+    expect(fitImageSize(800, 600)).toEqual({ width: 800, height: 600 });
+    expect(fitImageSize(1431, 900)).toEqual({ width: 1431, height: 900 });
+  });
+  it("chooses JPEG only for opaque images where it is smaller", () => {
+    expect(chooseImageEncoding({ hasAlpha: false, pngSize: 1000, jpegSize: 400 })).toBe("jpeg");
+    expect(chooseImageEncoding({ hasAlpha: false, pngSize: 400, jpegSize: 1000 })).toBe("png");
+    expect(chooseImageEncoding({ hasAlpha: true, pngSize: 1000, jpegSize: 100 })).toBe("png");
+    expect(chooseImageEncoding({ hasAlpha: false, pngSize: 1000, jpegSize: null })).toBe("png");
   });
 });

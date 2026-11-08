@@ -353,7 +353,8 @@ jobs:
             dist/*.AppImage
             dist/*.deb
             dist/*.blockmap
-            dist/*.yml
+            dist/latest.yml
+            dist/latest-linux.yml
             dist/*.xml
           if-no-files-found: error
 
@@ -534,7 +535,8 @@ jobs:
             dist/*.AppImage \
             dist/*.deb \
             dist/*.blockmap \
-            dist/*.yml \
+            dist/latest.yml \
+            dist/latest-linux.yml \
             dist/*.xml \
             dist/SHA256SUMS.txt \
             --title "Sumi v${VERSION}" \

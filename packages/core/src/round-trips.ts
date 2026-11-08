@@ -43,6 +43,21 @@ const sum = (values: number[]): number => values.reduce((total, v) => total + v,
 const openQuantityOf = (cycle: OpenCycle): number => sum(cycle.lots.map((lot) => lot.quantity));
 
 /**
+ * Exactly Math.min(cap, openQuantityOf(cycle)) without summing lots that cannot
+ * change the answer. Lot quantities are positive and the sum is a left fold, so
+ * the running total only grows: once it reaches `cap` the full sum would too.
+ * Otherwise every lot was added in order, which is the same fold as openQuantityOf.
+ */
+const openQuantityCapped = (cycle: OpenCycle, cap: number): number => {
+  let total = 0;
+  for (const lot of cycle.lots) {
+    total += lot.quantity;
+    if (total >= cap) return cap;
+  }
+  return total;
+};
+
+/**
  * Consume `quantity` from the cycle's open lots under the given method and
  * return the total entry notional matched (entry price × matched quantity).
  */
@@ -138,10 +153,27 @@ const importOrderOf = (execution: Execution): number =>
  * a defined value at each level, so the comparator is transitive and the result
  * never depends on the input order.
  */
-const compareExecutions = (a: Execution, b: Execution): number =>
-  compareNumbers(Date.parse(a.executedAt), Date.parse(b.executedAt)) ||
-  compareNumbers(importOrderOf(a), importOrderOf(b)) ||
-  a.id.localeCompare(b.id);
+interface SortKey {
+  execution: Execution;
+  time: number;
+  order: number;
+}
+
+const compareSortKeys = (a: SortKey, b: SortKey): number =>
+  compareNumbers(a.time, b.time) ||
+  compareNumbers(a.order, b.order) ||
+  a.execution.id.localeCompare(b.execution.id);
+
+/** Sort executions into the total order, parsing each timestamp once. */
+const sortExecutions = (executions: Execution[]): Execution[] =>
+  executions
+    .map((execution) => ({
+      execution,
+      time: Date.parse(execution.executedAt),
+      order: importOrderOf(execution),
+    }))
+    .sort(compareSortKeys)
+    .map((key) => key.execution);
 
 /**
  * Build round trips (position cycles, flat → flat) from raw executions.
@@ -174,16 +206,16 @@ export const buildRoundTrips = (
   }
 
   for (const group of groups.values()) {
-    group.sort(compareExecutions);
-    const { accountId, symbol } = group[0]!;
-    const importGroup = group[0]!.importMetadata?.group;
+    const ordered = sortExecutions(group);
+    const { accountId, symbol } = ordered[0]!;
+    const importGroup = ordered[0]!.importMetadata?.group;
     const contractMultiplier = options.multipliers?.[symbol];
     const multiplier = contractMultiplier ?? 1;
-    const assetClass = group.find((e) => e.assetClass)?.assetClass;
+    const assetClass = ordered.find((e) => e.assetClass)?.assetClass;
 
     let cycle: OpenCycle | null = null;
 
-    for (const execution of group) {
+    for (const execution of ordered) {
       let signedQty = execution.side === "buy" ? execution.quantity : -execution.quantity;
       let feeRemaining = execution.fee;
       let counted = false;
@@ -229,8 +261,7 @@ export const buildRoundTrips = (
           feeRemaining = 0;
           signedQty = 0;
         } else {
-          const openQty = openQuantityOf(cycle);
-          const exitQty = Math.min(Math.abs(signedQty), openQty);
+          const exitQty = openQuantityCapped(cycle, Math.abs(signedQty));
           const matchedNotional = consumeLots(cycle, exitQty, method);
           const exitNotional = exitQty * execution.price;
           const chunkGross =
@@ -250,7 +281,8 @@ export const buildRoundTrips = (
 
           signedQty += cycle.direction === "long" ? exitQty : -exitQty;
 
-          if (openQuantityOf(cycle) <= FLAT_EPS) {
+          // Every remaining lot is above FLAT_EPS, so the cycle is flat exactly when none remain.
+          if (cycle.lots.length === 0) {
             trips.push(
               finalizeCycle(
                 cycle,
@@ -292,8 +324,9 @@ export const buildRoundTrips = (
     }
   }
 
-  trips.sort(
-    (a, b) => Date.parse(a.openedAt) - Date.parse(b.openedAt) || a.key.localeCompare(b.key),
+  const openedTimes = new Map<RoundTrip, number>(
+    trips.map((trip) => [trip, Date.parse(trip.openedAt)]),
   );
+  trips.sort((a, b) => openedTimes.get(a)! - openedTimes.get(b)! || a.key.localeCompare(b.key));
   return trips;
 };

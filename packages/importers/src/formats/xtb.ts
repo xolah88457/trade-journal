@@ -1,5 +1,5 @@
 import type { AssetClass } from "@luxalgo/journal-core";
-import { headerKey, hasHeaders, parseCsv, pick, toRecords, type Row } from "../csv";
+import { headerKey, hasHeaders, parseCsv, pick, scanCsv, toRecords, type Row } from "../csv";
 import { parseTimestamp } from "../dates";
 import { parseMoney, parseQuantity } from "../numbers";
 import { readXlsx, type XlsxSheet } from "../xlsx";
@@ -147,7 +147,12 @@ const splitSections = (table: string[][]): { closed: string[][]; open: string[][
 export const xtb: ImportFormat = {
   id: "xtb",
   label: "XTB (account statement)",
-  detect: (_headers, content) => headerIndex(parseCsv(content)) !== -1,
+  detect: (_headers, content) => {
+    // Stops at the first header row instead of parsing the whole statement.
+    let found = false;
+    scanCsv(content, (row) => (found = hasHeaders(row, CLOSED_HEADERS)));
+    return found;
+  },
   parse: (content, _options: ImportOptions): ParsedImport => {
     const table = parseCsv(content);
     const { closed, open } = splitSections(table);

@@ -1,4 +1,4 @@
-import { parseCsv } from "./csv";
+import { parseCsvHeader } from "./csv";
 import { ibkr } from "./formats/ibkr";
 import { metatrader } from "./formats/metatrader";
 import {
@@ -55,7 +55,7 @@ interface Route {
  * documented signature matched: offer the column mapper.
  */
 const route = (content: string, options: ImportOptions): Route | null => {
-  const headers = parseCsv(content)[0] ?? [];
+  const headers = parseCsvHeader(content);
   const legacyFormat = LEGACY_FORMATS.find((candidate) => candidate.detect(headers, content));
   const legacy = legacyFormat ? legacyFormat.parse(content, options) : undefined;
   if (legacyFormat && legacy && (legacy.executions.length || legacy.errors?.length))

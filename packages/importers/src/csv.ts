@@ -15,12 +15,20 @@ export const detectDelimiter = (line: string): string => {
   return best;
 };
 
-export const parseCsv = (content: string, delimiter?: string): string[][] => {
+/**
+ * Walk the non-blank records in order, stopping as soon as `visit` returns true.
+ * Quoting, BOMs and CR/LF/CRLF endings follow parseCsv exactly; the rest of the
+ * text is never scanned once the caller has what it needs.
+ */
+export const scanCsv = (
+  content: string,
+  visit: (row: string[]) => boolean | void,
+  delimiter?: string,
+): void => {
   const text = content.replace(/^﻿/, "");
   const firstLine = text.slice(0, text.indexOf("\n") === -1 ? text.length : text.indexOf("\n"));
   const sep = delimiter ?? detectDelimiter(firstLine);
 
-  const rows: string[][] = [];
   let row: string[] = [];
   let field = "";
   let inQuotes = false;
@@ -47,15 +55,34 @@ export const parseCsv = (content: string, delimiter?: string): string[][] => {
       if (char === "\r" && text[i + 1] === "\n") i++;
       row.push(field);
       field = "";
-      if (row.some((f) => f.trim() !== "")) rows.push(row);
+      if (row.some((f) => f.trim() !== "") && visit(row) === true) return;
       row = [];
     } else {
       field += char;
     }
   }
   row.push(field);
-  if (row.some((f) => f.trim() !== "")) rows.push(row);
+  if (row.some((f) => f.trim() !== "")) visit(row);
+};
+
+export const parseCsv = (content: string, delimiter?: string): string[][] => {
+  const rows: string[][] = [];
+  scanCsv(content, (row) => void rows.push(row), delimiter);
   return rows;
+};
+
+/** The first non-blank record (the header row) without parsing the rest of the file. */
+export const parseCsvHeader = (content: string, delimiter?: string): string[] => {
+  let header: string[] = [];
+  scanCsv(
+    content,
+    (row) => {
+      header = row;
+      return true;
+    },
+    delimiter,
+  );
+  return header;
 };
 
 /** Case/space/punctuation-insensitive header key: "Fill Price ($)" → "fillprice". */

@@ -4,11 +4,34 @@ import { db, executions, trades, accounts } from "@/db";
 import { getMultipliers, getJournalDefaults } from "./settings";
 import { defaultRisk } from "@/lib/journal-defaults";
 
+/** Computed trade columns; the annotation columns are never part of this set. */
+const COMPUTED_COLUMNS = [
+  "accountId",
+  "symbol",
+  "assetClass",
+  "direction",
+  "status",
+  "openedAt",
+  "closedAt",
+  "quantity",
+  "openQuantity",
+  "avgEntry",
+  "avgExit",
+  "grossPnl",
+  "fees",
+  "netPnl",
+  "executionCount",
+  "executionIdsJson",
+  "exitsJson",
+  "durationMs",
+] as const satisfies readonly (keyof typeof trades.$inferSelect)[];
+
 /**
  * Rebuild the materialized round trips for an account from its executions.
  * Computed columns are overwritten; annotation columns are untouched because
- * rows are upserted by their rebuild-stable key. Trades whose key no longer
- * exists (their executions were deleted) are removed.
+ * rows are upserted by their rebuild-stable key. Rows whose computed columns
+ * already hold the computed values are not written at all. Trades whose key no
+ * longer exists (their executions were deleted) are removed.
  */
 export const rebuildAccount = (accountId: string): void => {
   const account = db.select().from(accounts).where(eq(accounts.id, accountId)).get();
@@ -33,14 +56,35 @@ export const rebuildAccount = (accountId: string): void => {
     method: account.profitCalcMethod as ProfitCalcMethod,
     multipliers: getMultipliers(),
   });
-  const obsolete = new Set(
+  const existing = new Map(
     db
-      .select({ key: trades.key })
+      .select({
+        key: trades.key,
+        accountId: trades.accountId,
+        symbol: trades.symbol,
+        assetClass: trades.assetClass,
+        direction: trades.direction,
+        status: trades.status,
+        openedAt: trades.openedAt,
+        closedAt: trades.closedAt,
+        quantity: trades.quantity,
+        openQuantity: trades.openQuantity,
+        avgEntry: trades.avgEntry,
+        avgExit: trades.avgExit,
+        grossPnl: trades.grossPnl,
+        fees: trades.fees,
+        netPnl: trades.netPnl,
+        executionCount: trades.executionCount,
+        executionIdsJson: trades.executionIdsJson,
+        exitsJson: trades.exitsJson,
+        durationMs: trades.durationMs,
+      })
       .from(trades)
       .where(eq(trades.accountId, accountId))
       .all()
-      .map((row) => row.key),
+      .map((row) => [row.key, row] as const),
   );
+  const obsolete = new Set(existing.keys());
   const defaults = getJournalDefaults();
 
   db.transaction((tx) => {
@@ -66,6 +110,10 @@ export const rebuildAccount = (accountId: string): void => {
         exitsJson: JSON.stringify(trip.exits),
         durationMs: trip.durationMs ?? null,
       };
+      const stored = existing.get(trip.key);
+      // Object.is keeps -0 and NaN differences visible, so only truly equal rows are skipped.
+      if (stored && COMPUTED_COLUMNS.every((column) => Object.is(stored[column], computed[column])))
+        continue;
       tx.insert(trades)
         .values({
           key: trip.key,

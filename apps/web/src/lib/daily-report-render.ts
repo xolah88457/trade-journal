@@ -1,5 +1,14 @@
 import type { ExportFile } from "./export-review";
-import { PDFDocument, rgb } from "pdf-lib";
+import {
+  PDFDocument,
+  TextRenderingMode,
+  popGraphicsState,
+  pushGraphicsState,
+  rgb,
+  setLineWidth,
+  setStrokingRgbColor,
+  setTextRenderingMode,
+} from "pdf-lib";
 import type {
   DailyReport,
   DailyReportTrade,
@@ -74,6 +83,35 @@ function hexToRgb(hex: string): { r: number; g: number; b: number } {
     g: ((num >> 8) & 255) / 255,
     b: (num & 255) / 255,
   };
+}
+
+/** pdf-lib drawing options for an optional fill and optional stroke (never a default black stroke). */
+function shapeOptions(fill?: string, stroke?: string, lineWidth = 0.75) {
+  const o: {
+    color?: ReturnType<typeof rgb>;
+    borderColor?: ReturnType<typeof rgb>;
+    borderWidth?: number;
+  } = {};
+  if (fill) {
+    const c = hexToRgb(fill);
+    o.color = rgb(c.r, c.g, c.b);
+  }
+  if (stroke) {
+    const c = hexToRgb(stroke);
+    o.borderColor = rgb(c.r, c.g, c.b);
+    o.borderWidth = lineWidth;
+  }
+  return o;
+}
+
+/** SVG path (y down) of a rounded rectangle, matching canvas roundRect. */
+function roundedRectPath(x: number, y: number, w: number, h: number, radius: number): string {
+  const r = Math.min(radius, w / 2, h / 2);
+  return (
+    `M${x + r} ${y} H${x + w - r} A${r} ${r} 0 0 1 ${x + w} ${y + r} V${y + h - r} ` +
+    `A${r} ${r} 0 0 1 ${x + w - r} ${y + h} H${x + r} A${r} ${r} 0 0 1 ${x} ${y + h - r} ` +
+    `V${y + r} A${r} ${r} 0 0 1 ${x + r} ${y} Z`
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -409,27 +447,20 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
         ctx.textAlign = item.align ?? "left";
         ctx.textBaseline = "top";
         ctx.fillText(item.text, item.x, item.y);
-      } else if (item.type === "badge") {
-        ctx.fillStyle = item.bgColor;
-        ctx.font = `bold ${item.size}px "Noto Sans", sans-serif`;
-        const textW = ctx.measureText(item.text).width;
-        const padX = item.paddingX ?? 4;
-        const padY = item.paddingY ?? 2;
-        const bw = textW + padX * 2;
-        const bh = item.size + padY * 2 + 2;
-
-        ctx.fillRect(item.x, item.y, bw, bh);
-        if (item.borderColor) {
-          ctx.strokeStyle = item.borderColor;
-          ctx.lineWidth = 0.5;
-          ctx.strokeRect(item.x, item.y, bw, bh);
+      } else if (item.type === "path") {
+        ctx.beginPath();
+        item.points.forEach(([px, py], i) => (i ? ctx.lineTo(px, py) : ctx.moveTo(px, py)));
+        if (item.closed) ctx.closePath();
+        if (item.fill) {
+          ctx.fillStyle = item.fill;
+          ctx.fill();
         }
-        ctx.fillStyle = item.color;
-        ctx.textAlign = "left";
-        ctx.textBaseline = "top";
-        ctx.fillText(item.text, item.x + padX, item.y + padY);
-      } else if (item.type === "chart") {
-        this.renderChartOnCanvas(ctx, item);
+        if (item.stroke) {
+          ctx.strokeStyle = item.stroke;
+          ctx.lineWidth = item.lineWidth ?? 1;
+          ctx.lineJoin = "round";
+          ctx.stroke();
+        }
       } else if (item.type === "image") {
         if (
           typeof Image !== "undefined" &&
@@ -466,107 +497,6 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
         "image/png",
       );
     });
-  }
-
-  private renderChartOnCanvas(
-    ctx: CanvasRenderingContext2D,
-    chart: LayoutItem & { type: "chart" },
-  ): void {
-    const { x, y, w, h, points, currency = "USD" } = chart;
-
-    // Card background
-    ctx.fillStyle = COLORS.cardBg;
-    ctx.fillRect(x, y, w, h);
-    ctx.strokeStyle = COLORS.cardBorder;
-    ctx.lineWidth = 0.75;
-    ctx.strokeRect(x, y, w, h);
-
-    // Title
-    ctx.fillStyle = COLORS.navyBrand;
-    ctx.font = "bold 8px 'Noto Sans', sans-serif";
-    ctx.textAlign = "left";
-    ctx.textBaseline = "top";
-    ctx.fillText(chart.title || "Equity Curve", x + 6, y + 4);
-
-    if (!points || points.length === 0) {
-      ctx.fillStyle = COLORS.textMuted;
-      ctx.font = "8px 'Noto Sans', sans-serif";
-      ctx.fillText("No curve points recorded.", x + 8, y + 20);
-      return;
-    }
-
-    const minPnl = Math.min(0, ...points.map((p) => p.cumNetPnl));
-    const maxPnl = Math.max(0, ...points.map((p) => p.cumNetPnl));
-    const range = maxPnl - minPnl || 1;
-
-    const left = x + 44;
-    const right = x + w - 12;
-    const top = y + 18;
-    const bottom = y + h - 14;
-    const innerW = right - left;
-    const innerH = bottom - top;
-
-    const zeroY = bottom - ((0 - minPnl) / range) * innerH;
-
-    // Zero baseline
-    ctx.strokeStyle = COLORS.baseline;
-    ctx.lineWidth = 0.75;
-    if (typeof ctx.setLineDash === "function") ctx.setLineDash([3, 2]);
-    ctx.beginPath();
-    ctx.moveTo(left, zeroY);
-    ctx.lineTo(right, zeroY);
-    ctx.stroke();
-    if (typeof ctx.setLineDash === "function") ctx.setLineDash([]);
-
-    // Axes labels
-    ctx.fillStyle = COLORS.textMuted;
-    ctx.font = "6.5px 'Noto Sans', sans-serif";
-    ctx.textAlign = "right";
-    ctx.fillText("0", left - 4, zeroY - 3);
-    ctx.fillText(`+${maxPnl.toFixed(0)}`, left - 4, top - 3);
-    ctx.fillText(`${minPnl.toFixed(0)}`, left - 4, bottom - 3);
-
-    // Plot line
-    const coords: { cx: number; cy: number }[] = points.map((p, idx) => {
-      const cx = left + (idx / Math.max(1, points.length - 1)) * innerW;
-      const cy = bottom - ((p.cumNetPnl - minPnl) / range) * innerH;
-      return { cx, cy };
-    });
-
-    const finalVal = points[points.length - 1]?.cumNetPnl ?? 0;
-    const lineColor = finalVal >= 0 ? COLORS.profitGreen : COLORS.lossRed;
-
-    // Draw shaded area
-    ctx.fillStyle = finalVal >= 0 ? "rgba(12, 163, 12, 0.12)" : "rgba(195, 53, 53, 0.12)";
-    ctx.beginPath();
-    ctx.moveTo(coords[0]!.cx, zeroY);
-    coords.forEach((c) => ctx.lineTo(c.cx, c.cy));
-    ctx.lineTo(coords[coords.length - 1]!.cx, zeroY);
-    ctx.closePath();
-    ctx.fill();
-
-    // Draw curve
-    ctx.strokeStyle = lineColor;
-    ctx.lineWidth = 1.25;
-    ctx.beginPath();
-    ctx.moveTo(coords[0]!.cx, coords[0]!.cy);
-    for (let i = 1; i < coords.length; i++) {
-      ctx.lineTo(coords[i]!.cx, coords[i]!.cy);
-    }
-    ctx.stroke();
-
-    // Final point marker
-    const last = coords[coords.length - 1]!;
-    ctx.fillStyle = lineColor;
-    ctx.beginPath();
-    ctx.arc(last.cx, last.cy, 2.5, 0, Math.PI * 2);
-    ctx.fill();
-
-    // End label
-    const curLabel = currency === "MIXED" ? "(Mixed)" : currency;
-    ctx.font = "bold 7px 'Noto Sans', sans-serif";
-    ctx.textAlign = "right";
-    ctx.fillText(`${finalVal > 0 ? "+" : ""}${finalVal.toFixed(2)} ${curLabel}`, right, top - 4);
   }
 
   private resolveSelectedPageLayouts(pageIds?: string[]): ReportPageLayout[] {
@@ -617,61 +547,43 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
 
       for (const item of layout.items) {
         if (item.type === "rect") {
-          const pdfY = PAGE_HEIGHT - item.y - item.h;
-          const fill = item.fill ? hexToRgb(item.fill) : undefined;
-          const stroke = item.stroke ? hexToRgb(item.stroke) : undefined;
-          pdfPage.drawRectangle({
-            x: item.x,
-            y: pdfY,
-            width: item.w,
-            height: item.h,
-            color: fill ? rgb(fill.r, fill.g, fill.b) : undefined,
-            borderColor: stroke ? rgb(stroke.r, stroke.g, stroke.b) : undefined,
-            borderWidth: item.lineWidth ?? 0.75,
-          });
+          const shape = shapeOptions(item.fill, item.stroke, item.lineWidth);
+          if (!("color" in shape) && !("borderColor" in shape)) continue;
+          if (item.radius && item.radius > 0) {
+            pdfPage.drawSvgPath(roundedRectPath(item.x, item.y, item.w, item.h, item.radius), {
+              x: 0,
+              y: PAGE_HEIGHT,
+              ...shape,
+            });
+          } else {
+            pdfPage.drawRectangle({
+              x: item.x,
+              y: PAGE_HEIGHT - item.y - item.h,
+              width: item.w,
+              height: item.h,
+              ...shape,
+            });
+          }
         } else if (item.type === "line") {
-          const pdfY1 = PAGE_HEIGHT - item.y1;
-          const pdfY2 = PAGE_HEIGHT - item.y2;
           const stroke = hexToRgb(item.stroke);
           pdfPage.drawLine({
-            start: { x: item.x1, y: pdfY1 },
-            end: { x: item.x2, y: pdfY2 },
+            start: { x: item.x1, y: PAGE_HEIGHT - item.y1 },
+            end: { x: item.x2, y: PAGE_HEIGHT - item.y2 },
             color: rgb(stroke.r, stroke.g, stroke.b),
-            thickness: item.lineWidth ?? 0.75,
+            thickness: item.lineWidth ?? 1,
+            dashArray: item.dash,
+          });
+        } else if (item.type === "path") {
+          const d =
+            item.points.map(([px, py], i) => `${i ? "L" : "M"}${px} ${py}`).join(" ") +
+            (item.closed ? " Z" : "");
+          pdfPage.drawSvgPath(d, {
+            x: 0,
+            y: PAGE_HEIGHT,
+            ...shapeOptions(item.fill, item.stroke, item.lineWidth),
           });
         } else if (item.type === "text") {
           await this.drawTextInPdf(pdfPage, pdfDoc, font, supportedChars, item);
-        } else if (item.type === "badge") {
-          // Badge background
-          const bg = hexToRgb(item.bgColor);
-          const border = item.borderColor ? hexToRgb(item.borderColor) : undefined;
-          const padX = item.paddingX ?? 4;
-          const padY = item.paddingY ?? 2;
-          const textW = item.text.length * item.size * 0.65;
-          const bw = textW + padX * 2;
-          const bh = item.size + padY * 2 + 2;
-          const pdfY = PAGE_HEIGHT - item.y - bh;
-
-          pdfPage.drawRectangle({
-            x: item.x,
-            y: pdfY,
-            width: bw,
-            height: bh,
-            color: rgb(bg.r, bg.g, bg.b),
-            borderColor: border ? rgb(border.r, border.g, border.b) : undefined,
-            borderWidth: border ? 0.5 : 0,
-          });
-
-          await this.drawTextInPdf(pdfPage, pdfDoc, font, supportedChars, {
-            x: item.x + padX,
-            y: item.y + padY + 1,
-            text: item.text,
-            size: item.size,
-            bold: true,
-            color: item.color,
-          });
-        } else if (item.type === "chart") {
-          this.drawChartInPdf(pdfPage, font, item);
         } else if (item.type === "image") {
           try {
             const img = await pdfDoc.embedPng(item.bytes);
@@ -753,6 +665,16 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
       const pdfY = PAGE_HEIGHT - item.y - item.size;
       const c = hexToRgb(item.color);
 
+      // Single regular font embedded: bold is synthesized with a same-colour stroke (fill + stroke
+      // text render mode), mirroring how canvas synthesizes bold from the one registered FontFace.
+      if (item.bold) {
+        pdfPage.pushOperators(
+          pushGraphicsState(),
+          setTextRenderingMode(TextRenderingMode.FillAndOutline),
+          setStrokingRgbColor(c.r, c.g, c.b),
+          setLineWidth(item.size * 0.035),
+        );
+      }
       pdfPage.drawText(item.text, {
         x,
         y: pdfY,
@@ -760,6 +682,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
         font,
         color: rgb(c.r, c.g, c.b),
       });
+      if (item.bold) pdfPage.pushOperators(popGraphicsState());
       return;
     }
 
@@ -780,135 +703,6 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
       y: pdfY,
       width: rendered.width,
       height: rendered.height,
-    });
-  }
-
-  private drawChartInPdf(pdfPage: any, font: any, chart: LayoutItem & { type: "chart" }): void {
-    const { x, y, w, h, points, currency = "USD" } = chart;
-
-    const pdfY = PAGE_HEIGHT - y - h;
-    const cardBg = hexToRgb(COLORS.cardBg);
-    const cardBorder = hexToRgb(COLORS.cardBorder);
-
-    // Box
-    pdfPage.drawRectangle({
-      x,
-      y: pdfY,
-      width: w,
-      height: h,
-      color: rgb(cardBg.r, cardBg.g, cardBg.b),
-      borderColor: rgb(cardBorder.r, cardBorder.g, cardBorder.b),
-      borderWidth: 0.75,
-    });
-
-    // Chart title
-    const navy = hexToRgb(COLORS.navyBrand);
-    pdfPage.drawText(chart.title || "Equity Curve", {
-      x: x + 6,
-      y: PAGE_HEIGHT - y - 10,
-      size: 7.5,
-      font,
-      color: rgb(navy.r, navy.g, navy.b),
-    });
-
-    if (!points || points.length === 0) {
-      const textMuted = hexToRgb(COLORS.textMuted);
-      pdfPage.drawText("No curve points recorded.", {
-        x: x + 8,
-        y: PAGE_HEIGHT - y - 24,
-        size: 7.5,
-        font,
-        color: rgb(textMuted.r, textMuted.g, textMuted.b),
-      });
-      return;
-    }
-
-    const minPnl = Math.min(0, ...points.map((p) => p.cumNetPnl));
-    const maxPnl = Math.max(0, ...points.map((p) => p.cumNetPnl));
-    const range = maxPnl - minPnl || 1;
-
-    const left = x + 44;
-    const right = x + w - 12;
-    const top = y + 18;
-    const bottom = y + h - 14;
-    const innerW = right - left;
-    const innerH = bottom - top;
-
-    const zeroY = bottom - ((0 - minPnl) / range) * innerH;
-    const baselinePdfY = PAGE_HEIGHT - zeroY;
-
-    // Zero baseline
-    const baseC = hexToRgb(COLORS.baseline);
-    pdfPage.drawLine({
-      start: { x: left, y: baselinePdfY },
-      end: { x: right, y: baselinePdfY },
-      color: rgb(baseC.r, baseC.g, baseC.b),
-      thickness: 0.75,
-    });
-
-    // Labels
-    const mutedC = hexToRgb(COLORS.textMuted);
-    pdfPage.drawText("0", {
-      x: x + 6,
-      y: baselinePdfY - 2.5,
-      size: 6.5,
-      font,
-      color: rgb(mutedC.r, mutedC.g, mutedC.b),
-    });
-    pdfPage.drawText(`+${maxPnl.toFixed(0)}`, {
-      x: x + 6,
-      y: PAGE_HEIGHT - top - 3,
-      size: 6.5,
-      font,
-      color: rgb(mutedC.r, mutedC.g, mutedC.b),
-    });
-    pdfPage.drawText(`${minPnl.toFixed(0)}`, {
-      x: x + 6,
-      y: PAGE_HEIGHT - bottom - 3,
-      size: 6.5,
-      font,
-      color: rgb(mutedC.r, mutedC.g, mutedC.b),
-    });
-
-    // Plot segments
-    const coords = points.map((p, idx) => ({
-      cx: left + (idx / Math.max(1, points.length - 1)) * innerW,
-      cy: PAGE_HEIGHT - (bottom - ((p.cumNetPnl - minPnl) / range) * innerH),
-    }));
-
-    const finalVal = points[points.length - 1]?.cumNetPnl ?? 0;
-    const lineC = hexToRgb(finalVal >= 0 ? COLORS.profitGreen : COLORS.lossRed);
-
-    for (let i = 0; i < coords.length - 1; i++) {
-      const p1 = coords[i]!;
-      const p2 = coords[i + 1]!;
-      pdfPage.drawLine({
-        start: { x: p1.cx, y: p1.cy },
-        end: { x: p2.cx, y: p2.cy },
-        color: rgb(lineC.r, lineC.g, lineC.b),
-        thickness: 1.25,
-      });
-    }
-
-    // Endpoint dot (drawn even for a 1-point curve to match Canvas)
-    const last = coords[coords.length - 1]!;
-    pdfPage.drawCircle({
-      x: last.cx,
-      y: last.cy,
-      size: 2.5,
-      color: rgb(lineC.r, lineC.g, lineC.b),
-    });
-
-    // Final label
-    const curLabel = currency === "MIXED" ? "(Mixed)" : currency;
-    const endText = `${finalVal > 0 ? "+" : ""}${finalVal.toFixed(2)} ${curLabel}`;
-    const endW = font.widthOfTextAtSize(endText, 7);
-    pdfPage.drawText(endText, {
-      x: right - endW,
-      y: PAGE_HEIGHT - top - 4,
-      size: 7,
-      font,
-      color: rgb(lineC.r, lineC.g, lineC.b),
     });
   }
 

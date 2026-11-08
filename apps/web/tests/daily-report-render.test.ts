@@ -23,9 +23,10 @@ function extractPdfPageTexts(doc: PDFDocument): string[] {
     if (obj && typeof obj.getContents === "function") {
       try {
         const text = new TextDecoder().decode(unzlibSync(obj.getContents()));
-        const matches = text.matchAll(/<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g);
-        for (const m of matches) {
-          cmap.set(m[1]!.toLowerCase(), String.fromCodePoint(parseInt(m[2]!, 16)));
+        // bfchar entries: <glyph> <UTF-16 units>; ligatures map to several code units
+        for (const m of text.matchAll(/<([0-9a-fA-F]+)>\s+<([0-9a-fA-F]+)>/g)) {
+          const units = m[2]!.match(/.{4}/g) ?? [];
+          cmap.set(m[1]!.toLowerCase(), String.fromCharCode(...units.map((u) => parseInt(u, 16))));
         }
       } catch {
         // ignore non-zlib streams
@@ -483,16 +484,16 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
     const p1Texts = trade2Layouts[0].items
       .filter((i: any) => i.type === "text")
       .map((i: any) => i.text);
-    expect(p1Texts).toContain("Timestamp");
-    expect(p1Texts).toContain("Quantity");
+    expect(p1Texts).toContain("Time");
+    expect(p1Texts).toContain("Qty");
     expect(p1Texts).toContain("Price");
 
     // Second page of trade 2 (continuation) ALSO has repeated table header
     const p2Texts = trade2Layouts[1].items
       .filter((i: any) => i.type === "text")
       .map((i: any) => i.text);
-    expect(p2Texts).toContain("Timestamp");
-    expect(p2Texts).toContain("Quantity");
+    expect(p2Texts).toContain("Time");
+    expect(p2Texts).toContain("Qty");
     expect(p2Texts).toContain("Price");
   });
 
@@ -505,20 +506,19 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
     const esPage = prepared.pages.find((p) => p.tradeKey === "trade-es-1");
     expect(esPage).toBeDefined();
 
-    const layout = (prepared as any).pageLayouts.find((p: any) => p.tradeKey === "trade-es-1");
-    const texts = layout.items.filter((i: any) => i.type === "text").map((i: any) => i.text);
+    const texts = (prepared as any).pageLayouts
+      .filter((p: any) => p.tradeKey === "trade-es-1")
+      .flatMap((p: any) => p.items.filter((i: any) => i.type === "text").map((i: any) => i.text));
 
     // Verify rules, stop/target, and rating are rendered
     expect(texts.some((t: string) => t.includes("Wait for 20 EMA touch"))).toBe(true);
     expect(texts.some((t: string) => t.includes("Check higher timeframe trend"))).toBe(true);
     expect(texts.some((t: string) => t.includes("Do not enter before candle closes"))).toBe(true);
-    expect(texts.some((t: string) => t.includes("Stop Loss: 5,415.5"))).toBe(true);
-    expect(texts.some((t: string) => t.includes("Profit Target: 5,430"))).toBe(true);
-    expect(texts.some((t: string) => t.includes("Target Outcome: Stop Loss Hit"))).toBe(true);
-    expect(texts.some((t: string) => t.includes("Rating: ★★★★☆ (4/5)"))).toBe(true);
-    expect(texts.some((t: string) => t.includes("AI Review · anthropic (claude-3-5-sonnet)"))).toBe(
-      true,
-    );
+    expect(texts.some((t: string) => t === "5,415.50")).toBe(true);
+    expect(texts.some((t: string) => t === "5,430.00")).toBe(true);
+    expect(texts.some((t: string) => t === "Stop hit")).toBe(true);
+    expect(texts.some((t: string) => t.includes("Rating 4/5"))).toBe(true);
+    expect(texts.some((t: string) => t.includes("anthropic · claude-3-5-sonnet"))).toBe(true);
   });
 
   it("renders EVERY saved AI review in full without truncation", async () => {
@@ -550,8 +550,9 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
     const prepared = await prepareDailyReport(report, {
       imageLoader: async () => TEST_PNG,
     });
-    const layout = (prepared as any).pageLayouts.find((p: any) => p.tradeKey === "trade-es-1");
-    const texts = layout.items.filter((i: any) => i.type === "text").map((i: any) => i.text);
+    const texts = (prepared as any).pageLayouts
+      .filter((p: any) => p.tradeKey === "trade-es-1")
+      .flatMap((p: any) => p.items.filter((i: any) => i.type === "text").map((i: any) => i.text));
 
     expect(texts.some((t: string) => t.includes("First review"))).toBe(true);
     expect(texts.some((t: string) => t.includes("Second review"))).toBe(true);
@@ -578,10 +579,9 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
     expect(screenshotForPdf).toBeUndefined();
 
     // Verify it is listed in the overview table
-    const overviewLayout = (prepared as any).pageLayouts[0];
-    const texts = overviewLayout.items
-      .filter((i: any) => i.type === "text")
-      .map((i: any) => i.text);
+    const texts = (prepared as any).pageLayouts
+      .filter((p: any) => p.kind === "daily")
+      .flatMap((p: any) => p.items.filter((i: any) => i.type === "text").map((i: any) => i.text));
     expect(texts.some((t: string) => t.includes("broker-statement-2026-09-02.pdf"))).toBe(true);
   });
 
@@ -649,9 +649,9 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
 
     expect(prepared.pages.length).toBeGreaterThanOrEqual(4);
     const p0 = prepared.pages[0]!; // Daily overview
-    const p1 = prepared.pages[1]!; // First screenshot
-    const p2 = prepared.pages[2]!; // Trade #1
-    const p3 = prepared.pages[3]!; // Second screenshot
+    const p1 = prepared.pages.find((p) => p.kind === "screenshot" && !p.tradeKey)!; // Day screenshot
+    const p2 = prepared.pages.find((p) => p.tradeKey === "trade-es-1" && p.kind === "trade")!; // Trade #1
+    const p3 = prepared.pages.find((p) => p.kind === "screenshot" && p.tradeKey)!; // Trade screenshot
 
     // 1. Backward compatibility: omitted argument defaults to all pages
     const defaultExport = await prepared.buildPdf();
@@ -685,21 +685,23 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
     expect(pageTexts.length).toBe(2);
 
     // First page in PDF must correspond to p0 (logical report order preserved despite reversed input)
-    expect(pageTexts[0]).toContain("DAILY JOURNAL REPORT");
-    expect(pageTexts[0]).toContain("2026-09-02");
+    expect(pageTexts[0]).toContain("DAILY REPORT");
+    expect(pageTexts[0]).toContain("Wednesday, 2 September 2026");
     expect(pageTexts[0]).toContain(`Page 1 of ${prepared.pages.length}`); // footer retains source page number
 
     // Second page in PDF must correspond to p2 (third page in report: ES trade)
-    expect(pageTexts[1]).toContain("ES · LONG LOSS");
-    expect(pageTexts[1]).toContain(`Page 3 of ${prepared.pages.length}`); // footer retains source page number
+    expect(pageTexts[1]).toContain("ES LONG LOSS");
+    expect(pageTexts[1]).toContain(
+      `Page ${prepared.pages.indexOf(p2) + 1} of ${prepared.pages.length}`,
+    ); // footer retains source page number
 
     // Excluded pages (p1 screenshot, p3 screenshot, p4 NQ trade) must NOT be present in any page of the PDF
     expect(pageTexts[0]).not.toContain("es-daily-context.png");
     expect(pageTexts[1]).not.toContain("es-daily-context.png");
     expect(pageTexts[0]).not.toContain("es-trade-fill-chart.png");
     expect(pageTexts[1]).not.toContain("es-trade-fill-chart.png");
-    expect(pageTexts[0]).not.toContain("NQ · SHORT");
-    expect(pageTexts[1]).not.toContain("NQ · SHORT");
+    expect(pageTexts[0]).not.toContain("NQ SHORT");
+    expect(pageTexts[1]).not.toContain("NQ SHORT");
 
     prepared.dispose();
   });
@@ -826,8 +828,8 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
         .map((i: any) => i.text);
 
       expect(overviewTexts).toContain("+$1,250.50");
-      expect(overviewTexts.some((t: string) => t.includes("Gross P&L: $1,300.00"))).toBe(true);
-      expect(overviewTexts.some((t: string) => t.includes("Total Fees: $49.50"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Gross $1,300.00"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Fees $49.50"))).toBe(true);
       expect(overviewTexts.some((t: string) => t.includes("(Mixed)"))).toBe(false);
 
       const tradeLayout = (prepared as any).pageLayouts.find((p: any) => p.kind === "trade");
@@ -836,8 +838,8 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
         .map((i: any) => i.text);
 
       expect(tradeTexts).toContain("+$1,250.50");
-      expect(tradeTexts.some((t: string) => t.includes("Gross P&L: $1,300.00"))).toBe(true);
-      expect(tradeTexts.some((t: string) => t.includes("Fees: $49.50"))).toBe(true);
+      expect(tradeTexts).toContain("+$1,300.00");
+      expect(tradeTexts).toContain("$49.50");
     });
 
     it("formats EUR currency with € symbol and NEVER labels EUR with $", async () => {
@@ -877,8 +879,8 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
 
       // Verify EUR symbol is used
       expect(overviewTexts).toContain("-€450.75");
-      expect(overviewTexts.some((t: string) => t.includes("Gross P&L: -€430.00"))).toBe(true);
-      expect(overviewTexts.some((t: string) => t.includes("Total Fees: €20.75"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Gross -€430.00"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Fees €20.75"))).toBe(true);
 
       // Verify NEVER labeled with $
       expect(overviewTexts.some((t: string) => t.includes("$450.75"))).toBe(false);
@@ -890,8 +892,8 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
         .map((i: any) => i.text);
 
       expect(tradeTexts).toContain("-€450.75");
-      expect(tradeTexts.some((t: string) => t.includes("Gross P&L: -€430.00"))).toBe(true);
-      expect(tradeTexts.some((t: string) => t.includes("Fees: €20.75"))).toBe(true);
+      expect(tradeTexts).toContain("-€430.00");
+      expect(tradeTexts).toContain("€20.75");
       expect(tradeTexts.some((t: string) => t.includes("$450.75"))).toBe(false);
     });
 
@@ -932,8 +934,8 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
 
       // USDT is formatted as code suffix without $
       expect(overviewTexts).toContain("+850.25 USDT");
-      expect(overviewTexts.some((t: string) => t.includes("Gross P&L: 860.00 USDT"))).toBe(true);
-      expect(overviewTexts.some((t: string) => t.includes("Total Fees: 9.75 USDT"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Gross 860.00 USDT"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Fees 9.75 USDT"))).toBe(true);
       expect(overviewTexts.some((t: string) => t.includes("$850"))).toBe(false);
 
       const tradeLayout = (prepared as any).pageLayouts.find((p: any) => p.kind === "trade");
@@ -942,7 +944,7 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
         .map((i: any) => i.text);
 
       expect(tradeTexts).toContain("+850.25 USDT");
-      expect(tradeTexts.some((t: string) => t.includes("Fees: 9.75 USDT"))).toBe(true);
+      expect(tradeTexts).toContain("9.75 USDT");
     });
 
     it("formats mixed currencies scope as explicit raw mixed units without mislabelling as first currency", async () => {
@@ -988,16 +990,10 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
 
       // Verify overview aggregate explicitly labels as (Mixed), NOT mislabelled as USD or EUR
       expect(overviewTexts).toContain("-650.00 (Mixed)");
-      expect(overviewTexts.some((t: string) => t.includes("Gross P&L: -580.00 (Mixed)"))).toBe(
-        true,
-      );
-      expect(overviewTexts.some((t: string) => t.includes("Total Fees: 70.00 (Mixed)"))).toBe(true);
-      expect(overviewTexts.some((t: string) => t.includes("Expectancy: -325.00 (Mixed)"))).toBe(
-        true,
-      );
-      expect(overviewTexts.some((t: string) => t.includes("Max Drawdown: 650.00 (Mixed)"))).toBe(
-        true,
-      );
+      expect(overviewTexts.some((t: string) => t.includes("Gross -580.00 (Mixed)"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Fees 70.00 (Mixed)"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t.includes("Expectancy -325.00"))).toBe(true);
+      expect(overviewTexts.some((t: string) => t === "650.00 (Mixed)")).toBe(true);
 
       // Must NOT claim -$650.00 USD or -€650.00 EUR for the combined aggregate
       expect(overviewTexts.some((t: string) => t.includes("-$650.00"))).toBe(false);
@@ -1107,19 +1103,11 @@ describe("Comprehensive Daily Report Renderer (PDF + PNG)", () => {
       expect(Number(fTiny.replace(/,/g, ""))).toBe(pTiny);
 
       // Verify tiny values are preserved with actual non-zero precision (NOT truncated to 0.0000)
-      expect(tradeTexts.some((t: string) => t.includes("Quantity: 3e-8"))).toBe(true);
-      expect(tradeTexts.some((t: string) => /Quantity:\s*0\.0000$/.test(t))).toBe(false);
-
-      expect(tradeTexts.some((t: string) => t.includes("Avg Entry: 1e-7"))).toBe(true);
-      expect(tradeTexts.some((t: string) => /Avg Entry:\s*0\.0000$/.test(t))).toBe(false);
-
-      expect(tradeTexts.some((t: string) => t.includes("Avg Exit: 1.5e-7"))).toBe(true);
-      expect(tradeTexts.some((t: string) => /Avg Exit:\s*0\.0000$/.test(t))).toBe(false);
-
-      expect(tradeTexts.some((t: string) => t.includes("Multiplier: 0.0001"))).toBe(true);
-      expect(tradeTexts.some((t: string) => t.includes("Open Qty: 1e-8"))).toBe(true);
-      expect(tradeTexts.some((t: string) => t.includes("Stop Loss: 8e-8"))).toBe(true);
-      expect(tradeTexts.some((t: string) => t.includes("Profit Target: 2e-7"))).toBe(true);
+      // Stat tiles keep exact round-trip values (never rounded to 0.0000)
+      for (const exact of ["3e-8", "1e-7", "1.5e-7", "0.0001", "1e-8", "8e-8", "2e-7"]) {
+        expect(tradeTexts).toContain(exact);
+      }
+      expect(tradeTexts.some((t: string) => /^0\.0000$/.test(t))).toBe(false);
 
       // Execution table rows must show actual non-zero price and quantity
       expect(tradeTexts).toContain("3e-8");

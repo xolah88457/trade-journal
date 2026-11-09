@@ -19,6 +19,7 @@ import {
   MARGIN_LEFT,
   USABLE_WIDTH,
   formatPrecision,
+  buildReportLayout,
 } from "../src/lib/daily-report-layout";
 import type { DailyReport, ReportAttachment } from "../src/lib/daily-report-types";
 
@@ -1478,5 +1479,36 @@ describe("report image downscaling", () => {
     expect(chooseImageEncoding({ hasAlpha: false, pngSize: 400, jpegSize: 1000 })).toBe("png");
     expect(chooseImageEncoding({ hasAlpha: true, pngSize: 1000, jpegSize: 100 })).toBe("png");
     expect(chooseImageEncoding({ hasAlpha: false, pngSize: 1000, jpegSize: null })).toBe("png");
+  });
+});
+
+describe("flat equity curve on a day without trades", () => {
+  const noTrades = () =>
+    createMockReport({
+      intraday: [],
+      trades: [],
+      attachments: [],
+      metrics: { ...createMockReport().metrics, closedTrades: 0, wins: 0, losses: 0, netPnl: 0 },
+    });
+  const texts = (report: DailyReport) =>
+    buildReportLayout(report, new Map())[0]!.items.flatMap((i) =>
+      i.type === "text" ? [i.text] : [],
+    );
+
+  it("draws a flat zero curve across the day instead of an empty note", () => {
+    const t = texts(noTrades());
+    expect(t).not.toContain("No curve points recorded.");
+    expect(t).toContain("No trades taken");
+    for (const hm of ["00:00", "06:00", "12:00", "18:00", "24:00"]) expect(t).toContain(hm);
+    const lines = buildReportLayout(noTrades(), new Map())[0]!.items.filter(
+      (i) => i.type === "path" && i.stroke,
+    );
+    expect(lines).toHaveLength(1);
+  });
+
+  it("keeps the empty note when trades exist but no curve points do", () => {
+    const report = noTrades();
+    const t = texts({ ...report, trades: createMockReport().trades });
+    expect(t).toContain("No curve points recorded.");
   });
 });

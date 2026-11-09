@@ -13,6 +13,9 @@ const MARGIN_TOP = 52;
 const MARGIN_BOTTOM = 58;
 
 // Restrained print palette: navy for small accents, green/red only for P&L, greys for structure.
+/** Time-axis points for the flat curve of a day without trades (report time zone). */
+const FLAT_DAY = ["00:00", "06:00", "12:00", "18:00", "24:00"].map((t) => ({ t, cumNetPnl: 0 }));
+
 export const COLORS = {
   navyBrand: "#1b365d",
   pageBg: "#ffffff",
@@ -1040,8 +1043,10 @@ class PageLayoutBuilder {
     points: { t: string; cumNetPnl: number }[];
     currency: string;
     h: number;
+    /** A day without trades: a neutral flat line at zero with every point labelled on the time axis. */
+    flat?: boolean;
   }): void {
-    const { points, currency: cur, h } = o;
+    const { points, currency: cur, h, flat = false } = o;
     this.ensureSpace(h + 40, o.title);
     this.sectionLabel(o.title, o.caption, h);
     const y0 = this.y;
@@ -1062,7 +1067,7 @@ class PageLayoutBuilder {
     const fmt = (v: number) => formatMoney(v, cur, { signed: true, bare: true });
 
     const last = vals[vals.length - 1]!;
-    const color = last >= 0 ? COLORS.profitGreen : COLORS.lossRed;
+    const color = flat ? COLORS.navyBrand : last >= 0 ? COLORS.profitGreen : COLORS.lossRed;
     const endLabel = fmt(last);
     const axisValues = [...new Set([hi, lo, 0])];
     const gutter = Math.max(...axisValues.map((v) => this.width(fmt(v), 7))) + 10;
@@ -1123,6 +1128,14 @@ class PageLayoutBuilder {
           align: k === 0 ? "left" : k === n - 1 ? "right" : "center",
         });
       }
+    } else if (flat) {
+      points.forEach((p, i) =>
+        ticks.push({
+          x: sx(i),
+          text: p.t,
+          align: i === 0 ? "left" : i === points.length - 1 ? "right" : "center",
+        }),
+      );
     } else if (points.length > 1) {
       ticks.push({ x: left, text: points[0]!.t, align: "left" });
       ticks.push({ x: right, text: points[points.length - 1]!.t, align: "right" });
@@ -1142,12 +1155,13 @@ class PageLayoutBuilder {
 
     // Area, line, markers
     const coords = points.map((p, i): [number, number] => [sx(i), sy(p.cumNetPnl)]);
-    this.push({
-      type: "path",
-      points: [[coords[0]![0], sy(0)], ...coords, [coords[coords.length - 1]![0], sy(0)]],
-      closed: true,
-      fill: last >= 0 ? CHART_TINT.win : CHART_TINT.loss,
-    });
+    if (!flat)
+      this.push({
+        type: "path",
+        points: [[coords[0]![0], sy(0)], ...coords, [coords[coords.length - 1]![0], sy(0)]],
+        closed: true,
+        fill: last >= 0 ? CHART_TINT.win : CHART_TINT.loss,
+      });
     this.push({ type: "path", points: coords, stroke: color, lineWidth: 1.4 });
     const dot = (cx: number, cy: number, r: number, fill: string) =>
       this.push({
@@ -1161,7 +1175,8 @@ class PageLayoutBuilder {
         stroke: color,
         lineWidth: 1,
       });
-    if (points.length <= 40) coords.slice(0, -1).forEach(([cx, cy]) => dot(cx, cy, 1.6, "#ffffff"));
+    if (!flat && points.length <= 40)
+      coords.slice(0, -1).forEach(([cx, cy]) => dot(cx, cy, 1.6, "#ffffff"));
     const [lx, ly] = coords[coords.length - 1]!;
     dot(lx, ly, 3, color);
     this.text(lx + 8, Math.min(Math.max(ly - 4.5, top), bottom - 9), endLabel, 7.5, color, {
@@ -1471,10 +1486,13 @@ function addOverview(b: PageLayoutBuilder, report: DailyReport) {
   if (curve.length && firstOpen && Date.parse(firstOpen) < Date.parse(curve[0]!.t)) {
     curve.unshift({ t: firstOpen, cumNetPnl: 0 });
   }
+  // A day without trades still gets a curve: flat at zero across the day, so the page reads the same.
+  const flat = !curve.length && !report.trades.length && m.closedTrades === 0;
   b.chart({
     title: "Intraday equity",
-    caption: mixed ? "Mixed currencies, not converted" : undefined,
-    points: curve,
+    caption: flat ? "No trades taken" : mixed ? "Mixed currencies, not converted" : undefined,
+    points: flat ? FLAT_DAY : curve,
+    flat,
     currency: cur,
     h: 130,
   });

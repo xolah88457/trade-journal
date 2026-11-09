@@ -111,7 +111,7 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 
 ### Exporting
 
-- **Daily journal report and trade report**: multi-page PDF or PNG with the day overview or trade summary, executions, notes and chart screenshots. Preview pages and choose which to include.
+- **Daily journal report and trade report**: multi-page PDF or PNG with the day overview or trade summary, executions, notes and chart screenshots. Preview pages and choose which to include. A day without trades shows a flat equity curve at zero.
 - **Review exports**: PDF or PNG of reports, the notebook, missed trades and progress.
 - **Data**: full journal backup as JSON, all trades as CSV.
 - Exports respect privacy mode.

@@ -38,6 +38,12 @@ export const languageModel = (provider: AiProvider, apiKey: string | null, model
 export const providerOptions = (provider: AiProvider) =>
   provider === "openai" ? { providerOptions: { openai: { store: false } } } : {};
 
+/**
+ * Output budget for short coaching replies. The prompts ask for 150-200 words, but reasoning models
+ * spend their hidden reasoning from the same budget, and 1,200 tokens could run out before any text.
+ */
+export const AI_REPLY_TOKENS = 2500;
+
 export const runAi = async (
   prompt: string,
   maxOutputTokens = 1200,
@@ -52,16 +58,15 @@ export const runAi = async (
     );
   }
   const system = systemPrompt ?? buildAiSystemPrompt(getAiInstructions());
+  let result: Awaited<ReturnType<typeof generateText>>;
   try {
-    const result = await generateText({
+    result = await generateText({
       model: languageModel(provider, getAiKey(provider), getAiModel(provider)),
       ...providerOptions(provider),
       system,
       prompt,
       maxOutputTokens,
     });
-    if (!result.text.trim()) throw new Error("AI returned no text. Check the model or try again.");
-    return result.text;
   } catch (error) {
     if (RetryError.isInstance(error)) error = error.lastError;
     // Provider error messages can contain key fragments or request data. Never relay them.
@@ -83,6 +88,14 @@ export const runAi = async (
         throw new Error(
           "AI model unavailable: check the model ID and your provider access in Settings.",
         );
+      if (
+        /context length|context window|context_length|maximum.*tokens|max_tokens|max_completion_tokens/i.test(
+          error.message,
+        )
+      )
+        throw new Error(
+          "AI context too small: this model can't fit the request and its reply. Choose a model with a larger context window in Settings.",
+        );
       // No status code means no HTTP response: the server is down or the URL is wrong.
       if (provider === "compatible" && error.statusCode === undefined)
         throw new Error(
@@ -91,4 +104,11 @@ export const runAi = async (
     }
     throw new Error("AI request failed. Check your provider settings or try again shortly.");
   }
+  if (!result.text.trim())
+    throw new Error(
+      result.finishReason === "length"
+        ? "AI returned no text: the model used its whole reply budget, usually on hidden reasoning, before answering. Try again or choose a non-reasoning model in Settings."
+        : "AI returned no text. Check the model or try again.",
+    );
+  return result.text;
 };

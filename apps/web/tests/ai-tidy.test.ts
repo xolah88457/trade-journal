@@ -137,6 +137,19 @@ describe("POST /api/ai/tidy", () => {
     expect(options.maxOutputTokens).toBeGreaterThanOrEqual(1500);
   });
 
+  it("reports a reply budget spent on reasoning instead of a generic failure", async () => {
+    setSetting("aiProvider", "anthropic");
+    setAiKey("anthropic", "test-only-key");
+    vi.mocked(generateText).mockResolvedValue({
+      text: "",
+      finishReason: "length",
+    } as Awaited<ReturnType<typeof generateText>>);
+    const res = await post({ text: dictated });
+    expect(((await res.json()) as { error: string }).error).toMatch(
+      /^AI returned no text: the model used its whole reply budget/,
+    );
+  });
+
   it("explains how to set up AI when no provider is configured", async () => {
     const res = await post({ text: dictated });
     expect(res.status).toBe(500);

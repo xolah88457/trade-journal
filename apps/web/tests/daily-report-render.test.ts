@@ -1461,17 +1461,17 @@ describe("Trade report export (single trade, same design as the daily trade page
 });
 
 describe("report image downscaling", () => {
-  it("caps retina screenshots at ~200 DPI of the page box and keeps aspect", () => {
+  it("caps retina screenshots at ~300 DPI of the page box and keeps aspect", () => {
     const out = fitImageSize(2880, 1800);
-    expect(out.width).toBe(1431);
-    expect(out.height).toBe(Math.round((1800 * 1431) / 2880));
+    expect(out.width).toBe(2147);
+    expect(out.height).toBe(Math.round((1800 * 2147) / 2880));
   });
   it("caps very tall images by height and never upscales", () => {
     const tall = fitImageSize(1000, 6000);
-    expect(tall.height).toBeLessThanOrEqual(1945);
+    expect(tall.height).toBeLessThanOrEqual(2917);
     expect(tall.width).toBeLessThan(1000);
     expect(fitImageSize(800, 600)).toEqual({ width: 800, height: 600 });
-    expect(fitImageSize(1431, 900)).toEqual({ width: 1431, height: 900 });
+    expect(fitImageSize(2147, 900)).toEqual({ width: 2147, height: 900 });
   });
   it("chooses JPEG only for opaque images where it is smaller", () => {
     expect(chooseImageEncoding({ hasAlpha: false, pngSize: 1000, jpegSize: 400 })).toBe("jpeg");

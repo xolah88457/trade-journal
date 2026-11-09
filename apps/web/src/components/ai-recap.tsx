@@ -15,12 +15,18 @@ export function AiRecap({
   filters,
   timeZone,
   disabled,
+  disabledReason,
+  beforeRequest,
   onRecap,
 }: {
   date: string;
   filters: AnalysisFilters;
   timeZone: string;
   disabled: boolean;
+  /** Shown under the button while it is disabled, so the trader knows what a recap needs. */
+  disabledReason?: string;
+  /** Runs before the preview is built, e.g. to save the latest note the recap reads. */
+  beforeRequest?: () => unknown;
   onRecap: (result: { recap: string; scope: AiScope }) => void;
 }) {
   const { run, busy, error, dismiss } = useAiRequest();
@@ -29,6 +35,7 @@ export function AiRecap({
   const prepareRecap = async () => {
     if (busy || disabled) return;
     await preview.prepare(async () => {
+      await beforeRequest?.();
       const res = await postJson<{ preview: AiContextPreview; scope: AiScope }>("/api/ai/recap", {
         date,
         filters,
@@ -64,6 +71,9 @@ export function AiRecap({
         <Sparkles />
         {busy || preview.loading ? "Writing…" : "AI recap"}
       </Button>
+      {disabled && disabledReason && (
+        <p className="text-xs text-muted-foreground">{disabledReason}</p>
+      )}
       {(error || preview.error) && (
         <AiNotice
           error={error || preview.error!}

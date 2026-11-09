@@ -599,4 +599,34 @@ describe("Scoping preservation & validation", () => {
     const err = await res.json();
     expect(err.error).toContain("No trades match the selected accounts and filters");
   });
+
+  it("recaps a day without trades from the day note, but only when the note is in scope", async () => {
+    const day = "2026-11-05";
+    const preview = (filters: Record<string, string>) =>
+      post(recapRoute, { date: day, filters, timeZone: "UTC", preview: true });
+
+    let res = await preview({});
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("No closed trades match this day");
+
+    db.insert(journalDays)
+      .values({
+        date: day,
+        note: "Sat out. Market was choppy and I kept my rules.",
+        updatedAt: "x",
+      })
+      .run();
+    res = await preview({});
+    expect(res.status).toBe(200);
+    const p = (await res.json()).preview;
+    expect(p.taskPrompt).toContain("No closed trades are recorded for this day");
+    expect(p.taskPrompt).toContain("Never invent trades");
+    expect(p.journalContext).toContain("Sat out. Market was choppy and I kept my rules.");
+    expect(p.journalContext).not.toContain("Day stats");
+
+    // A filtered recap never receives the shared note, so it still needs trades.
+    res = await preview({ accounts: "acc_1" });
+    expect(res.status).toBe(400);
+    expect((await res.json()).error).toContain("No closed trades match this day");
+  });
 });

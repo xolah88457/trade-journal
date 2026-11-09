@@ -1,5 +1,5 @@
 import { handler, ok } from "@/server/api";
-import { runAi } from "@/server/ai";
+import { AI_REPLY_TOKENS, runAi } from "@/server/ai";
 import { buildAskPromptContext } from "@/server/ai-prompt";
 
 /**
@@ -16,6 +16,6 @@ export const POST = handler(async (request: Request) => {
     return ok({ preview, scope: scope.scope });
   }
 
-  const answer = await runAi(fullPrompt, 1200, effectiveSystemPrompt);
+  const answer = await runAi(fullPrompt, AI_REPLY_TOKENS, effectiveSystemPrompt);
   return ok({ answer, scope: scope.scope });
 });

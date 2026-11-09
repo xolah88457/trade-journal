@@ -1,5 +1,5 @@
 import { handler, ok } from "@/server/api";
-import { runAi } from "@/server/ai";
+import { AI_REPLY_TOKENS, runAi } from "@/server/ai";
 import { buildRecapPromptContext } from "@/server/ai-prompt";
 
 /** Generate a session recap for one trading day from the day's actual trades. */
@@ -13,6 +13,6 @@ export const POST = handler(async (request: Request) => {
     return ok({ preview, scope: scope.scope });
   }
 
-  const recap = await runAi(fullPrompt, 1200, effectiveSystemPrompt);
+  const recap = await runAi(fullPrompt, AI_REPLY_TOKENS, effectiveSystemPrompt);
   return ok({ recap, scope: scope.scope });
 });

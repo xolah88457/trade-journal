@@ -51,8 +51,9 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 - Tags, mistakes, playbook assignment, a 1 to 5 star rating and reviewed status.
 - Playbook rule checklist per trade: followed, broken or not assessed.
 - Trade notes in the Markdown editor.
-- **Screenshots**: drag and drop or upload chart screenshots (PNG, JPEG, WebP) into a gallery with full-size view. PDFs and other documents can be attached too.
+- **Screenshots**: drag and drop or upload chart screenshots (PNG, JPEG, WebP) into a gallery with full-size view. Download any screenshot again with its Download button or by right-clicking it. PDFs and other documents can be attached too.
 - Previous and next trade navigation, within all trades, the current filters or the same account.
+- Delete a single trade from its detail page, with its executions, notes, screenshots and AI reviews.
 
 ### Filters
 
@@ -65,7 +66,8 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 - List of trading days with their results.
 - Each day shows day stats (net and gross P&L, trades, winners and losers, win rate, volume, profit factor, expectancy), an intraday cumulative P&L chart and the day's trades.
 - Day note in the Markdown editor, with screenshots and attachments.
-- AI session recap (optional).
+- Delete a day's journal: its note and attachments go, its trades stay.
+- AI session recap (optional), from the day's trades or, on a day without trades, from the day note.
 
 ### Notebook
 
@@ -134,7 +136,7 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 ### AI reflection (optional)
 
 - Ask your journal questions in plain language.
-- Session recaps for a day and critiques of a single trade.
+- Session recaps for a day and critiques of a single trade. A day with no closed trades can be recapped from its note.
 - **Tidy up**: a button next to Dictate rewrites a dictated or typed note into clean, structured writing. Nothing changes until you choose Replace note, and you can undo it.
 - Every request shows a preview of exactly what will be sent before it goes out.
 - Use your own Anthropic or OpenAI key or an OpenAI-compatible server, choose the model, and add personal trading instructions.

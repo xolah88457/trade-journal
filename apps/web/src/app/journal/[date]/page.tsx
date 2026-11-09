@@ -2,6 +2,7 @@
 import { AiRecap } from "@/components/ai-recap";
 
 import Link from "next/link";
+import { Trash2 } from "lucide-react";
 import { Suspense, use, useRef, useState } from "react";
 import type { IntradayPoint, TradeMetrics } from "@luxalgo/journal-core";
 import { EquityArea } from "@/components/charts/equity-area";
@@ -16,7 +17,7 @@ import { RichEditor, type RichEditorHandle } from "@/components/rich-editor";
 import { Attachments } from "@/components/attachments";
 import { DailyReportExport } from "@/components/daily-report-export";
 import { useAutosave } from "@/lib/use-autosave";
-import { useApi } from "@/lib/use-api";
+import { postJson, useApi } from "@/lib/use-api";
 import { fmtMoney, fmtNumber, fmtPercent } from "@/lib/utils";
 
 interface TradeRowLite {
@@ -50,7 +51,10 @@ export default function JournalDayPage({ params }: { params: Promise<{ date: str
 
 function JournalDay({ date }: { date: string }) {
   const { query, values: filters, timeZone } = useFilters();
-  const { data, error } = useApi<DayPayload>(`/api/journal/${date}?${query}`);
+  const { data, error, refresh } = useApi<DayPayload>(`/api/journal/${date}?${query}`);
+  const [resetKey, setResetKey] = useState(0);
+  const [deleting, setDeleting] = useState(false);
+  const [deleteError, setDeleteError] = useState("");
   const [note, setNote] = useState<string | null>(null);
   const noteEditor = useRef<RichEditorHandle>(null);
   const { save, status: saving, flush } = useAutosave(`/api/journal/${date}`, "PUT");
@@ -63,7 +67,33 @@ function JournalDay({ date }: { date: string }) {
     save({ note: value });
   };
 
+  const deleteJournal = async () => {
+    if (
+      !confirm(
+        `Delete the journal for ${date}? The day note and its attachments are removed. Trades on this day are kept. This cannot be undone.`,
+      )
+    )
+      return;
+    setDeleting(true);
+    setDeleteError("");
+    try {
+      // Let any queued autosave finish first so it can't write the note back afterwards.
+      await flush();
+      await postJson(`/api/journal/${date}`, undefined, "DELETE");
+      latestNote.current = "";
+      setNote("");
+      setResetKey((key) => key + 1);
+      refresh();
+    } catch (cause) {
+      setDeleteError(cause instanceof Error ? cause.message : "Couldn’t delete this journal.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const m = data?.metrics;
+  // The shared day note is only sent to AI when no account or trade filter narrows the recap.
+  const noteInScope = Object.keys(filters).every((key) => key === "from" || key === "to");
   return (
     <div>
       <FilterBar title={`Journal · ${date}`} />
@@ -193,7 +223,15 @@ function JournalDay({ date }: { date: string }) {
                 date={date}
                 filters={filters}
                 timeZone={timeZone}
-                disabled={!data || !m?.closedTrades}
+                disabled={!data || (!m?.closedTrades && !(noteInScope && noteValue.trim()))}
+                disabledReason={
+                  data
+                    ? noteInScope
+                      ? "AI recap needs a closed trade on this day or something written in the day note."
+                      : "No closed trades match these filters on this day. Clear the filters to recap from your day note."
+                    : undefined
+                }
+                beforeRequest={flush}
                 onRecap={({ recap, scope }) => {
                   // Append to the current draft, including edits made while AI was running.
                   const section = `## AI recap\n\n${scope.label.replace(/[\\`*_{}\[\]<>#]/g, "").replace(/[\r\n]+/g, " ")}\n\n${recap}`;
@@ -205,6 +243,7 @@ function JournalDay({ date }: { date: string }) {
             </div>
             {data ? (
               <RichEditor
+                key={`note-${resetKey}`}
                 editorRef={noteEditor}
                 value={noteValue}
                 onChange={scheduleSave}
@@ -217,14 +256,31 @@ function JournalDay({ date }: { date: string }) {
             ) : (
               <Skeleton className="h-48" />
             )}
-            <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <div className="flex flex-wrap items-center justify-between gap-1 text-xs text-muted-foreground">
               <span role="status">{saving}</span>
-              <Button variant="ghost" size="sm" onClick={() => void flush()}>
-                Save now
-              </Button>
+              <span className="flex items-center gap-1">
+                <Button variant="ghost" size="sm" onClick={() => void flush()}>
+                  Save now
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  className="text-destructive hover:text-destructive"
+                  disabled={!data || deleting}
+                  onClick={() => void deleteJournal()}
+                >
+                  <Trash2 />
+                  {deleting ? "Deleting…" : "Delete journal"}
+                </Button>
+              </span>
             </div>
+            {deleteError && (
+              <p role="alert" className="text-xs text-destructive">
+                {deleteError}
+              </p>
+            )}
             <DailyReportExport date={date} query={query} note={note !== null ? note : undefined} />
-            <Attachments type="day" id={date} />
+            <Attachments key={`files-${resetKey}`} type="day" id={date} />
           </CardContent>
         </Card>
       </div>

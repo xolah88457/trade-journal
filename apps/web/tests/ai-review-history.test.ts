@@ -620,6 +620,44 @@ describe("Intentional Production Deletions and Account Transfers", () => {
     expect(getSetting("tradeAiReviews:trade_1")).toBeNull();
   });
 
+  it("DELETE /api/trades/[key] also removes the trade's screenshots and rule checks", async () => {
+    const { attachments, tradeRuleChecks } = await import("../src/db");
+    const shot = (id: string, ownerId: string) => ({
+      id,
+      ownerType: "trade",
+      ownerId,
+      name: `${id}.png`,
+      mime: "image/png",
+      size: 1,
+      data: Buffer.from([1]),
+      createdAt: "2026-11-01T00:00:00.000Z",
+    });
+    db.insert(attachments)
+      .values([shot("shot_deleted", "trade_1"), shot("shot_kept", "trade_2")])
+      .run();
+    db.insert(tradeRuleChecks)
+      .values([
+        { id: "rule_deleted", tradeKey: "trade_1", playbookId: "p", rule: "r", followed: true },
+        { id: "rule_kept", tradeKey: "trade_2", playbookId: "p", rule: "r", followed: true },
+      ])
+      .run();
+
+    const res = await tradeDelete(
+      new Request("http://localhost/api/trades/trade_1", { method: "DELETE" }),
+      { params: Promise.resolve({ key: "trade_1" }) },
+    );
+    expect(res.status).toBe(200);
+
+    expect(db.select({ id: attachments.id }).from(attachments).all()).toEqual([
+      { id: "shot_kept" },
+    ]);
+    expect(db.select({ id: tradeRuleChecks.id }).from(tradeRuleChecks).all()).toEqual([
+      { id: "rule_kept" },
+    ]);
+    db.delete(attachments).run();
+    db.delete(tradeRuleChecks).run();
+  });
+
   it("POST /api/trades/bulk delete cleans up AI reviews for deleted trades", async () => {
     appendTradeAiReview("trade_1", {
       content: "Review 1",

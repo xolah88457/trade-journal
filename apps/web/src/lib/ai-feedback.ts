@@ -8,6 +8,13 @@ export interface AiFeedback {
 
 /** Friendly, bounded copy: never echo provider payloads or credentials into the UI. */
 export function aiFeedback(message: string): AiFeedback {
+  if (/^No closed trades match this day/.test(message))
+    return {
+      title: "Nothing to recap yet",
+      description:
+        "A recap needs a closed trade on this day, or something written in the day note when no account or trade filter is set.",
+      tone: "info",
+    };
   if (/^No (?:closed )?trades match/.test(message))
     return {
       title: "No matching trades",
@@ -79,6 +86,30 @@ export function aiFeedback(message: string): AiFeedback {
       tone: "error",
       action: { label: "Review AI settings", href: "/settings#ai-settings" },
       retry: true,
+    };
+  if (/AI returned no text: the model used its whole reply budget/i.test(message))
+    return {
+      title: "The model ran out of room",
+      description:
+        "Your model spent its whole reply budget, usually on hidden reasoning, before writing an answer. Try again, or choose a non-reasoning model in Settings.",
+      tone: "error",
+      action: { label: "Review AI settings", href: "/settings#ai-settings" },
+    };
+  if (/AI returned no text/i.test(message))
+    return {
+      title: "The model sent back an empty reply",
+      description:
+        "Try again. If it keeps happening, check that the model ID in Settings is a chat model.",
+      tone: "error",
+      retry: true,
+    };
+  if (/AI context too small/i.test(message))
+    return {
+      title: "This model’s context is too small",
+      description:
+        "The request and its reply don’t fit in the model’s context window. Choose a model with a larger context in Settings.",
+      tone: "error",
+      action: { label: "Review AI settings", href: "/settings#ai-settings" },
     };
   if (/rate.limit|too many requests|overloaded/i.test(message))
     return {

@@ -1,7 +1,7 @@
 import { readFilters } from "@luxalgo/journal-core";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { computeMetrics, dayKeyOf, intradayCurve } from "@luxalgo/journal-core";
-import { db, executions, journalDays } from "@/db";
+import { attachments, db, executions, journalDays } from "@/db";
 import { bad, handler, ok } from "@/server/api";
 import { nowIso } from "@/server/ids";
 import { getTimeZone } from "@/server/settings";
@@ -50,4 +50,17 @@ export const PUT = handler(async (request: Request, { params }: Params) => {
     })
     .run();
   return ok({ saved: true });
+});
+
+/** Delete one day's journal: its note and the files attached to the day. Trades are not touched. */
+export const DELETE = handler(async (_request: Request, { params }: Params) => {
+  const { date } = await params;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return bad("date must be YYYY-MM-DD");
+  db.transaction((tx) => {
+    tx.delete(journalDays).where(eq(journalDays.date, date)).run();
+    tx.delete(attachments)
+      .where(and(eq(attachments.ownerType, "day"), eq(attachments.ownerId, date)))
+      .run();
+  });
+  return ok({ deleted: true });
 });

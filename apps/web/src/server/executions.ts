@@ -1,7 +1,7 @@
 import { and, eq, inArray } from "drizzle-orm";
 import type { ExecutionSource } from "@luxalgo/journal-core";
 import { positionFillProblem, type ImportedExecution } from "@luxalgo/journal-importers";
-import { db, executions, accounts, trades } from "@/db";
+import { db, executions, accounts, trades, attachments, tradeRuleChecks } from "@/db";
 import { executionHash, newId, nowIso } from "./ids";
 import { rebuildAccount } from "./rebuild";
 import { deleteTradeAiReviews } from "./ai-review-history";
@@ -358,6 +358,17 @@ export const insertExecutions = (
 
 type Transaction = Parameters<Parameters<typeof db.transaction>[0]>[0];
 
+/** Removes what is stored beside deleted trades: their screenshots and playbook rule checks. */
+function deleteTradeExtras(tradeKeys: string[], tx: Transaction | typeof db = db): void {
+  for (let i = 0; i < tradeKeys.length; i += 500) {
+    const keys = tradeKeys.slice(i, i + 500);
+    tx.delete(attachments)
+      .where(and(eq(attachments.ownerType, "trade"), inArray(attachments.ownerId, keys)))
+      .run();
+    tx.delete(tradeRuleChecks).where(inArray(tradeRuleChecks.tradeKey, keys)).run();
+  }
+}
+
 /** Removes an account's trades, their AI review history and its executions, inside `tx`. */
 export const deleteAccountHistory = (accountId: string, tx: Transaction): void => {
   const tradeKeys = tx
@@ -367,6 +378,7 @@ export const deleteAccountHistory = (accountId: string, tx: Transaction): void =
     .all()
     .map((trade) => trade.key);
   deleteTradeAiReviews(tradeKeys, tx);
+  deleteTradeExtras(tradeKeys, tx);
   tx.delete(trades).where(eq(trades.accountId, accountId)).run();
   tx.delete(executions).where(eq(executions.accountId, accountId)).run();
 };
@@ -379,6 +391,7 @@ export const deleteExecutionsForTrades = (
   if (executionIds.length === 0) return;
   if (tradeKeys && tradeKeys.length > 0) {
     deleteTradeAiReviews(tradeKeys);
+    deleteTradeExtras(tradeKeys);
   }
   db.delete(executions)
     .where(and(eq(executions.accountId, accountId), inArray(executions.id, executionIds)))

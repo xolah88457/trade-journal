@@ -8,6 +8,7 @@ import { Pnl } from "@/components/pnl";
 import { MonetaryValue, MonetaryField } from "@/components/privacy";
 import { Attachments } from "@/components/attachments";
 import { TradeNavigation } from "@/components/trade-navigation";
+import { DeleteTradeButton } from "@/components/delete-trade-button";
 import { TradeRating } from "@/components/trade-rating";
 import { EquityArea } from "@/components/charts/equity-area";
 import { Badge } from "@/components/ui/badge";
@@ -186,6 +187,12 @@ function TradeView({ tradeKey }: { tradeKey: string }) {
                 label="Realized R"
                 value={trade.realizedR === null ? "–" : `${fmtNumber(trade.realizedR)}R`}
               />
+              <div className="ml-auto">
+                <DeleteTradeButton
+                  tradeKey={tradeKey}
+                  label={`this ${trade.symbol} ${trade.direction} trade`}
+                />
+              </div>
             </CardContent>
           </Card>
 

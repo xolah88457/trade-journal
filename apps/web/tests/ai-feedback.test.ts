@@ -3,22 +3,39 @@ import { aiFeedback } from "../src/lib/ai-feedback";
 
 describe("AI feedback", () => {
   it("explains empty or invalid scopes without suggesting an AI connection problem", () => {
-    for (const message of [
-      "No trades match the selected accounts and filters",
-      "No closed trades match this day and the selected filters",
-    ])
-      expect(aiFeedback(message)).toEqual({
-        title: "No matching trades",
-        description:
-          "There are no trades to analyze in this selection. Adjust the accounts, dates or other journal filters.",
-        tone: "info",
-      });
+    expect(aiFeedback("No trades match the selected accounts and filters")).toEqual({
+      title: "No matching trades",
+      description:
+        "There are no trades to analyze in this selection. Adjust the accounts, dates or other journal filters.",
+      tone: "info",
+    });
+    expect(aiFeedback("No closed trades match this day and the selected filters")).toEqual({
+      title: "Nothing to recap yet",
+      description:
+        "A recap needs a closed trade on this day, or something written in the day note when no account or trade filter is set.",
+      tone: "info",
+    });
     expect(aiFeedback("A selected account no longer exists. Update your filters.").title).toBe(
       "Check your journal filters",
     );
     expect(aiFeedback("Journal timezone changed. Refresh and try again.").title).toBe(
       "Refresh your journal",
     );
+  });
+  it("explains empty model replies and small context windows", () => {
+    expect(
+      aiFeedback(
+        "AI returned no text: the model used its whole reply budget, usually on hidden reasoning, before answering. Try again or choose a non-reasoning model in Settings.",
+      ).title,
+    ).toBe("The model ran out of room");
+    expect(aiFeedback("AI returned no text. Check the model or try again.").title).toBe(
+      "The model sent back an empty reply",
+    );
+    expect(
+      aiFeedback(
+        "AI context too small: this model can't fit the request and its reply. Choose a model with a larger context window in Settings.",
+      ).title,
+    ).toBe("This model’s context is too small");
   });
   it("treats missing setup as guidance with a direct settings destination", () => {
     expect(

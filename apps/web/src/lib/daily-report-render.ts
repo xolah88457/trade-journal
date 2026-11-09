@@ -181,16 +181,18 @@ async function fetchAttachmentImage(
 }
 
 /** Target print density for embedded report images. */
-export const REPORT_IMAGE_DPI = 200;
+export const REPORT_IMAGE_DPI = 300;
 /** Largest box (in PDF points) an image can be drawn in: usable page width by the tallest screenshot area. */
 const IMAGE_BOX_PT = { width: USABLE_WIDTH, height: 700 };
 const IMAGE_BOX_PX = {
   width: Math.round((IMAGE_BOX_PT.width * REPORT_IMAGE_DPI) / 72),
   height: Math.round((IMAGE_BOX_PT.height * REPORT_IMAGE_DPI) / 72),
 };
-const REPORT_JPEG_QUALITY = 0.85;
+const REPORT_JPEG_QUALITY = 0.92;
+/** PNG export pixel density: 4 px per point is about 288 DPI, sharp when zoomed or printed. */
+export const REPORT_PNG_SCALE = 4;
 
-/** Aspect-fit the image into the ~200 DPI pixel box of the page; never upscales. */
+/** Aspect-fit the image into the ~300 DPI pixel box of the page; never upscales. */
 export function fitImageSize(width: number, height: number): { width: number; height: number } {
   if (!(width > 0) || !(height > 0)) return { width, height };
   const scale = Math.min(IMAGE_BOX_PX.width / width, IMAGE_BOX_PX.height / height, 1);
@@ -383,7 +385,7 @@ async function renderTextToPng(
   fontSize: number,
   color: string,
   bold = false,
-  scale = 2,
+  scale = 4,
 ): Promise<{ bytes: Uint8Array; width: number; height: number }> {
   if (typeof document === "undefined") {
     throw new Error(
@@ -463,7 +465,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
     }));
   }
 
-  async renderPage(pageId: string, scale = 2): Promise<Blob> {
+  async renderPage(pageId: string, scale = REPORT_PNG_SCALE): Promise<Blob> {
     const layout = this.pageLayouts.find((p) => p.id === pageId);
     if (!layout) {
       throw new Error(`Page not found: "${pageId}"`);
@@ -817,7 +819,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
     if (selected.length === 1) {
       const page = selected[0]!;
       const pageNum = this.pages.indexOf(page) + 1;
-      const blob = await this.renderPage(page.id, 2);
+      const blob = await this.renderPage(page.id, REPORT_PNG_SCALE);
       const filename = this.naming.singlePngName(pageNum, page);
       return { blob, filename };
     }
@@ -827,7 +829,7 @@ class PreparedDailyReportImpl implements PreparedDailyReport {
 
     for (const page of selected) {
       const pageNum = this.pages.indexOf(page) + 1;
-      const blob = await this.renderPage(page.id, 2);
+      const blob = await this.renderPage(page.id, REPORT_PNG_SCALE);
       const entryName = `${String(pageNum).padStart(2, "0")}-${slugify(page.title)}.png`;
       entries[entryName] = await blobToUint8Array(blob);
     }

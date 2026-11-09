@@ -5,7 +5,10 @@ import { join } from "node:path";
 import { eq } from "drizzle-orm";
 import { FILTER_KEYS } from "@luxalgo/journal-core";
 
-vi.mock("@/server/ai", () => ({ runAi: vi.fn(async () => "Controlled AI response") }));
+vi.mock("@/server/ai", () => ({
+  AI_REPLY_TOKENS: 2500,
+  runAi: vi.fn(async () => "Controlled AI response"),
+}));
 const originalDir = process.env.JOURNAL_DATA_DIR;
 const scratch = mkdtempSync(join(tmpdir(), "journal-ai-scope-"));
 process.env.JOURNAL_DATA_DIR = scratch;

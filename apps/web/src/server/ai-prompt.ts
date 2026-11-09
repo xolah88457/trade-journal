@@ -351,39 +351,57 @@ export function buildRecapPromptContext(input: {
   const dayTrades = trades.filter(
     (trade) => trade.closedAt && dayKeyOf(trade.closedAt, timeZone) === date,
   );
-  requireValue(dayTrades.length > 0, "No closed trades match this day and the selected filters");
-
-  const metrics = computeMetrics(dayTrades, { timeZone });
+  // The shared day note belongs to every account, so only an unfiltered recap may use it.
   const onlyDateFilters = Object.keys(filters).every((key) => key === "from" || key === "to");
   const existingNote = onlyDateFilters
-    ? db.select().from(journalDays).where(eq(journalDays.date, date)).get()?.note
+    ? db.select().from(journalDays).where(eq(journalDays.date, date)).get()?.note?.trim()
     : undefined;
+  requireValue(
+    dayTrades.length > 0 || Boolean(existingNote),
+    "No closed trades match this day and the selected filters",
+  );
 
-  const tradeLines = dayTrades
-    .map(
-      (trade) =>
-        `${JSON.stringify(scope.accounts.find((a) => a.id === trade.accountId)?.name)} | ${trade.symbol} ${trade.direction} qty ${trade.quantity} | entry ${trade.avgEntry} → exit ${trade.avgExit} | net ${trade.netPnl.toFixed(2)} | held ${Math.round((trade.durationMs ?? 0) / 60_000)}m` +
-        (trade.annotations?.tags?.length ? ` | tags: ${trade.annotations.tags.join(", ")}` : "") +
-        (trade.annotations?.mistakes?.length
-          ? ` | mistakes: ${trade.annotations.mistakes.join(", ")}`
-          : ""),
-    )
-    .join("\n");
-
-  const taskPrompt = `Write a session recap for ${date} in first person ("I"), 120-200 words, markdown with a
+  const recapFormat = `in first person ("I"), 120-200 words, markdown with a
 short "**Keep**" and "**Fix**" list at the end.`;
+  let taskPrompt: string;
+  let journalContext: string;
+  if (dayTrades.length === 0) {
+    // A day without trades can still be journaled: recap the trader's own note.
+    taskPrompt = `Write a session recap for ${date} ${recapFormat}
+No closed trades are recorded for this day, so base the recap only on the trader's note.
+Never invent trades, prices or results.`;
+    journalContext = [
+      scope.context,
+      "\nNo closed trades are recorded for this day.",
+      `\nThe trader's note for the day:\n${existingNote}`,
+    ].join("\n");
+  } else {
+    const metrics = computeMetrics(dayTrades, { timeZone });
+    const tradeLines = dayTrades
+      .map(
+        (trade) =>
+          `${JSON.stringify(scope.accounts.find((a) => a.id === trade.accountId)?.name)} | ${trade.symbol} ${trade.direction} qty ${trade.quantity} | entry ${trade.avgEntry} → exit ${trade.avgExit} | net ${trade.netPnl.toFixed(2)} | held ${Math.round((trade.durationMs ?? 0) / 60_000)}m` +
+          (trade.annotations?.tags?.length ? ` | tags: ${trade.annotations.tags.join(", ")}` : "") +
+          (trade.annotations?.mistakes?.length
+            ? ` | mistakes: ${trade.annotations.mistakes.join(", ")}`
+            : ""),
+      )
+      .join("\n");
 
-  const journalContext = [
-    scope.context,
-    accountContext(dayTrades, scope),
-    `\nDay stats: net P&L ${metrics.netPnl.toFixed(2)}, ${metrics.closedTrades} trades,\nwin rate ${metrics.winRate === null ? "n/a" : (metrics.winRate * 100).toFixed(0)}%,\nfees ${metrics.fees.toFixed(2)}.`,
-    `\nTrades:\n${tradeLines}`,
-    existingNote
-      ? `\nThe trader's own note so far (respect it, build on it):\n${existingNote}`
-      : "",
-  ]
-    .filter(Boolean)
-    .join("\n");
+    taskPrompt = `Write a session recap for ${date} ${recapFormat}`;
+
+    journalContext = [
+      scope.context,
+      accountContext(dayTrades, scope),
+      `\nDay stats: net P&L ${metrics.netPnl.toFixed(2)}, ${metrics.closedTrades} trades,\nwin rate ${metrics.winRate === null ? "n/a" : (metrics.winRate * 100).toFixed(0)}%,\nfees ${metrics.fees.toFixed(2)}.`,
+      `\nTrades:\n${tradeLines}`,
+      existingNote
+        ? `\nThe trader's own note so far (respect it, build on it):\n${existingNote}`
+        : "",
+    ]
+      .filter(Boolean)
+      .join("\n");
+  }
 
   const fullPrompt = `${taskPrompt}\n\n${journalContext}`;
 

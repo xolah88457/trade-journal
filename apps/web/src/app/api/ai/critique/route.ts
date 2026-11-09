@@ -1,5 +1,5 @@
 import { bad, handler, ok } from "@/server/api";
-import { runAi } from "@/server/ai";
+import { AI_REPLY_TOKENS, runAi } from "@/server/ai";
 import { buildCritiquePromptContext } from "@/server/ai-prompt";
 import { getTradeByKey } from "@/server/trades-query";
 import {
@@ -43,7 +43,7 @@ export const POST = handler(async (request: Request) => {
     return ok({ preview });
   }
 
-  const critique = await runAi(fullPrompt, 1200, effectiveSystemPrompt);
+  const critique = await runAi(fullPrompt, AI_REPLY_TOKENS, effectiveSystemPrompt);
   const tradeKey = (body.key as string).trim();
 
   try {

@@ -246,3 +246,91 @@ it("displays partial error message banner when batch upload partially fails", as
     globalThis.fetch = originalFetch;
   }
 });
+
+const renderList = async () => {
+  await act(async () => {
+    root.render(
+      createElement(
+        TooltipProvider,
+        null,
+        createElement(Attachments, { type: "day", id: "2026-11-09" }),
+      ),
+    );
+  });
+};
+const rightClick = (target: Element) =>
+  act(async () => {
+    target.dispatchEvent(
+      new MouseEvent("contextmenu", { bubbles: true, cancelable: true, clientX: 5, clientY: 5 }),
+    );
+  });
+
+it("opens journal screenshots in the in-app viewer, which closes with its Close button", async () => {
+  await renderList();
+  // No link that would replace the whole window with the raw image.
+  expect(container.querySelector('a[target="_blank"]')).toBeNull();
+
+  await act(async () =>
+    container
+      .querySelector<HTMLButtonElement>('button[aria-label="View exit-target.jpeg"]')!
+      .click(),
+  );
+  const dialog = document.querySelector('[role="dialog"]')!;
+  expect(dialog.textContent).toContain("exit-target.jpeg");
+  expect(dialog.textContent).toContain("2 / 3");
+  const download = dialog.querySelector<HTMLAnchorElement>("a[download]")!;
+  expect(download.getAttribute("href")).toBe("/api/attachments/img-2");
+  expect(download.getAttribute("download")).toBe("exit-target.jpeg");
+
+  const close = [...dialog.querySelectorAll("button")].find((b) => b.textContent === "Close")!;
+  await act(async () => close.click());
+  expect(document.querySelector('[role="dialog"]')).toBeNull();
+});
+
+it("offers a download link for every attachment", async () => {
+  await renderList();
+  const links = [...container.querySelectorAll<HTMLAnchorElement>("a[download]")].map((a) => [
+    a.getAttribute("href"),
+    a.getAttribute("download"),
+  ]);
+  for (const a of mockAttachments) {
+    expect(links).toContainEqual([`/api/attachments/${a.id}`, a.name]);
+  }
+});
+
+it("downloads or opens a screenshot from its right-click menu", async () => {
+  await renderList();
+  const thumb = container.querySelector('button[aria-label="View entry-setup.png"]')!;
+  await rightClick(thumb);
+  const menu = container.querySelector('[role="menu"]')!;
+  expect(menu).toBeTruthy();
+  const download = menu.querySelector<HTMLAnchorElement>("a[role=menuitem]")!;
+  expect(download.textContent).toBe("Download");
+  expect(download.getAttribute("href")).toBe("/api/attachments/img-1");
+  expect(download.getAttribute("download")).toBe("entry-setup.png");
+
+  // Clicking elsewhere closes it.
+  await act(async () => {
+    document.body.dispatchEvent(new Event("pointerdown", { bubbles: true }));
+  });
+  expect(container.querySelector('[role="menu"]')).toBeNull();
+
+  await rightClick(thumb);
+  const view = [...container.querySelectorAll<HTMLButtonElement>("[role=menuitem]")].find(
+    (b) => b.textContent === "View full size",
+  )!;
+  await act(async () => view.click());
+  expect(document.querySelector('[role="dialog"]')?.textContent).toContain("entry-setup.png");
+  expect(container.querySelector('[role="menu"]')).toBeNull();
+});
+
+it("has a right-click download on the trade gallery image", async () => {
+  await renderGallery();
+  await rightClick(container.querySelector('img[alt="entry-setup.png"]')!);
+  expect(
+    container.querySelector('[role="menu"] a[download="entry-setup.png"]')?.getAttribute("href"),
+  ).toBe("/api/attachments/img-1");
+  expect(
+    container.querySelector('a[aria-label="Download entry-setup.png"]')?.getAttribute("href"),
+  ).toBe("/api/attachments/img-1");
+});

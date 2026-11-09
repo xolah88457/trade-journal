@@ -421,6 +421,7 @@ function AnnotationsCard({
           </div>
           <RichEditor
             editorRef={noteEditor}
+            aiContext={`Trade note: ${trade.symbol} ${trade.direction}`}
             value={notes}
             onChange={(value) => {
               setNotes(value);

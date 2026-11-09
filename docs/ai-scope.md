@@ -16,6 +16,10 @@ Both routes require a `filters` object using the journal's `AnalysisFilters` str
 
 Successful responses retain `answer` or `recap` and add `scope: { label, timeZone }`. The display label masks monetary filter amounts, consistent with private filter descriptions. The provider receives the actual numeric filters and matching aggregates.
 
+## Tidy up (note rewrite)
+
+`POST /api/ai/tidy` rewrites one note and has no account or filter scope: the only data sent is the note text and a short label for where it lives (for example `Trade note: ES long`). It takes `text` (1 to 20,000 characters), optional `context` (up to 200 characters), optional `format` (`markdown`, `plain` or `lines`), and the usual `preview` and `snapshotFingerprint`. Unknown fields are rejected. It uses its own writing system prompt and leaves out personal trading instructions, so the rewrite keeps the trader's own words and meaning. The response is `{ text }`; the UI shows it for review and changes the note only after **Replace note**, which can be undone.
+
 ## Verification without an AI connection
 
 Run `pnpm test apps/web/tests/ai-scope.test.ts apps/web/tests/ai-ui.test.ts apps/web/tests/ai-feedback.test.ts`.

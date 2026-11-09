@@ -16,6 +16,7 @@ import { postJson, useApi } from "@/lib/use-api";
 import { formatInlineSelection, remarkRepairSpacedEmphasis } from "@/lib/note-formatting";
 import { tradeLinkLabel, tradeMarkdownLink, type LinkableTrade } from "@/lib/trade-links";
 import { VoiceNote } from "@/components/voice-note";
+import { AiTidy } from "@/components/ai-tidy";
 import { insertDictatedText } from "@/lib/dictation";
 export function Markdown({ children }: { children: string }) {
   return (
@@ -72,6 +73,7 @@ export function RichEditor({
   onModeChange,
   showModeToggle = true,
   editorRef,
+  aiContext,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -81,6 +83,8 @@ export function RichEditor({
   onModeChange?: (mode: "preview" | "edit") => void;
   showModeToggle?: boolean;
   editorRef?: Ref<RichEditorHandle>;
+  /** Where the note lives, given to the AI "Tidy up" rewrite as context. */
+  aiContext?: string;
 }) {
   const ref = useRef<HTMLTextAreaElement>(null),
     [localPreview, setLocalPreview] = useState(() =>
@@ -177,6 +181,7 @@ export function RichEditor({
             });
           }}
         />
+        <AiTidy text={value} onApply={onChange} context={aiContext} />
         {!preview && (
           <>
             <Button

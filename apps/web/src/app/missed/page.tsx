@@ -249,6 +249,7 @@ function Missed() {
             </div>
             <RichEditor
               defaultMode="edit"
+              aiContext={`Missed trade note${draft.symbol.trim() ? `: ${draft.symbol.trim()} ${draft.direction}` : ""}`}
               value={draft.notes}
               onChange={(notes) => setDraft({ ...draft, notes })}
               placeholder="Why did you miss it? What will you do differently?"

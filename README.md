@@ -135,6 +135,7 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 
 - Ask your journal questions in plain language.
 - Session recaps for a day and critiques of a single trade.
+- **Tidy up**: a button next to Dictate rewrites a dictated or typed note into clean, structured writing. Nothing changes until you choose Replace note, and you can undo it.
 - Every request shows a preview of exactly what will be sent before it goes out.
 - Use your own Anthropic or OpenAI key or an OpenAI-compatible server, choose the model, and add personal trading instructions.
 - **Free to start**: one-click setup for OpenRouter (`openrouter/free`) or Groq (`openai/gpt-oss-120b`) with a free API key, no API fees. Free plans are rate-limited, and free models may log prompts.
@@ -143,6 +144,7 @@ Sumi is based on [LuxAlgo's open-source trade-journal](https://github.com/LuxAlg
 ### Offline voice dictation
 
 - Dictate into notes, trade entries, playbooks and prop records with on-device speech recognition. No audio leaves your machine (see [below](#offline-voice-dictation)).
+- Press **Tidy up** afterwards to have your AI provider turn the transcript into cleaner writing (optional; it sends the note text only after you confirm the preview).
 
 ### Settings
 

@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { VoiceNote } from "@/components/voice-note";
+import { AiTidy } from "@/components/ai-tidy";
 import {
   Select,
   SelectContent,
@@ -444,7 +445,14 @@ export function ManualTradeEntry({ onSaved }: ManualTradeEntryProps) {
       <div className="space-y-1">
         <div className="flex items-center justify-between">
           <Label htmlFor={`${fieldId}-notes`}>Notes (optional)</Label>
-          <VoiceNote targetRef={notesRef} onText={(val) => setNotes(val)} />
+          <div className="flex items-center gap-1">
+            <VoiceNote targetRef={notesRef} onText={(val) => setNotes(val)} />
+            <AiTidy
+              text={notes}
+              onApply={setNotes}
+              context={`Note on a manual trade entry${symbol.trim() ? `: ${symbol.trim()} ${direction}` : ""}`}
+            />
+          </div>
         </div>
         <textarea
           ref={notesRef}

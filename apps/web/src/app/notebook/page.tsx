@@ -410,6 +410,7 @@ function NoteEditor({ note, onChanged }: { note: NoteRow; onChanged: () => void 
         </div>
         <RichEditor
           editorRef={editor}
+          aiContext={`Notebook note${title.trim() ? `: ${title.trim()}` : ""}`}
           mode={mode}
           onModeChange={setMode}
           showModeToggle={false}

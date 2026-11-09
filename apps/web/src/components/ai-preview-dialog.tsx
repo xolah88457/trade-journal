@@ -17,6 +17,8 @@ interface AiPreviewDialogProps {
   onCancel?: () => void;
   onRefresh?: () => void;
   confirmLabel?: string;
+  /** Heading for the data section; defaults to the journal data wording. */
+  contextLabel?: string;
 }
 
 export function AiPreviewDialog({
@@ -31,6 +33,7 @@ export function AiPreviewDialog({
   onCancel,
   onRefresh,
   confirmLabel,
+  contextLabel = "Journal data context (grounding data)",
 }: AiPreviewDialogProps) {
   const close = () => {
     onCancel?.();
@@ -127,9 +130,7 @@ export function AiPreviewDialog({
             </div>
 
             <div>
-              <div className="font-semibold text-foreground mb-1">
-                Journal data context (grounding data)
-              </div>
+              <div className="font-semibold text-foreground mb-1">{contextLabel}</div>
               <pre className="whitespace-pre-wrap rounded bg-muted/60 p-2.5 font-mono text-[11px] leading-relaxed border border-border/80 max-h-56 overflow-y-auto">
                 {preview.journalContext}
               </pre>

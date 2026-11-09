@@ -10,6 +10,7 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/u
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { VoiceNote } from "@/components/voice-note";
+import { AiTidy } from "@/components/ai-tidy";
 import { postJson, useApi } from "@/lib/use-api";
 
 interface Playbook {
@@ -136,7 +137,15 @@ function Playbooks() {
             <div className="space-y-1">
               <div className="flex items-center justify-between">
                 <label className="text-xs text-muted-foreground">Rules (one per line)</label>
-                <VoiceNote targetRef={rulesRef} onText={(val) => setRules(val)} />
+                <div className="flex items-center gap-1">
+                  <VoiceNote targetRef={rulesRef} onText={(val) => setRules(val)} />
+                  <AiTidy
+                    text={rules}
+                    onApply={setRules}
+                    format="lines"
+                    context={`Rules for the trading playbook${name.trim() ? ` "${name.trim()}"` : ""}`}
+                  />
+                </div>
               </div>
               <Textarea
                 ref={rulesRef}

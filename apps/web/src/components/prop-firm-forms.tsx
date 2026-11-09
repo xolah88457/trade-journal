@@ -8,6 +8,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { Field, fieldClass } from "./filter-fields";
 import { Attachments } from "./attachments";
 import { VoiceNote } from "./voice-note";
+import { AiTidy } from "./ai-tidy";
 import { useApi, postJson } from "@/lib/use-api";
 import { decodeImportFile } from "@/lib/decode-import";
 import {
@@ -327,7 +328,15 @@ function AccountForm({
       <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
         <div className="flex items-center justify-between">
           <span>Notes / rules / breach reason</span>
-          <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+          <div className="flex items-center gap-1">
+            <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+            <AiTidy
+              text={values.notes}
+              onApply={(notes) => set({ ...values, notes })}
+              format="plain"
+              context="Prop firm account notes"
+            />
+          </div>
         </div>
         <textarea
           ref={notesRef}
@@ -496,7 +505,15 @@ function EntryForm({
       <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
         <div className="flex items-center justify-between">
           <span>Notes</span>
-          <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+          <div className="flex items-center gap-1">
+            <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+            <AiTidy
+              text={values.notes}
+              onApply={(notes) => set({ ...values, notes })}
+              format="plain"
+              context="Prop firm ledger entry notes"
+            />
+          </div>
         </div>
         <textarea
           ref={notesRef}
@@ -580,7 +597,15 @@ function ReceiptForm({
       <div className="grid min-w-0 gap-1 text-xs text-muted-foreground">
         <div className="flex items-center justify-between">
           <span>Notes</span>
-          <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+          <div className="flex items-center gap-1">
+            <VoiceNote targetRef={notesRef} onText={(notes) => set({ ...values, notes })} />
+            <AiTidy
+              text={values.notes}
+              onApply={(notes) => set({ ...values, notes })}
+              format="plain"
+              context="Prop firm receipt notes"
+            />
+          </div>
         </div>
         <textarea
           ref={notesRef}
